@@ -1,0 +1,240 @@
+import AVFAudio
+import XCTest
+@testable import MeetingCopilot
+
+final class MeetingCopilotTests: XCTestCase {
+    func testSpeakerLabelsAreDeterministic() {
+        XCTAssertEqual(SpeakerTag.you.rawValue, "You")
+        XCTAssertEqual(SpeakerTag.other.rawValue, "Other")
+    }
+
+    func testRealtimeDeltaParsing() throws {
+        let data = try XCTUnwrap(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item_42","content_index":0,"delta":"Hello"}"#
+                .data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeServerEvent.parse(data),
+            .transcriptionDelta(itemID: "item_42", delta: "Hello")
+        )
+    }
+
+    func testWebSocketRequestsATranscriptionSession() {
+        XCTAssertEqual(
+            RealtimeTranscriptionClient.webSocketURL.query,
+            "intent=transcription"
+        )
+    }
+
+    func testRealtimeSpeechTimingParsing() throws {
+        let data = try XCTUnwrap(
+            #"{"type":"input_audio_buffer.speech_started","audio_start_ms":1234,"item_id":"item_9"}"#
+                .data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeServerEvent.parse(data),
+            .speechStarted(itemID: "item_9", audioStartMS: 1234)
+        )
+    }
+
+    func testRealtimeCommitParsing() throws {
+        let data = try XCTUnwrap(
+            #"{"type":"input_audio_buffer.committed","event_id":"event_1","previous_item_id":null,"item_id":"item_11"}"#
+                .data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeServerEvent.parse(data),
+            .audioCommitted(itemID: "item_11")
+        )
+    }
+
+    func testSessionUpdateUsesLiveTranscriptionConfiguration() throws {
+        let context = TranscriptionContext(
+            prompt: "A technical meeting",
+            keywords: ["Project Atlas", "AC-42"],
+            languages: ["en", "ja"],
+            delay: .low
+        )
+        let data = try RealtimeTranscriptionClient.sessionUpdateJSON(context)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let session = try XCTUnwrap(root["session"] as? [String: Any])
+        XCTAssertEqual(session["type"] as? String, "transcription")
+
+        let audio = try XCTUnwrap(session["audio"] as? [String: Any])
+        let input = try XCTUnwrap(audio["input"] as? [String: Any])
+        let format = try XCTUnwrap(input["format"] as? [String: Any])
+        XCTAssertEqual(format["rate"] as? Int, 24_000)
+
+        let transcription = try XCTUnwrap(input["transcription"] as? [String: Any])
+        XCTAssertEqual(transcription["model"] as? String, "gpt-live-transcribe")
+        XCTAssertEqual(transcription["delay"] as? String, "low")
+        XCTAssertEqual(transcription["keywords"] as? [String], ["Project Atlas", "AC-42"])
+        XCTAssertTrue(input["turn_detection"] is NSNull)
+    }
+
+    func testRefinementEventParsing() throws {
+        let deltaData = try XCTUnwrap(
+            #"{"type":"response.output_text.delta","response_id":"resp_42","delta":"Thread block"}"#
+                .data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeRefinementServerEvent.parse(deltaData),
+            .textDelta(responseID: "resp_42", delta: "Thread block")
+        )
+
+        let doneData = try XCTUnwrap(
+            """
+            {
+              "type": "response.done",
+              "response": {
+                "id": "resp_42",
+                "status": "completed",
+                "output": [{
+                  "type": "message",
+                  "content": [{"type": "output_text", "text": "Thread blocks and warps."}]
+                }]
+              }
+            }
+            """.data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeRefinementServerEvent.parse(doneData),
+            .responseDone(
+                responseID: "resp_42",
+                status: "completed",
+                outputText: "Thread blocks and warps.",
+                error: nil
+            )
+        )
+    }
+
+    func testRefinementSessionUsesCurrentAudioNativeModel() throws {
+        XCTAssertEqual(RealtimeRefinementClient.model, "gpt-realtime-2.1")
+        XCTAssertEqual(
+            RealtimeRefinementClient.webSocketURL.query,
+            "model=gpt-realtime-2.1"
+        )
+
+        let data = try RealtimeRefinementClient.sessionUpdateJSON()
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let session = try XCTUnwrap(root["session"] as? [String: Any])
+        XCTAssertEqual(session["type"] as? String, "realtime")
+        XCTAssertEqual(session["output_modalities"] as? [String], ["text"])
+
+        let audio = try XCTUnwrap(session["audio"] as? [String: Any])
+        let input = try XCTUnwrap(audio["input"] as? [String: Any])
+        let format = try XCTUnwrap(input["format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "audio/pcm")
+        XCTAssertEqual(format["rate"] as? Int, 24_000)
+        XCTAssertTrue(input["turn_detection"] is NSNull)
+    }
+
+    func testRefinementRequestIsOutOfBandAndContainsRawAudio() throws {
+        let audio = Data([0, 1, 2, 3])
+        let request = RealtimeRefinementRequest(
+            transcriptID: "You-item_7",
+            speaker: .you,
+            pcm16Audio: audio,
+            context: TranscriptionContext(
+                prompt: "A GPU architecture discussion.",
+                keywords: ["CUDA", "thread block", "warp"],
+                languages: ["en"],
+                delay: .medium
+            ),
+            recentTranscript: "Other: How are thread blocks organized?"
+        )
+        let data = try RealtimeRefinementClient.responseCreateJSON(request)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let response = try XCTUnwrap(root["response"] as? [String: Any])
+        XCTAssertEqual(response["conversation"] as? String, "none")
+        XCTAssertEqual(response["output_modalities"] as? [String], ["text"])
+
+        let metadata = try XCTUnwrap(response["metadata"] as? [String: String])
+        XCTAssertEqual(metadata["transcript_id"], "You-item_7")
+
+        let input = try XCTUnwrap(response["input"] as? [[String: Any]])
+        let message = try XCTUnwrap(input.first)
+        let content = try XCTUnwrap(message["content"] as? [[String: Any]])
+        let audioPart = try XCTUnwrap(content.first)
+        XCTAssertEqual(audioPart["type"] as? String, "input_audio")
+        XCTAssertEqual(audioPart["audio"] as? String, audio.base64EncodedString())
+
+        let instructions = try XCTUnwrap(response["instructions"] as? String)
+        XCTAssertTrue(instructions.contains("CUDA"))
+        XCTAssertTrue(instructions.contains("thread blocks organized"))
+        XCTAssertTrue(instructions.contains("Do not answer, summarize"))
+    }
+
+    func testAudioPipelineConvertsToTwentyMillisecondPCMChunks() throws {
+        let format = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 48_000,
+                channels: 2,
+                interleaved: false
+            )
+        )
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800)
+        )
+        buffer.frameLength = 4_800
+        for channel in 0..<Int(format.channelCount) {
+            guard let samples = buffer.floatChannelData?[channel] else {
+                XCTFail("Missing float channel data")
+                return
+            }
+            for frame in 0..<Int(buffer.frameLength) {
+                samples[frame] = sin(Float(frame) * 0.02) * 0.2
+            }
+        }
+
+        let received = expectation(description: "Converted chunks")
+        received.expectedFulfillmentCount = 4
+        received.assertForOverFulfill = false
+        let lock = NSLock()
+        var sizes: [Int] = []
+        let pipeline = AudioTrackPipeline(
+            label: "MeetingCopilotTests.Audio",
+            onChunk: { data in
+                lock.lock()
+                sizes.append(data.count)
+                lock.unlock()
+                received.fulfill()
+            },
+            onTelemetry: { _ in }
+        )
+        pipeline.submit(buffer)
+        wait(for: [received], timeout: 2)
+        pipeline.finish()
+
+        lock.lock()
+        let capturedSizes = sizes
+        lock.unlock()
+        XCTAssertGreaterThanOrEqual(capturedSizes.count, 4)
+        XCTAssertTrue(capturedSizes.allSatisfy { $0 == 960 })
+    }
+
+    func testDefaultInputMonitorPublishesTheCurrentDevice() throws {
+        guard let expectedDevice = CoreAudioUtilities.defaultInputDevice() else {
+            throw XCTSkip("This Mac currently has no default input device.")
+        }
+
+        let received = expectation(description: "Initial default input device")
+        var observedDevice: AudioInputDeviceInfo?
+        let monitor = DefaultInputDeviceMonitor { device in
+            observedDevice = device
+            received.fulfill()
+        }
+        try monitor.start()
+        wait(for: [received], timeout: 2)
+        monitor.stop()
+
+        XCTAssertEqual(observedDevice, expectedDevice)
+    }
+}
