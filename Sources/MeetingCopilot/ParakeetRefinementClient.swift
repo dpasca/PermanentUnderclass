@@ -1,4 +1,5 @@
 import AVFAudio
+import CoreML
 import FluidAudio
 import Foundation
 
@@ -16,7 +17,7 @@ final class ParakeetRefinementClient: TranscriptRefining, @unchecked Sendable {
         label: "MeetingCopilot.Parakeet.Refinement",
         qos: .userInitiated
     )
-    private let transcriber = ParakeetTranscriber()
+    private let transcriber = ParakeetTranscriber.shared
 
     private var queuedRequests: [RealtimeRefinementRequest] = []
     private var activeRequest: RealtimeRefinementRequest?
@@ -220,12 +221,21 @@ final class ParakeetRefinementClient: TranscriptRefining, @unchecked Sendable {
     }
 }
 
-private actor ParakeetTranscriber {
+actor ParakeetTranscriber {
+    static let shared = ParakeetTranscriber()
+
     private var manager: AsrManager?
 
     func prepare() async throws {
         guard manager == nil else { return }
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        // FluidAudio's v3 benchmarks show the large encoder is WER-neutral
+        // and faster on Apple Silicon GPUs. More importantly for this desktop
+        // app, this avoids a slow or occasionally stalled ANE compilation on
+        // each fresh process. Decoder and joint models retain their defaults.
+        let models = try await AsrModels.downloadAndLoad(
+            version: .v3,
+            encoderComputeUnits: .cpuAndGPU
+        )
         manager = AsrManager(models: models)
     }
 

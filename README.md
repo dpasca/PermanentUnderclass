@@ -32,9 +32,34 @@ If either permission was previously denied, enable **Meeting Copilot** under
 System Settings → Privacy & Security → Microphone and Screen & System Audio
 Recording, then relaunch the app.
 
+The build script uses an installed **Developer ID Application** certificate by
+default so the app has a stable designated code requirement across rebuilds.
+macOS associates privacy consent with that requirement. The first
+certificate-signed build may ask once more because it intentionally replaces
+the earlier ad-hoc identity; subsequent rebuilds retain the same identity.
+Notarization is needed for distributing a downloaded app through Gatekeeper,
+not for retaining local privacy consent. Override the selected certificate with
+`MEETING_COPILOT_SIGNING_IDENTITY`; without a Developer ID certificate the
+script falls back to ad-hoc signing and warns that consent may not persist.
+
 Paste an API key into the app and press **Save to Keychain**. Select the
 meeting application (it may appear under a helper-process name), then start
 listening.
+
+## Quick Dictation
+
+Enable **Quick Dictation**, then grant Accessibility and Microphone access when
+prompted. Accessibility allows both global shortcut monitoring and automatic
+paste. macOS may require Meeting Copilot to be quit and reopened after this
+permission changes. Hold the exact modifier-only chord **Command + Option**
+while speaking and release either modifier to transcribe locally with Parakeet
+and paste into the currently focused application. Pressing another keyboard key
+while the chord is down cancels the recording, so normal Command-Option
+shortcuts do not become dictations.
+
+The focused application's clipboard is used briefly for the paste and restored
+afterward if it was not changed by another application. Quick Dictation is
+paused while meeting capture is using the microphone.
 
 ## Current scope
 
@@ -48,9 +73,11 @@ The proof of concept includes:
 - Two independent `gpt-live-transcribe` WebSocket sessions.
 - A selectable final-transcript engine:
   - **Local Parakeet** embeds FluidAudio and NVIDIA Parakeet TDT 0.6B v3 using
-    Core ML and the Apple Neural Engine. The first use downloads roughly 483 MB
-    to FluidAudio's application-support cache and performs a one-time Core ML
-    compilation.
+    Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
+    Neural Engine preparation while retaining the same model and recognition
+    quality. The first use downloads roughly 483 MB to FluidAudio's
+    application-support cache and each fresh app process performs a short
+    Core ML preparation before Quick Dictation becomes ready.
   - **OpenAI audio second pass** retains the existing serialized,
     out-of-band `gpt-realtime-2.1` worker for comparison.
 - Client-side audio voice-activity detection with a 300 ms pre-roll, a 3
@@ -65,6 +92,9 @@ The proof of concept includes:
   combined final transcript. Each finalized turn is labeled **Refining**,
   **Refined**, or **Live only**; when refinement changes the wording, the
   original live result remains visible for comparison.
+- Optional global hold-to-dictate using the same embedded Parakeet model,
+  modifier-only Command-Option monitoring, and automatic paste into the focused
+  application.
 
 Audio and transcripts remain in memory. Per-turn PCM is retained only long
 enough to perform the second pass. Diagnostic audio recording is not

@@ -1,13 +1,15 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var controller = MeetingController()
+    @ObservedObject var controller: MeetingController
     @State private var contextExpanded = false
 
     var body: some View {
         VStack(spacing: 16) {
             header
             setupBar
+            dictationBar
 
             if let error = controller.errorMessage {
                 errorBanner(error)
@@ -36,6 +38,14 @@ struct ContentView: View {
         .onAppear {
             contextExpanded = controller.apiKeyDraft.isEmpty
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            controller.refreshDictationPermissions()
+            controller.refreshProcesses()
+        }
     }
 
     private var header: some View {
@@ -49,11 +59,11 @@ struct ContentView: View {
             }
             Spacer()
             Text("FINAL")
-                .font(.caption.bold())
+                .font(.callout.bold())
                 .foregroundStyle(.secondary)
             SocketBadge(state: controller.refinementState, color: .green)
             Label("HEADPHONES", systemImage: "headphones")
-                .font(.caption.bold())
+                .font(.callout.bold())
                 .foregroundStyle(.secondary)
             Button("Finish My Turn", action: controller.finalizeLocalTurn)
                 .disabled(!controller.isListening)
@@ -98,6 +108,122 @@ struct ContentView: View {
         }
         .padding(12)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var dictationBar: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Label("Quick Dictation", systemImage: "keyboard.badge.ellipsis")
+                    .font(.headline)
+                Circle()
+                    .fill(dictationColor)
+                    .frame(width: 8, height: 8)
+                Text(controller.dictationPhase.label)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                if controller.isDictating {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Spacer()
+                Text("Hold ⌘ + ⌥")
+                    .font(.body.monospaced().weight(.semibold))
+                Button(
+                    controller.dictationPermissions.allGranted
+                        ? "Check Access"
+                        : "Grant Access",
+                    action: controller.requestDictationPermissions
+                )
+                Toggle(
+                    "Enabled",
+                    isOn: Binding(
+                        get: { controller.dictationEnabled },
+                        set: controller.setDictationEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+                .fixedSize()
+            }
+
+            if controller.dictationEnabled {
+                HStack(spacing: 12) {
+                    Text(controller.microphoneName)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                        .frame(width: 150, alignment: .leading)
+                    WaveformView(
+                        samples: controller.dictationTelemetry.waveform,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(height: 28)
+                    LevelBar(
+                        label: "RMS",
+                        value: controller.dictationTelemetry.rms,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(width: 170)
+                    LevelBar(
+                        label: "PEAK",
+                        value: controller.dictationTelemetry.peak,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(width: 170)
+                    Text("\(controller.dictationTelemetry.packets) packets")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 72, alignment: .trailing)
+                }
+            }
+
+            if let detail = controller.dictationPhase.detail {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            } else if !controller.dictationPermissions.allGranted {
+                Text("\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen Meeting Copilot.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if !controller.lastDictation.isEmpty {
+                Text("Last: \(controller.lastDictation)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+            } else {
+                Text("Keep both modifiers held while speaking; release either one to transcribe and paste into the focused app.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(
+            controller.isDictating
+                ? Color.red.opacity(0.10)
+                : Color.secondary.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay {
+            if controller.isDictating {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(.red.opacity(0.75), lineWidth: 2)
+            }
+        }
+    }
+
+    private var dictationColor: Color {
+        switch controller.dictationPhase {
+        case .off:
+            .secondary
+        case .needsPermission, .preparing, .transcribing:
+            .orange
+        case .ready:
+            .green
+        case .recording:
+            .red
+        case .failed:
+            .orange
+        }
     }
 
     private func errorBanner(_ error: String) -> some View {
@@ -169,7 +295,7 @@ struct ContentView: View {
                     Button("Save to Keychain", action: controller.saveAPIKey)
                     if !controller.keyStatus.isEmpty {
                         Text(controller.keyStatus)
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -177,7 +303,7 @@ struct ContentView: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Meeting context")
-                            .font(.caption.weight(.medium))
+                            .font(.callout.weight(.medium))
                         TextEditor(text: $controller.topicPrompt)
                             .font(.body)
                             .frame(minHeight: 64)
@@ -188,7 +314,7 @@ struct ContentView: View {
                     }
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Terminology — one literal term per line")
-                            .font(.caption.weight(.medium))
+                            .font(.callout.weight(.medium))
                         TextEditor(text: $controller.keywordsText)
                             .font(.body)
                             .frame(minHeight: 64)
@@ -218,18 +344,18 @@ struct ContentView: View {
                     Button("Apply Context", action: controller.applyContext)
                 }
                 Text("For specialized discussions, add exact vocabulary before the meeting—for example CUDA, thread block, and warp. Medium is the recommended starting point for balanced accuracy and latency.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Text(controller.refinementEngine.detail)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if controller.refinementEngine == .localParakeet {
                     Text("The first local run downloads and compiles the Parakeet model, then keeps it warm inside Meeting Copilot. No MacParakeet app or process is used.")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Text("Prototype security: the long-lived key stays in this Mac’s Keychain. Use an internal short-lived-token broker before deployment.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 10)
@@ -258,7 +384,7 @@ private struct TrackCard: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.caption.bold())
+                        .font(.callout.bold())
                         .foregroundStyle(color)
                     Text(subtitle)
                         .font(.headline)
@@ -291,7 +417,7 @@ private struct TrackCard: View {
                 Text("\(state.telemetry.droppedBuffers) dropped")
                     .foregroundStyle(state.telemetry.droppedBuffers > 0 ? .orange : .secondary)
             }
-            .font(.caption2.monospacedDigit())
+            .font(.callout.monospacedDigit())
             .foregroundStyle(.secondary)
         }
         .padding(14)
@@ -342,7 +468,7 @@ private struct LevelBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.caption2.monospaced())
+                .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
             ProgressView(value: Double(min(1, max(0, value))))
                 .tint(color)
@@ -361,7 +487,7 @@ private struct SocketBadge: View {
                 .frame(width: 7, height: 7)
             Text(state.label)
         }
-        .font(.caption)
+        .font(.callout)
         .foregroundStyle(.secondary)
         .help(state.detail ?? state.label)
     }
@@ -382,11 +508,11 @@ private struct TranscriptRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Text(turn.speaker.rawValue.uppercased())
-                .font(.caption.bold())
+                .font(.callout.bold())
                 .foregroundStyle(turn.speaker == .you ? .blue : .purple)
                 .frame(width: 52, alignment: .leading)
             Text(turn.startedAt, style: .time)
-                .font(.caption.monospacedDigit())
+                .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 72, alignment: .leading)
             VStack(alignment: .leading, spacing: 5) {
@@ -398,7 +524,7 @@ private struct TranscriptRow: View {
                 }
                 if case .refined = turn.refinement, turn.liveText != turn.text {
                     Text("Live: \(turn.liveText)")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -428,7 +554,7 @@ private struct TranscriptRefinementBadge: View {
                     .foregroundStyle(.orange)
             }
         }
-        .font(.caption)
+        .font(.callout)
         .fixedSize()
         .help(helpText)
     }

@@ -1,6 +1,7 @@
 import AVFAudio
 import AVFoundation
 import CoreAudio
+import CoreMedia
 import Foundation
 
 final class MicrophoneCapture {
@@ -109,6 +110,178 @@ final class MicrophoneCapture {
 
     private func inputNodeIfAvailable() -> AVAudioInputNode? {
         engine.inputNode
+    }
+
+    deinit {
+        stop()
+    }
+}
+
+/// Input-only capture for short dictation clips. Unlike AVAudioEngine, an
+/// AVCaptureSession does not build an output graph, which avoids repeatedly
+/// renegotiating the Bose QC45 Bluetooth output profile when its microphone is
+/// activated.
+final class CaptureSessionMicrophoneCapture: NSObject,
+    AVCaptureAudioDataOutputSampleBufferDelegate
+{
+    typealias BufferHandler = (AVAudioPCMBuffer) -> Void
+
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(
+        label: "MeetingCopilot.Dictation.CaptureSession",
+        qos: .userInitiated
+    )
+    private let outputQueue = DispatchQueue(
+        label: "MeetingCopilot.Dictation.AudioOutput",
+        qos: .userInteractive
+    )
+    private let stateLock = NSLock()
+    private var isCancelled = false
+    private var audioOutput: AVCaptureAudioDataOutput?
+    private var onBuffer: BufferHandler?
+
+    func start(
+        onBuffer: @escaping BufferHandler,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        stateLock.lock()
+        isCancelled = false
+        self.onBuffer = onBuffer
+        stateLock.unlock()
+
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            configureAndStart(completion: completion)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.configureAndStart(completion: completion)
+                } else {
+                    DispatchQueue.main.async {
+                        completion(.failure(MeetingCopilotError.audio(
+                            "Microphone permission was denied."
+                        )))
+                    }
+                }
+            }
+        default:
+            completion(.failure(MeetingCopilotError.audio(
+                "Microphone access is disabled. Enable it in System Settings → Privacy & Security → Microphone."
+            )))
+        }
+    }
+
+    func stop() {
+        stateLock.lock()
+        isCancelled = true
+        stateLock.unlock()
+
+        sessionQueue.sync {
+            audioOutput?.setSampleBufferDelegate(nil, queue: nil)
+            if session.isRunning {
+                session.stopRunning()
+            }
+            audioOutput = nil
+        }
+        outputQueue.sync {}
+        stateLock.lock()
+        onBuffer = nil
+        stateLock.unlock()
+    }
+
+    private func configureAndStart(
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.cancelled else { return }
+            do {
+                guard let device = AVCaptureDevice.default(for: .audio) else {
+                    throw MeetingCopilotError.audio("No default microphone is available.")
+                }
+                let input = try AVCaptureDeviceInput(device: device)
+                let output = AVCaptureAudioDataOutput()
+                output.setSampleBufferDelegate(self, queue: self.outputQueue)
+
+                self.session.beginConfiguration()
+                do {
+                    guard self.session.canAddInput(input) else {
+                        throw MeetingCopilotError.audio("Could not attach the default microphone.")
+                    }
+                    self.session.addInput(input)
+                    guard self.session.canAddOutput(output) else {
+                        throw MeetingCopilotError.audio("Could not create microphone audio output.")
+                    }
+                    self.session.addOutput(output)
+                    self.audioOutput = output
+                    self.session.commitConfiguration()
+                } catch {
+                    self.session.commitConfiguration()
+                    throw error
+                }
+
+                guard !self.cancelled else { return }
+                self.session.startRunning()
+                guard self.session.isRunning else {
+                    throw MeetingCopilotError.audio("The microphone capture session did not start.")
+                }
+                DispatchQueue.main.async {
+                    completion(.success(()))
+                }
+            } catch {
+                if self.session.isRunning {
+                    self.session.stopRunning()
+                }
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    private var cancelled: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isCancelled
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard
+            !cancelled,
+            CMSampleBufferDataIsReady(sampleBuffer),
+            let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer)
+        else {
+            return
+        }
+        let format = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+
+        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+        guard
+            frameCount > 0,
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: frameCount
+            )
+        else {
+            return
+        }
+        buffer.frameLength = frameCount
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(frameCount),
+            into: buffer.mutableAudioBufferList
+        )
+        guard status == noErr else { return }
+
+        stateLock.lock()
+        let handler = onBuffer
+        stateLock.unlock()
+        handler?(buffer)
     }
 
     deinit {

@@ -217,3 +217,38 @@ enum AudioProcessCatalog {
         }
     }
 }
+
+enum AudioProcessSelectionResolver {
+    static func resolve(
+        previous: AudioProcessInfo,
+        candidates: [AudioProcessInfo]
+    ) -> AudioProcessInfo? {
+        if let exactObject = candidates.first(where: { $0.id == previous.id }) {
+            return exactObject
+        }
+        if let sameProcess = candidates.first(where: { $0.pid == previous.pid }) {
+            return sameProcess
+        }
+        if let bundleIdentifier = previous.bundleIdentifier {
+            let sameBundleAndName = candidates.filter {
+                $0.bundleIdentifier == bundleIdentifier && $0.name == previous.name
+            }
+            if let match = preferred(sameBundleAndName) {
+                return match
+            }
+            let sameBundle = candidates.filter {
+                $0.bundleIdentifier == bundleIdentifier
+            }
+            if let match = preferred(sameBundle) {
+                return match
+            }
+        }
+        return preferred(candidates.filter { $0.name == previous.name })
+    }
+
+    private static func preferred(
+        _ candidates: [AudioProcessInfo]
+    ) -> AudioProcessInfo? {
+        candidates.first(where: \.isProducingOutput) ?? candidates.first
+    }
+}

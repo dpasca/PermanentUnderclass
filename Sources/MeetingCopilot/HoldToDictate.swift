@@ -1,0 +1,645 @@
+import AppKit
+import ApplicationServices
+import AVFoundation
+import CoreGraphics
+import Foundation
+import OSLog
+
+enum ModifierHoldSignal: Equatable {
+    case pressed
+    case released
+    case cancelled
+}
+
+struct ModifierHoldState {
+    private(set) var isHeld = false
+
+    mutating func update(flags: CGEventFlags) -> ModifierHoldSignal? {
+        let isExactChord = Self.isExactChord(flags)
+
+        if isExactChord, !isHeld {
+            isHeld = true
+            return .pressed
+        }
+        if !isExactChord, isHeld {
+            isHeld = false
+            return .released
+        }
+        return nil
+    }
+
+    mutating func synchronize(flags: CGEventFlags) {
+        isHeld = Self.isExactChord(flags)
+    }
+
+    mutating func cancelForKeyDown() -> ModifierHoldSignal? {
+        guard isHeld else { return nil }
+        isHeld = false
+        return .cancelled
+    }
+
+    mutating func reset() {
+        isHeld = false
+    }
+
+    private static func isExactChord(_ flags: CGEventFlags) -> Bool {
+        let hasRequiredModifiers = flags.contains(.maskCommand)
+            && flags.contains(.maskAlternate)
+        let hasDisallowedModifiers = flags.contains(.maskControl)
+            || flags.contains(.maskShift)
+            || flags.contains(.maskSecondaryFn)
+        return hasRequiredModifiers && !hasDisallowedModifiers
+    }
+}
+
+final class ModifierHoldMonitor {
+    typealias SignalHandler = (ModifierHoldSignal) -> Void
+
+    static let diagnosticEventTag: Int64 = 0x4D_43_44_54
+    private static let logger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "QuickDictationHotkey"
+    )
+    private let signalHandler: SignalHandler
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private var installedRunLoop: CFRunLoop?
+    private var retainedSelf: Unmanaged<ModifierHoldMonitor>?
+    private var state = ModifierHoldState()
+    private var isDiagnosticHold = false
+
+    init(signalHandler: @escaping SignalHandler) {
+        self.signalHandler = signalHandler
+    }
+
+    func start() throws {
+        guard eventTap == nil else { return }
+        guard AXIsProcessTrusted() else {
+            throw MeetingCopilotError.audio(
+                "Accessibility permission is required for the global dictation shortcut."
+            )
+        }
+
+        let eventMask = (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+            | (CGEventMask(1) << CGEventType.keyDown.rawValue)
+        let retained = Unmanaged.passRetained(self)
+        retainedSelf = retained
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: { _, type, event, refcon in
+                guard let refcon else { return Unmanaged.passUnretained(event) }
+                let monitor = Unmanaged<ModifierHoldMonitor>
+                    .fromOpaque(refcon)
+                    .takeUnretainedValue()
+                return monitor.handle(type: type, event: event)
+            },
+            userInfo: retained.toOpaque()
+        ) else {
+            retained.release()
+            retainedSelf = nil
+            throw MeetingCopilotError.audio(
+                "The global dictation shortcut could not be installed. Check Accessibility permission."
+            )
+        }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        let runLoop = CFRunLoopGetCurrent()
+        eventTap = tap
+        runLoopSource = source
+        installedRunLoop = runLoop
+        CFRunLoopAddSource(runLoop, source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        state.synchronize(flags: CGEventSource.flagsState(.combinedSessionState))
+        Self.logger.notice("event_tap_installed")
+    }
+
+    func stop() {
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+        }
+        if let runLoopSource, let installedRunLoop {
+            CFRunLoopRemoveSource(installedRunLoop, runLoopSource, .commonModes)
+        }
+        retainedSelf?.release()
+        retainedSelf = nil
+        eventTap = nil
+        runLoopSource = nil
+        installedRunLoop = nil
+        state.reset()
+        isDiagnosticHold = false
+    }
+
+    private func handle(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Self.logger.error("event_tap_disabled type=\(type.rawValue, privacy: .public)")
+            if let eventTap {
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            state.synchronize(flags: CGEventSource.flagsState(.combinedSessionState))
+            return Unmanaged.passUnretained(event)
+        }
+
+        let signal: ModifierHoldSignal?
+        switch type {
+        case .flagsChanged:
+            signal = state.update(flags: event.flags)
+            if signal == .pressed {
+                isDiagnosticHold = event.getIntegerValueField(.eventSourceUserData)
+                    == Self.diagnosticEventTag
+            } else if signal == .released {
+                isDiagnosticHold = false
+            }
+        case .keyDown:
+            signal = isDiagnosticHold ? nil : state.cancelForKeyDown()
+            if signal == .cancelled {
+                isDiagnosticHold = false
+            }
+        default:
+            signal = nil
+        }
+        if let signal {
+            Self.logger.notice(
+                "shortcut_signal=\(String(describing: signal), privacy: .public) flags=\(event.flags.rawValue, privacy: .public)"
+            )
+            DispatchQueue.main.async { [signalHandler] in
+                signalHandler(signal)
+            }
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
+    deinit {
+        stop()
+    }
+}
+
+final class HoldToDictateService {
+    typealias PhaseHandler = (DictationPhase) -> Void
+    typealias PermissionHandler = (DictationPermissionState) -> Void
+    typealias RecordingHandler = (Bool) -> Void
+    typealias TelemetryHandler = (TrackTelemetry) -> Void
+    typealias ResultHandler = (String) -> Void
+
+    private static let logger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "QuickDictationCapture"
+    )
+    private let canRecord: () -> Bool
+    private let expectedLanguages: () -> [String]
+    private let phaseHandler: PhaseHandler
+    private let permissionHandler: PermissionHandler
+    private let recordingHandler: RecordingHandler
+    private let telemetryHandler: TelemetryHandler
+    private let resultHandler: ResultHandler
+    private let transcribesAfterRecording: Bool
+
+    private lazy var monitor = ModifierHoldMonitor { [weak self] signal in
+        self?.handle(signal)
+    }
+    private var microphoneCapture: CaptureSessionMicrophoneCapture?
+    private var pipeline: AudioTrackPipeline?
+    private var audioBuffer: LockedAudioBuffer?
+    private var recordingID: UUID?
+    private var preparationTask: Task<Void, Never>?
+    private var transcriptionTask: Task<Void, Never>?
+    private var generation = UUID()
+    private var isModelReady = false
+    private var wantsEnabled = false
+    private(set) var isRunning = false
+
+    init(
+        canRecord: @escaping () -> Bool,
+        expectedLanguages: @escaping () -> [String],
+        onPhase: @escaping PhaseHandler,
+        onPermissions: @escaping PermissionHandler,
+        onRecording: @escaping RecordingHandler,
+        onTelemetry: @escaping TelemetryHandler,
+        onResult: @escaping ResultHandler,
+        transcribesAfterRecording: Bool = true
+    ) {
+        self.canRecord = canRecord
+        self.expectedLanguages = expectedLanguages
+        phaseHandler = onPhase
+        permissionHandler = onPermissions
+        recordingHandler = onRecording
+        telemetryHandler = onTelemetry
+        resultHandler = onResult
+        self.transcribesAfterRecording = transcribesAfterRecording
+    }
+
+    @discardableResult
+    func enable(requestAccess: Bool) -> Bool {
+        wantsEnabled = true
+        if isRunning { return true }
+
+        var permissions = Self.currentPermissions()
+        permissionHandler(permissions)
+        if !permissions.allGranted, requestAccess {
+            permissions = Self.requestPermissions { [weak self] in
+                guard let self, self.wantsEnabled else { return }
+                let updated = Self.currentPermissions()
+                self.permissionHandler(updated)
+                if updated.allGranted {
+                    _ = self.enable(requestAccess: false)
+                }
+            }
+            permissionHandler(permissions)
+        }
+        guard permissions.allGranted else {
+            phaseHandler(.needsPermission)
+            return false
+        }
+
+        do {
+            try monitor.start()
+            isRunning = true
+            isModelReady = false
+            generation = UUID()
+            prepareModel(generation: generation)
+            return true
+        } catch {
+            phaseHandler(.failed(error.localizedDescription))
+            return false
+        }
+    }
+
+    func disable() {
+        let hadActiveWork = wantsEnabled
+            || isRunning
+            || recordingID != nil
+            || preparationTask != nil
+            || transcriptionTask != nil
+        wantsEnabled = false
+        guard hadActiveWork else { return }
+        generation = UUID()
+        monitor.stop()
+        cancelRecording(nextPhase: .off)
+        preparationTask?.cancel()
+        transcriptionTask?.cancel()
+        preparationTask = nil
+        transcriptionTask = nil
+        isModelReady = false
+        isRunning = false
+    }
+
+    static func currentPermissions() -> DictationPermissionState {
+        let accessibilityTrusted = AXIsProcessTrusted()
+        return DictationPermissionState(
+            canMonitorKeyboard: accessibilityTrusted,
+            canPasteIntoOtherApps: accessibilityTrusted,
+            canUseMicrophone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        )
+    }
+
+    static func requestPermissions(
+        onMicrophoneDecision: (() -> Void)? = nil
+    ) -> DictationPermissionState {
+        if !AXIsProcessTrusted() {
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            let options = [promptKey: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(700)) {
+                openAccessibilitySettings()
+            }
+        }
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                DispatchQueue.main.async {
+                    onMicrophoneDecision?()
+                }
+            }
+        }
+        return currentPermissions()
+    }
+
+    private static func openAccessibilitySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ]
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+    }
+
+    private func prepareModel(generation: UUID) {
+        phaseHandler(.preparing)
+        preparationTask = Task { [weak self] in
+            do {
+                try await ParakeetTranscriber.shared.prepare()
+                await MainActor.run { [weak self] in
+                    guard
+                        let self,
+                        self.generation == generation,
+                        self.isRunning
+                    else {
+                        return
+                    }
+                    self.preparationTask = nil
+                    self.isModelReady = true
+                    if self.recordingID == nil, self.transcriptionTask == nil {
+                        self.phaseHandler(.ready)
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, self.generation == generation else { return }
+                    self.preparationTask = nil
+                    self.isModelReady = false
+                    self.phaseHandler(.failed(error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    private func handle(_ signal: ModifierHoldSignal) {
+        switch signal {
+        case .pressed:
+            startRecording()
+        case .released:
+            finishRecording()
+        case .cancelled:
+            cancelRecording(nextPhase: isRunning ? .ready : .off)
+        }
+    }
+
+    private func startRecording() {
+        guard isRunning, recordingID == nil, transcriptionTask == nil else { return }
+        guard isModelReady else {
+            if preparationTask != nil {
+                phaseHandler(.preparing)
+            }
+            return
+        }
+        guard canRecord() else {
+            phaseHandler(.failed("Quick Dictation is unavailable while meeting capture is active."))
+            return
+        }
+
+        let currentRecordingID = UUID()
+        let buffer = LockedAudioBuffer()
+        let pipeline = AudioTrackPipeline(
+            label: "MeetingCopilot.Audio.Dictation",
+            onChunk: { chunk in
+                buffer.append(chunk)
+            },
+            onTelemetry: { [telemetryHandler] telemetry in
+                telemetryHandler(telemetry)
+            }
+        )
+        let capture = CaptureSessionMicrophoneCapture()
+
+        recordingID = currentRecordingID
+        audioBuffer = buffer
+        self.pipeline = pipeline
+        microphoneCapture = capture
+        recordingHandler(true)
+        phaseHandler(.recording)
+        Self.logger.notice("recording_started")
+
+        startMicrophoneCapture(
+            capture,
+            recordingID: currentRecordingID,
+            pipeline: pipeline
+        )
+    }
+
+    private func startMicrophoneCapture(
+        _ capture: CaptureSessionMicrophoneCapture,
+        recordingID currentRecordingID: UUID,
+        pipeline: AudioTrackPipeline
+    ) {
+        capture.start(
+            onBuffer: { audio in
+                pipeline.submit(audio)
+            },
+            completion: { [weak self, weak capture] result in
+                DispatchQueue.main.async {
+                    guard
+                        let self,
+                        let capture,
+                        self.recordingID == currentRecordingID,
+                        self.microphoneCapture === capture
+                    else {
+                        capture?.stop()
+                        return
+                    }
+                    if case let .failure(error) = result {
+                        self.cancelRecording(nextPhase: .failed(error.localizedDescription))
+                    }
+                }
+            }
+        )
+    }
+
+    private func finishRecording() {
+        guard recordingID != nil else { return }
+        let capture = microphoneCapture
+        let pipeline = pipeline
+        let buffer = audioBuffer
+
+        microphoneCapture = nil
+        self.pipeline = nil
+        audioBuffer = nil
+        self.recordingID = nil
+        capture?.stop()
+        pipeline?.finish()
+        recordingHandler(false)
+
+        let audio = buffer?.take() ?? Data()
+        let peak = PCM16SignalGate.peakMagnitude(audio)
+        Self.logger.notice(
+            "recording_finished bytes=\(audio.count, privacy: .public) peak=\(peak, privacy: .public)"
+        )
+        guard transcribesAfterRecording else {
+            phaseHandler(isRunning ? .ready : .off)
+            return
+        }
+        guard audio.count >= 4_800 else {
+            Self.logger.notice("recording_skipped reason=too_short")
+            phaseHandler(.ready)
+            return
+        }
+        guard peak >= 64 else {
+            Self.logger.notice("recording_skipped reason=silence")
+            phaseHandler(.ready)
+            return
+        }
+
+        let generation = generation
+        let languages = expectedLanguages()
+        phaseHandler(.transcribing)
+        Self.logger.notice("transcription_started")
+        transcriptionTask = Task { [weak self] in
+            do {
+                try await ParakeetTranscriber.shared.prepare()
+                let text = try await ParakeetTranscriber.shared.transcribe(
+                    pcm16Audio: audio,
+                    expectedLanguages: languages
+                )
+                await MainActor.run { [weak self] in
+                    guard
+                        let self,
+                        self.generation == generation,
+                        self.isRunning,
+                        self.recordingID == nil
+                    else {
+                        return
+                    }
+                    self.transcriptionTask = nil
+                    let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !result.isEmpty else {
+                        Self.logger.error("transcription_empty")
+                        self.phaseHandler(.failed("Parakeet returned no dictation text."))
+                        return
+                    }
+                    do {
+                        try PasteInjector.paste(result)
+                        Self.logger.notice(
+                            "transcription_completed characters=\(result.count, privacy: .public)"
+                        )
+                        self.resultHandler(result)
+                        self.phaseHandler(.ready)
+                    } catch {
+                        Self.logger.error(
+                            "paste_failed error=\(error.localizedDescription, privacy: .public)"
+                        )
+                        self.resultHandler(result)
+                        self.phaseHandler(.failed(error.localizedDescription))
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self, self.generation == generation else { return }
+                    self.transcriptionTask = nil
+                    Self.logger.error(
+                        "transcription_failed error=\(error.localizedDescription, privacy: .public)"
+                    )
+                    self.phaseHandler(.failed(error.localizedDescription))
+                }
+            }
+        }
+
+    }
+
+    private func cancelRecording(nextPhase: DictationPhase) {
+        microphoneCapture?.stop()
+        pipeline?.finish()
+        microphoneCapture = nil
+        pipeline = nil
+        audioBuffer = nil
+        recordingID = nil
+        recordingHandler(false)
+        phaseHandler(nextPhase)
+    }
+
+    deinit {
+        disable()
+    }
+}
+
+enum PCM16SignalGate {
+    /// Avoids passing silence to a bounded ASR model. Some Core ML execution
+    /// paths cannot construct a valid encoder tensor for all-silence input.
+    static func containsAudibleSignal(
+        _ pcm16Audio: Data,
+        minimumPeak: Int32 = 64
+    ) -> Bool {
+        peakMagnitude(pcm16Audio) >= minimumPeak
+    }
+
+    static func peakMagnitude(_ pcm16Audio: Data) -> Int32 {
+        pcm16Audio.withUnsafeBytes { rawBuffer in
+            rawBuffer.bindMemory(to: Int16.self).reduce(into: Int32(0)) { peak, sample in
+                peak = max(peak, abs(Int32(sample)))
+            }
+        }
+    }
+}
+
+private final class LockedAudioBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func take() -> Data {
+        lock.lock()
+        defer {
+            data.removeAll(keepingCapacity: false)
+            lock.unlock()
+        }
+        return data
+    }
+}
+
+enum PasteInjector {
+    static func paste(_ text: String) throws {
+        guard AXIsProcessTrusted() else {
+            throw MeetingCopilotError.audio(
+                "Accessibility permission is required to paste dictation into another app."
+            )
+        }
+
+        let pasteboard = NSPasteboard.general
+        let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+        }
+        let insertedChangeCount = pasteboard.changeCount
+
+        guard
+            let keyDown = CGEvent(
+                keyboardEventSource: nil,
+                virtualKey: 9,
+                keyDown: true
+            ),
+            let keyUp = CGEvent(
+                keyboardEventSource: nil,
+                virtualKey: 9,
+                keyDown: false
+            )
+        else {
+            throw MeetingCopilotError.audio("Could not create the paste keyboard event.")
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(600)) {
+            guard pasteboard.changeCount == insertedChangeCount else { return }
+            pasteboard.clearContents()
+            if !previousItems.isEmpty {
+                pasteboard.writeObjects(previousItems)
+            }
+        }
+    }
+
+    private static func copyItems(_ items: [NSPasteboardItem]) -> [NSPasteboardItem] {
+        items.map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        }
+    }
+}

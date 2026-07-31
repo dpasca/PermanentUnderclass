@@ -25,7 +25,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Meeting Copilot uses the microphone to transcribe your side of a meeting.</string>
+    <string>Meeting Copilot uses the microphone for meeting transcription and hold-to-dictate.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Meeting Copilot captures the selected meeting app’s audio to transcribe the other participant.</string>
 </dict>

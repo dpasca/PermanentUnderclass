@@ -1,4 +1,5 @@
 import AVFAudio
+import CoreGraphics
 import XCTest
 @testable import MeetingCopilot
 
@@ -236,5 +237,116 @@ final class MeetingCopilotTests: XCTestCase {
         monitor.stop()
 
         XCTAssertEqual(observedDevice, expectedDevice)
+    }
+
+    func testAudioProcessSelectionSurvivesCoreAudioObjectReplacement() {
+        let previous = AudioProcessInfo(
+            id: 41,
+            pid: 1_001,
+            name: "LINE.MediaService",
+            bundleIdentifier: "jp.naver.line.mac",
+            isProducingOutput: true
+        )
+        let replacement = AudioProcessInfo(
+            id: 77,
+            pid: 2_002,
+            name: "LINE.MediaService",
+            bundleIdentifier: "jp.naver.line.mac",
+            isProducingOutput: true
+        )
+        let unrelated = AudioProcessInfo(
+            id: 88,
+            pid: 3_003,
+            name: "Music",
+            bundleIdentifier: "com.apple.Music",
+            isProducingOutput: true
+        )
+
+        XCTAssertEqual(
+            AudioProcessSelectionResolver.resolve(
+                previous: previous,
+                candidates: [unrelated, replacement]
+            ),
+            replacement
+        )
+    }
+
+    func testAudioProcessSelectionPrefersSamePIDWhenObjectIDChanges() {
+        let previous = AudioProcessInfo(
+            id: 41,
+            pid: 1_001,
+            name: "Old helper name",
+            bundleIdentifier: nil,
+            isProducingOutput: true
+        )
+        let replacement = AudioProcessInfo(
+            id: 77,
+            pid: 1_001,
+            name: "New helper name",
+            bundleIdentifier: nil,
+            isProducingOutput: true
+        )
+
+        XCTAssertEqual(
+            AudioProcessSelectionResolver.resolve(
+                previous: previous,
+                candidates: [replacement]
+            ),
+            replacement
+        )
+    }
+
+    func testModifierOnlyDictationChordStartsAndStops() {
+        var state = ModifierHoldState()
+
+        XCTAssertNil(state.update(flags: .maskCommand))
+        XCTAssertEqual(
+            state.update(flags: [.maskCommand, .maskAlternate]),
+            .pressed
+        )
+        XCTAssertTrue(state.isHeld)
+        XCTAssertNil(state.update(flags: [.maskCommand, .maskAlternate]))
+        XCTAssertEqual(state.update(flags: .maskCommand), .released)
+        XCTAssertFalse(state.isHeld)
+    }
+
+    func testModifierChordRejectsAdditionalModifiers() {
+        var state = ModifierHoldState()
+
+        XCTAssertNil(
+            state.update(flags: [.maskCommand, .maskAlternate, .maskShift])
+        )
+        XCTAssertFalse(state.isHeld)
+    }
+
+    func testTypingAnotherKeyCancelsModifierOnlyDictation() {
+        var state = ModifierHoldState()
+
+        XCTAssertEqual(
+            state.update(flags: [.maskCommand, .maskAlternate]),
+            .pressed
+        )
+        XCTAssertEqual(state.cancelForKeyDown(), .cancelled)
+        XCTAssertFalse(state.isHeld)
+        XCTAssertNil(state.cancelForKeyDown())
+    }
+
+    func testQuickDictationDoesNotSendSilenceToParakeet() {
+        let silence = Data(repeating: 0, count: 9_600)
+        XCTAssertFalse(PCM16SignalGate.containsAudibleSignal(silence))
+
+        var audible = Data(repeating: 0, count: 9_600)
+        withUnsafeBytes(of: Int16(65).littleEndian) { bytes in
+            audible.replaceSubrange(100..<102, with: bytes)
+        }
+        XCTAssertTrue(PCM16SignalGate.containsAudibleSignal(audible))
+    }
+
+    func testLoadingDictationStateTellsTheUserToWait() {
+        XCTAssertEqual(DictationPhase.preparing.label, "Loading Parakeet…")
+        XCTAssertEqual(
+            DictationPhase.preparing.detail,
+            "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+        )
     }
 }

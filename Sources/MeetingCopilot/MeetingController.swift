@@ -21,6 +21,12 @@ final class MeetingController: ObservableObject {
     @Published var errorMessage: String?
     @Published var keyStatus = ""
     @Published var microphoneName = "System default microphone"
+    @Published var dictationEnabled = false
+    @Published var dictationPhase: DictationPhase = .off
+    @Published var dictationPermissions = HoldToDictateService.currentPermissions()
+    @Published var isDictating = false
+    @Published var dictationTelemetry = TrackTelemetry()
+    @Published var lastDictation = ""
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -35,6 +41,10 @@ final class MeetingController: ObservableObject {
     private var inputDeviceMonitor: DefaultInputDeviceMonitor?
     private var microphoneRestartWorkItem: DispatchWorkItem?
     private var microphoneCaptureGeneration: UUID?
+    private var dictationService: HoldToDictateService?
+
+    private static let dictationEnabledDefaultsKey =
+        "MeetingCopilot.HoldToDictateEnabled"
 
     init() {
         apiKeyDraft = KeychainStore.loadAPIKey()
@@ -54,16 +64,32 @@ final class MeetingController: ObservableObject {
         } catch {
             present(error)
         }
+
+        if UserDefaults.standard.bool(forKey: Self.dictationEnabledDefaultsKey) {
+            dictationEnabled = true
+            DispatchQueue.main.async { [weak self] in
+                self?.startDictationService(requestAccess: false)
+            }
+        }
     }
 
     func refreshProcesses() {
         do {
-            let previous = selectedProcessID
-            processes = try AudioProcessCatalog.load()
-            if let previous, processes.contains(where: { $0.id == previous }) {
-                selectedProcessID = previous
+            let previous = selectedProcessID.flatMap { selectedID in
+                processes.first(where: { $0.id == selectedID })
+            }
+            let refreshed = try AudioProcessCatalog.load()
+            processes = refreshed
+            if
+                let previous,
+                let resolved = AudioProcessSelectionResolver.resolve(
+                    previous: previous,
+                    candidates: refreshed
+                )
+            {
+                selectedProcessID = resolved.id
             } else {
-                selectedProcessID = processes.first(where: \.isProducingOutput)?.id
+                selectedProcessID = refreshed.first(where: \.isProducingOutput)?.id
             }
             if processes.isEmpty {
                 statusMessage = "Open the meeting application, then refresh the list."
@@ -91,11 +117,20 @@ final class MeetingController: ObservableObject {
     func startMeeting() {
         errorMessage = nil
         do {
+            guard !isDictating else {
+                throw MeetingCopilotError.audio(
+                    "Release the Quick Dictation shortcut before starting meeting capture."
+                )
+            }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw MeetingCopilotError.noAPIKey }
-            guard let selectedProcessID else {
+            guard
+                let selectedProcessID,
+                let previousSelection = processes.first(where: { $0.id == selectedProcessID })
+            else {
                 throw MeetingCopilotError.noProcessSelected
             }
+            let selectedProcess = try refreshSelection(previous: previousSelection)
             let context = try transcriptionContext()
             refinementClient?.disconnect()
             markRefiningTurnsLiveOnly(
@@ -195,8 +230,18 @@ final class MeetingController: ObservableObject {
             refinementClient.connect()
 
             let processCapture = ProcessTapCapture()
-            try processCapture.start(processObjectID: selectedProcessID) { buffer in
-                remotePipeline.submit(buffer)
+            do {
+                try processCapture.start(processObjectID: selectedProcess.id) { buffer in
+                    remotePipeline.submit(buffer)
+                }
+            } catch {
+                let retriedSelection = try refreshSelection(previous: selectedProcess)
+                guard retriedSelection.id != selectedProcess.id else {
+                    throw error
+                }
+                try processCapture.start(processObjectID: retriedSelection.id) { buffer in
+                    remotePipeline.submit(buffer)
+                }
             }
             self.processCapture = processCapture
 
@@ -263,6 +308,36 @@ final class MeetingController: ObservableObject {
         localPipeline?.finish()
         localClient?.commitPendingAudio()
         statusMessage = "Finishing your current turn…"
+    }
+
+    func setDictationEnabled(_ enabled: Bool) {
+        dictationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.dictationEnabledDefaultsKey)
+        if enabled {
+            startDictationService(requestAccess: true)
+        } else {
+            dictationService?.disable()
+            dictationPhase = .off
+            isDictating = false
+        }
+    }
+
+    func requestDictationPermissions() {
+        dictationPermissions = HoldToDictateService.requestPermissions { [weak self] in
+            self?.refreshDictationPermissions()
+        }
+        if dictationEnabled {
+            startDictationService(requestAccess: false)
+        } else if !dictationPermissions.allGranted {
+            dictationPhase = .needsPermission
+        }
+    }
+
+    func refreshDictationPermissions() {
+        dictationPermissions = HoldToDictateService.currentPermissions()
+        if dictationEnabled, dictationPermissions.allGranted {
+            startDictationService(requestAccess: false)
+        }
     }
 
     func clearTranscript() {
@@ -435,6 +510,73 @@ final class MeetingController: ObservableObject {
         .joined(separator: "\n\n")
     }
 
+    private func startDictationService(requestAccess: Bool) {
+        let service: HoldToDictateService
+        if let dictationService {
+            service = dictationService
+        } else {
+            let created = HoldToDictateService(
+                canRecord: { [weak self] in
+                    self?.isListening == false
+                },
+                expectedLanguages: { [weak self] in
+                    self?.dictationLanguages() ?? ["en"]
+                },
+                onPhase: { [weak self] phase in
+                    self?.dictationPhase = phase
+                },
+                onPermissions: { [weak self] permissions in
+                    self?.dictationPermissions = permissions
+                },
+                onRecording: { [weak self] recording in
+                    guard let self else { return }
+                    self.isDictating = recording
+                    if recording {
+                        self.dictationTelemetry = TrackTelemetry(
+                            sourceFormat: "Starting \(self.microphoneName)…"
+                        )
+                    }
+                },
+                onTelemetry: { [weak self] telemetry in
+                    self?.dictationTelemetry = telemetry
+                },
+                onResult: { [weak self] text in
+                    self?.lastDictation = text
+                }
+            )
+            dictationService = created
+            service = created
+        }
+        _ = service.enable(requestAccess: requestAccess)
+    }
+
+    private func dictationLanguages() -> [String] {
+        let separators = CharacterSet(charactersIn: ", \n\t")
+        let languages = languagesText
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return languages.isEmpty ? ["en"] : languages
+    }
+
+    private func refreshSelection(
+        previous: AudioProcessInfo
+    ) throws -> AudioProcessInfo {
+        let refreshed = try AudioProcessCatalog.load()
+        processes = refreshed
+        guard let resolved = AudioProcessSelectionResolver.resolve(
+            previous: previous,
+            candidates: refreshed
+        ) else {
+            selectedProcessID = refreshed.first(where: \.isProducingOutput)?.id
+            throw MeetingCopilotError.audio(
+                "\(previous.name) stopped or restarted and its new audio process could not be matched. The process list was refreshed; select it again."
+            )
+        }
+        selectedProcessID = resolved.id
+        return resolved
+    }
+
     private func handleDefaultInputDeviceChange(_ device: AudioInputDeviceInfo?) {
         let previousDeviceID = defaultInputDeviceID
         defaultInputDeviceID = device?.id
@@ -592,6 +734,7 @@ final class MeetingController: ObservableObject {
     }
 
     deinit {
+        dictationService?.disable()
         inputDeviceMonitor?.stop()
         stopImmediately()
     }

@@ -23,9 +23,11 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio")
             ],
             linkerSettings: [
+                .linkedFramework("ApplicationServices"),
                 .linkedFramework("AVFAudio"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreGraphics"),
                 .linkedFramework("Security"),
                 .linkedFramework("SwiftUI")
             ]

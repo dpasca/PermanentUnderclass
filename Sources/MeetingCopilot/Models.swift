@@ -114,6 +114,70 @@ struct TrackViewState: Equatable {
     var lastItemID = ""
 }
 
+struct DictationPermissionState: Equatable {
+    var canMonitorKeyboard: Bool
+    var canPasteIntoOtherApps: Bool
+    var canUseMicrophone: Bool
+
+    var allGranted: Bool {
+        canMonitorKeyboard && canPasteIntoOtherApps && canUseMicrophone
+    }
+
+    var detail: String {
+        if allGranted {
+            return "Accessibility and Microphone are enabled."
+        }
+        var missing: [String] = []
+        if !canMonitorKeyboard || !canPasteIntoOtherApps {
+            missing.append("Accessibility")
+        }
+        if !canUseMicrophone {
+            missing.append("Microphone")
+        }
+        return "\(missing.joined(separator: " and ")) access is required."
+    }
+}
+
+enum DictationPhase: Equatable {
+    case off
+    case needsPermission
+    case preparing
+    case ready
+    case recording
+    case transcribing
+    case failed(String)
+
+    var label: String {
+        switch self {
+        case .off:
+            "Off"
+        case .needsPermission:
+            "Needs permission"
+        case .preparing:
+            "Loading Parakeet…"
+        case .ready:
+            "Ready"
+        case .recording:
+            "Listening…"
+        case .transcribing:
+            "Transcribing…"
+        case .failed:
+            "Needs attention"
+        }
+    }
+
+    var detail: String? {
+        switch self {
+        case .preparing:
+            return "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+        case let .failed(message):
+            return message
+        default:
+            return nil
+        }
+    }
+}
+
 enum TranscriptionDelay: String, CaseIterable, Identifiable {
     case minimal
     case low
