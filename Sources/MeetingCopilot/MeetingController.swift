@@ -34,6 +34,7 @@ final class MeetingController: ObservableObject {
     @Published var isDictating = false
     @Published var dictationTelemetry = TrackTelemetry()
     @Published var lastDictation = ""
+    @Published private(set) var quickDictationHistory: [QuickDictationHistoryEntry] = []
     @Published private(set) var parakeetPreparation = ParakeetPreparationState()
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
@@ -58,6 +59,7 @@ final class MeetingController: ObservableObject {
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
     private let dictationOverlay = QuickDictationOverlayController()
+    private let quickDictationHistoryStore: QuickDictationHistoryStore
 
     private static let dictationEnabledDefaultsKey =
         "MeetingCopilot.HoldToDictateEnabled"
@@ -66,7 +68,10 @@ final class MeetingController: ObservableObject {
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
 
-    init() {
+    init(
+        quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport()
+    ) {
+        self.quickDictationHistoryStore = quickDictationHistoryStore
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
@@ -74,6 +79,13 @@ final class MeetingController: ObservableObject {
             forKey: Self.dictationPreviewEnabledDefaultsKey
         ) as? Bool ?? true
         dictationOverlay.setEnabled(dictationPreviewEnabled)
+        do {
+            quickDictationHistory = try quickDictationHistoryStore.load()
+            lastDictation = quickDictationHistory.first?.text ?? ""
+        } catch {
+            errorMessage = "Quick Dictation history could not be loaded: \(error.localizedDescription)"
+            statusMessage = "Quick Dictation history needs attention"
+        }
         refreshAudioDevices()
         refreshProcesses()
 
@@ -499,6 +511,44 @@ final class MeetingController: ObservableObject {
         remoteTrack.partialTranscript = ""
     }
 
+    @discardableResult
+    func copyQuickDictationToClipboard(_ entry: QuickDictationHistoryEntry) -> Bool {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setString(entry.text, forType: .string) else {
+            errorMessage = "The quick dictation could not be copied to the clipboard."
+            statusMessage = "Needs attention"
+            return false
+        }
+        statusMessage = "Quick dictation copied"
+        return true
+    }
+
+    func deleteQuickDictation(_ entry: QuickDictationHistoryEntry) {
+        let updated = quickDictationHistory.filter { $0.id != entry.id }
+        guard updated.count != quickDictationHistory.count else { return }
+        do {
+            try quickDictationHistoryStore.save(updated)
+            quickDictationHistory = updated
+            lastDictation = updated.first?.text ?? ""
+            statusMessage = "Quick dictation deleted"
+        } catch {
+            presentQuickDictationHistoryError(action: "deleted", error: error)
+        }
+    }
+
+    func deleteAllQuickDictations() {
+        guard !quickDictationHistory.isEmpty else { return }
+        do {
+            try quickDictationHistoryStore.save([])
+            quickDictationHistory = []
+            lastDictation = ""
+            statusMessage = "Quick Dictation history erased"
+        } catch {
+            presentQuickDictationHistoryError(action: "erased", error: error)
+        }
+    }
+
     func resetAPIExpenses() {
         apiExpenses = APIExpenseSummary()
     }
@@ -811,9 +861,10 @@ final class MeetingController: ObservableObject {
                     self?.dictationOverlay.update(partialTranscript: text)
                 },
                 onResult: { [weak self] text in
-                    self?.lastDictation = text
-                    self?.dictationPartialTranscript = text
-                    self?.dictationOverlay.show(result: text)
+                    guard let self else { return }
+                    self.recordQuickDictation(text)
+                    self.dictationPartialTranscript = text
+                    self.dictationOverlay.show(result: text)
                 },
                 onUsage: { [weak self] usage in
                     self?.recordOpenAIUsage(usage)
@@ -837,6 +888,23 @@ final class MeetingController: ObservableObject {
         var updated = apiExpenses
         updated.record(usage)
         apiExpenses = updated
+    }
+
+    private func recordQuickDictation(_ text: String) {
+        let entry = QuickDictationHistoryEntry(text: text)
+        quickDictationHistory.insert(entry, at: 0)
+        lastDictation = text
+        do {
+            try quickDictationHistoryStore.save(quickDictationHistory)
+        } catch {
+            presentQuickDictationHistoryError(action: "saved", error: error)
+        }
+    }
+
+    private func presentQuickDictationHistoryError(action: String, error: Error) {
+        errorMessage =
+            "Quick Dictation history could not be \(action): \(error.localizedDescription)"
+        statusMessage = "Quick Dictation history needs attention"
     }
 
     private func configureReferenceLibrary() {

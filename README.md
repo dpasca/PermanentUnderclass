@@ -107,6 +107,12 @@ The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
 paused while meeting capture is using the microphone.
 
+The main window's **Quick Dictations** tab keeps completed dictation text in
+newest-first order. Each entry can be copied back to the clipboard or deleted,
+and **Erase All** clears the complete history after confirmation. This text is
+stored locally in the current user's Application Support folder until it is
+erased; dictation audio is never retained in the history.
+
 PUnderclass speculatively prepares Local Parakeet in the background at launch,
 even when GPT-Transcribe is selected. A model-panel hint shows the current
 download/load phase and elapsed time. This warmup does not gate the selected
@@ -166,9 +172,11 @@ The proof of concept includes:
   modifier-only Command-Option monitoring, and automatic paste into the focused
   application.
 
-Audio and transcripts remain in memory. Per-turn PCM is retained only long
-enough to perform the second pass. Diagnostic audio recording is not
-implemented and no meeting audio is written to disk.
+Audio and meeting transcripts remain in memory. Quick Dictation final text is
+the exception: it is stored locally for the history tab until the user erases
+it. Per-turn PCM is retained only long enough to perform the second pass.
+Diagnostic audio recording is not implemented and no meeting or dictation
+audio is written to disk.
 
 FluidAudio is Apache-2.0 licensed. NVIDIA Parakeet TDT 0.6B v3 is available
 under CC BY 4.0. Distribution attribution is recorded in

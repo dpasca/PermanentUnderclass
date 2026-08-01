@@ -790,6 +790,54 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(cloud is RealtimeRefinementClient)
     }
 
+    func testQuickDictationHistoryPersistsNewestFirst() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let historyURL = folder.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let older = QuickDictationHistoryEntry(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            createdAt: Date(timeIntervalSince1970: 1_000),
+            text: "First dictation"
+        )
+        let newer = QuickDictationHistoryEntry(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            text: "A later dictation with 日本語 and\na second line"
+        )
+        let store = QuickDictationHistoryStore(fileURL: historyURL)
+
+        XCTAssertEqual(try store.load(), [])
+        try store.save([older, newer])
+
+        XCTAssertEqual(try store.load(), [newer, older])
+    }
+
+    func testQuickDictationHistoryCanPersistDeletionAndEraseAll() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let historyURL = folder.appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let first = QuickDictationHistoryEntry(
+            createdAt: Date(timeIntervalSince1970: 1_000),
+            text: "Keep me"
+        )
+        let second = QuickDictationHistoryEntry(
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            text: "Delete me"
+        )
+        let store = QuickDictationHistoryStore(fileURL: historyURL)
+
+        try store.save([second, first])
+        try store.save([first])
+        XCTAssertEqual(try store.load(), [first])
+
+        try store.save([])
+        XCTAssertEqual(try store.load(), [])
+    }
+
     func testLiveDictationPreviewWaitsForEnoughNewAudio() {
         let minimum = QuickDictationLivePreviewPolicy.minimumAudioBytes
         let increment = QuickDictationLivePreviewPolicy.minimumAdditionalAudioBytes

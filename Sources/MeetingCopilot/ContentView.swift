@@ -3,11 +3,47 @@ import CoreAudio
 import SwiftUI
 
 struct ContentView: View {
+    private enum AppTab: Hashable {
+        case meeting
+        case quickDictations
+    }
+
     @ObservedObject var controller: MeetingController
     @State private var contextExpanded = false
     @State private var expenseExpanded = false
+    @State private var selectedTab: AppTab = .meeting
 
     var body: some View {
+        TabView(selection: $selectedTab) {
+            meetingTab
+                .tabItem {
+                    Label("Meeting", systemImage: "waveform")
+                }
+                .tag(AppTab.meeting)
+
+            QuickDictationHistoryView(controller: controller)
+                .tabItem {
+                    Label("Quick Dictations", systemImage: "clock.arrow.circlepath")
+                }
+                .badge(controller.quickDictationHistory.count)
+                .tag(AppTab.quickDictations)
+        }
+        .frame(minWidth: 1_000, minHeight: 760)
+        .onAppear {
+            contextExpanded = controller.apiKeyDraft.isEmpty
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            controller.refreshDictationPermissions()
+            controller.refreshAudioDevices()
+            controller.refreshProcesses()
+        }
+    }
+
+    private var meetingTab: some View {
         ScrollView {
             VStack(spacing: 12) {
                 header
@@ -46,19 +82,6 @@ struct ContentView: View {
                 contextPanel
             }
             .padding(16)
-        }
-        .frame(minWidth: 1_000, minHeight: 760)
-        .onAppear {
-            contextExpanded = controller.apiKeyDraft.isEmpty
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )
-        ) { _ in
-            controller.refreshDictationPermissions()
-            controller.refreshAudioDevices()
-            controller.refreshProcesses()
         }
     }
 
