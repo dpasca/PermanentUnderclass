@@ -72,6 +72,8 @@ The proof of concept includes:
   capture restart when devices are connected, removed, or reconfigured.
 - 24 kHz mono PCM16 conversion and bounded 20 ms audio chunks.
 - Two independent `gpt-live-transcribe` WebSocket sessions.
+- An always-visible model dashboard showing the live model, exact final-model
+  names, what each pass does, and button-style final-model selection.
 - A selectable final-transcript engine:
   - **Local Parakeet** embeds FluidAudio and NVIDIA Parakeet TDT 0.6B v3 using
     Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
@@ -96,6 +98,11 @@ The proof of concept includes:
   combined final transcript. Each finalized turn is labeled **Refining**,
   **Refined**, or **Live only**; when refinement changes the wording, the
   original live result remains visible for comparison.
+- A main-screen audio-device dashboard with explicit microphone and system
+  output names. Stream health distinguishes ready, checking, healthy, dropped
+  buffers, missing permission/device, and stopped packet flow. The microphone
+  and speaker pull-down buttons list compatible devices and change the current
+  macOS default input or output without opening System Settings.
 - Optional global hold-to-dictate using the same embedded Parakeet model,
   modifier-only Command-Option monitoring, and automatic paste into the focused
   application.

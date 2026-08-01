@@ -7,6 +7,16 @@ struct AudioInputDeviceInfo: Equatable {
     let name: String
 }
 
+struct AudioOutputDeviceInfo: Equatable {
+    let id: AudioObjectID
+    let name: String
+}
+
+struct AudioDeviceOption: Identifiable, Equatable {
+    let id: AudioObjectID
+    let name: String
+}
+
 enum CoreAudioUtilities {
     static func address(
         _ selector: AudioObjectPropertySelector,
@@ -168,6 +178,110 @@ enum CoreAudioUtilities {
 
     static func defaultInputDeviceName() -> String {
         defaultInputDevice()?.name ?? "No input device"
+    }
+
+    static func defaultOutputDevice() -> AudioOutputDeviceInfo? {
+        var propertyAddress = address(kAudioHardwarePropertyDefaultOutputDevice)
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &size,
+            &deviceID
+        )
+        guard status == noErr, deviceID != kAudioObjectUnknown else {
+            return nil
+        }
+        let name = (try? string(
+            objectID: deviceID,
+            selector: kAudioObjectPropertyName
+        )) ?? "System default output"
+        return AudioOutputDeviceInfo(id: deviceID, name: name)
+    }
+
+    static func availableInputDevices() throws -> [AudioDeviceOption] {
+        try availableDevices(
+            scope: kAudioObjectPropertyScopeInput,
+            defaultDeviceID: defaultInputDevice()?.id
+        )
+    }
+
+    static func availableOutputDevices() throws -> [AudioDeviceOption] {
+        try availableDevices(
+            scope: kAudioObjectPropertyScopeOutput,
+            defaultDeviceID: defaultOutputDevice()?.id
+        )
+    }
+
+    static func setDefaultInputDevice(_ deviceID: AudioObjectID) throws {
+        try setDefaultDevice(
+            deviceID,
+            selector: kAudioHardwarePropertyDefaultInputDevice,
+            operation: "Change the default microphone"
+        )
+    }
+
+    static func setDefaultOutputDevice(_ deviceID: AudioObjectID) throws {
+        try setDefaultDevice(
+            deviceID,
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            operation: "Change the default audio output"
+        )
+    }
+
+    private static func availableDevices(
+        scope: AudioObjectPropertyScope,
+        defaultDeviceID: AudioObjectID?
+    ) throws -> [AudioDeviceOption] {
+        let deviceIDs = try objectIDs(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyDevices
+        )
+        let devices = deviceIDs.compactMap { deviceID -> AudioDeviceOption? in
+            let streams = try? objectIDs(
+                objectID: deviceID,
+                selector: kAudioDevicePropertyStreams,
+                scope: scope
+            )
+            guard streams?.isEmpty == false else { return nil }
+            guard let name = try? string(
+                objectID: deviceID,
+                selector: kAudioObjectPropertyName
+            ) else {
+                return nil
+            }
+            return AudioDeviceOption(id: deviceID, name: name)
+        }
+        return devices.sorted { lhs, rhs in
+            if lhs.id == rhs.id { return false }
+            if lhs.id == defaultDeviceID { return true }
+            if rhs.id == defaultDeviceID { return false }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private static func setDefaultDevice(
+        _ deviceID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        operation: String
+    ) throws {
+        var propertyAddress = address(selector)
+        var mutableDeviceID = deviceID
+        let size = UInt32(MemoryLayout<AudioObjectID>.size)
+        try check(
+            AudioObjectSetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &propertyAddress,
+                0,
+                nil,
+                size,
+                &mutableDeviceID
+            ),
+            operation: operation
+        )
     }
 }
 

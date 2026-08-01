@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import SwiftUI
 
 struct ContentView: View {
@@ -6,35 +7,46 @@ struct ContentView: View {
     @State private var contextExpanded = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            header
-            setupBar
-            dictationBar
+        ScrollView {
+            VStack(spacing: 12) {
+                header
+                mainControls
+                dictationBar
 
-            if let error = controller.errorMessage {
-                errorBanner(error)
+                if let error = controller.errorMessage {
+                    errorBanner(error)
+                }
+
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    HStack(spacing: 16) {
+                        TrackCard(
+                            title: "MICROPHONE INPUT",
+                            systemImage: "mic.fill",
+                            subtitle: controller.microphoneName,
+                            color: .blue,
+                            state: controller.isDictating
+                                ? TrackViewState(telemetry: controller.dictationTelemetry)
+                                : controller.localTrack,
+                            health: controller.microphoneHealth(at: timeline.date)
+                        )
+                        TrackCard(
+                            title: "MEETING APP AUDIO",
+                            systemImage: "macwindow.on.rectangle",
+                            subtitle: selectedProcessName,
+                            color: .purple,
+                            state: controller.remoteTrack,
+                            health: controller.meetingAudioHealth(at: timeline.date)
+                        )
+                    }
+                }
+
+                transcriptPanel
+                    .frame(minHeight: 180)
+                contextPanel
             }
-
-            HStack(spacing: 16) {
-                TrackCard(
-                    title: "YOU",
-                    subtitle: controller.microphoneName,
-                    color: .blue,
-                    state: controller.localTrack
-                )
-                TrackCard(
-                    title: "OTHER",
-                    subtitle: selectedProcessName,
-                    color: .purple,
-                    state: controller.remoteTrack
-                )
-            }
-
-            transcriptPanel
-            contextPanel
+            .padding(16)
         }
-        .padding(20)
-        .frame(minWidth: 1_000, minHeight: 720)
+        .frame(minWidth: 1_000, minHeight: 760)
         .onAppear {
             contextExpanded = controller.apiKeyDraft.isEmpty
         }
@@ -44,6 +56,7 @@ struct ContentView: View {
             )
         ) { _ in
             controller.refreshDictationPermissions()
+            controller.refreshAudioDevices()
             controller.refreshProcesses()
         }
     }
@@ -52,17 +65,13 @@ struct ContentView: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Meeting Copilot")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                 Text(controller.statusMessage)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text("FINAL")
-                .font(.callout.bold())
-                .foregroundStyle(.secondary)
-            SocketBadge(state: controller.refinementState, color: .green)
-            Label("HEADPHONES", systemImage: "headphones")
+            Label("Headphones required", systemImage: "headphones")
                 .font(.callout.bold())
                 .foregroundStyle(.secondary)
             Button("Finish My Turn", action: controller.finalizeLocalTurn)
@@ -85,41 +94,145 @@ struct ContentView: View {
         }
     }
 
-    private var setupBar: some View {
-        HStack(spacing: 10) {
-            Text("Meeting app")
-                .font(.callout.weight(.medium))
-            Picker("Meeting app", selection: $controller.selectedProcessID) {
-                Text("Select an audio process").tag(Optional<UInt32>.none)
-                ForEach(controller.processes) { process in
-                    Text(process.displayName).tag(Optional(process.id))
+    private var mainControls: some View {
+        HStack(alignment: .top, spacing: 12) {
+            modelPanel
+            audioRoutePanel
+                .frame(width: 390)
+        }
+    }
+
+    private var modelPanel: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("Transcription models", systemImage: "cpu")
+                    .font(.headline)
+                Spacer()
+                Text("Final")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                SocketBadge(state: controller.refinementState, color: .green)
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                Text("LIVE")
+                    .font(.caption.bold())
+                    .foregroundStyle(.blue)
+                    .frame(width: 42, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(RealtimeTranscriptionClient.model)
+                        .font(.callout.monospaced().weight(.semibold))
+                    Text("Fast streaming text for both audio sources")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("ALWAYS ON")
+                    .font(.caption.bold())
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.blue.opacity(0.11), in: Capsule())
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(alignment: .center, spacing: 7) {
+                Text("FINAL")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
+                    .frame(width: 42, alignment: .leading)
+                ForEach(TranscriptRefinementEngine.allCases) { engine in
+                    ModelChoiceButton(
+                        engine: engine,
+                        isSelected: controller.refinementEngine == engine,
+                        isDisabled: controller.isListening,
+                        action: { controller.refinementEngine = engine }
+                    )
                 }
             }
-            .labelsHidden()
-            .frame(maxWidth: .infinity)
-            .disabled(controller.isListening)
-
-            Button {
-                controller.refreshProcesses()
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .disabled(controller.isListening)
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .padding(10)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.separator.opacity(0.45), lineWidth: 1)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var audioRoutePanel: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Audio devices", systemImage: "waveform")
+                    .font(.headline)
+
+                AudioDeviceRow(
+                    title: "MICROPHONE INPUT",
+                    name: controller.microphoneName,
+                    systemImage: "mic.fill",
+                    health: controller.microphoneHealth(at: timeline.date),
+                    devices: controller.inputDevices,
+                    selectedDeviceID: controller.selectedInputDeviceID,
+                    onSelect: controller.selectInputDevice
+                )
+
+                AudioDeviceRow(
+                    title: "SYSTEM OUTPUT",
+                    name: controller.audioOutputName,
+                    systemImage: "speaker.wave.2.fill",
+                    isConnected: controller.audioOutputAvailable,
+                    devices: controller.outputDevices,
+                    selectedDeviceID: controller.selectedOutputDeviceID,
+                    onSelect: controller.selectOutputDevice
+                )
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .foregroundStyle(.purple)
+                        .frame(width: 20)
+                    Picker("Meeting app", selection: $controller.selectedProcessID) {
+                        Text("Select meeting audio").tag(Optional<UInt32>.none)
+                        ForEach(controller.processes) { process in
+                            Text(process.displayName).tag(Optional(process.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .disabled(controller.isListening)
+
+                    Button {
+                        controller.refreshProcesses()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh meeting audio sources")
+                    .disabled(controller.isListening)
+                }
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(.separator.opacity(0.45), lineWidth: 1)
+            }
+        }
     }
 
     private var dictationBar: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Label("Quick Dictation", systemImage: "keyboard.badge.ellipsis")
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Label("Quick Dictation", systemImage: "mic.badge.plus")
                     .font(.headline)
                 Circle()
                     .fill(dictationColor)
                     .frame(width: 8, height: 8)
                 Text(controller.dictationPhase.label)
-                    .font(.body)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if controller.isDictating {
                     ProgressView()
@@ -127,7 +240,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 Text("Hold ⌘ + ⌥")
-                    .font(.body.monospaced().weight(.semibold))
+                    .font(.callout.monospaced().weight(.semibold))
                 Button(
                     controller.dictationPermissions.allGranted
                         ? "Check Access"
@@ -146,7 +259,7 @@ struct ContentView: View {
             }
 
             if controller.dictationEnabled {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Text(controller.microphoneName)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
@@ -155,19 +268,19 @@ struct ContentView: View {
                         samples: controller.dictationTelemetry.waveform,
                         color: controller.isDictating ? .red : .secondary
                     )
-                    .frame(height: 28)
+                    .frame(height: 24)
                     LevelBar(
                         label: "RMS",
                         value: controller.dictationTelemetry.rms,
                         color: controller.isDictating ? .red : .secondary
                     )
-                    .frame(width: 170)
+                    .frame(width: 150)
                     LevelBar(
                         label: "PEAK",
                         value: controller.dictationTelemetry.peak,
                         color: controller.isDictating ? .red : .secondary
                     )
-                    .frame(width: 170)
+                    .frame(width: 150)
                     Text("\(controller.dictationTelemetry.packets) packets")
                         .font(.callout.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -196,7 +309,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(10)
         .background(
             controller.isDictating
                 ? Color.red.opacity(0.10)
@@ -334,33 +447,18 @@ struct ContentView: View {
                         }
                     }
                     .frame(width: 180)
-                    Picker("Final transcript", selection: $controller.refinementEngine) {
-                        ForEach(TranscriptRefinementEngine.allCases) { engine in
-                            Text(engine.title).tag(engine)
-                        }
-                    }
-                    .frame(width: 230)
-                    .disabled(controller.isListening)
                     Button("Apply Context", action: controller.applyContext)
                 }
                 Text("For specialized discussions, add exact vocabulary before the meeting—for example CUDA, thread block, and warp. Medium is the recommended starting point for balanced accuracy and latency.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text(controller.refinementEngine.detail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                if controller.refinementEngine == .localParakeet {
-                    Text("The first local run downloads and compiles the Parakeet model, then keeps it warm inside Meeting Copilot. No MacParakeet app or process is used.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
                 Text("Prototype security: the long-lived key stays in this Mac’s Keychain. Use an internal short-lived-token broker before deployment.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 10)
         } label: {
-            Label("Transcription context and API", systemImage: "slider.horizontal.3")
+            Label("Context, accuracy and API", systemImage: "slider.horizontal.3")
                 .font(.headline)
         }
         .padding(12)
@@ -369,21 +467,244 @@ struct ContentView: View {
 
     private var selectedProcessName: String {
         controller.processes.first(where: { $0.id == controller.selectedProcessID })?.name
-            ?? "Selected app output"
+            ?? "No meeting app selected"
+    }
+}
+
+private struct ModelChoiceButton: View {
+    let engine: TranscriptRefinementEngine
+    let isSelected: Bool
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: engine.systemImage)
+                    Text(engine.title)
+                        .font(.callout.weight(.semibold))
+                    Spacer(minLength: 4)
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.green : Color.secondary)
+                }
+                Text(engine.modelName)
+                    .font(.caption.monospaced().weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(engine.purpose)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(7)
+            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+            .background(
+                isSelected ? Color.green.opacity(0.10) : Color.primary.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(
+                        isSelected ? Color.green.opacity(0.8) : Color.secondary.opacity(0.25),
+                        lineWidth: isSelected ? 2 : 1
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled && !isSelected ? 0.55 : 1)
+        .accessibilityLabel("Final transcript: \(engine.title), \(engine.modelName)")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .help(isDisabled ? "Stop listening before changing the final model." : engine.purpose)
+    }
+}
+
+private struct AudioDeviceRow: View {
+    let title: String
+    let name: String
+    let systemImage: String
+    let devices: [AudioDeviceOption]
+    let selectedDeviceID: AudioObjectID?
+    let onSelect: (AudioObjectID) -> Void
+    private let health: AudioStreamHealth?
+    private let isConnected: Bool?
+
+    init(
+        title: String,
+        name: String,
+        systemImage: String,
+        health: AudioStreamHealth,
+        devices: [AudioDeviceOption],
+        selectedDeviceID: AudioObjectID?,
+        onSelect: @escaping (AudioObjectID) -> Void
+    ) {
+        self.title = title
+        self.name = name
+        self.systemImage = systemImage
+        self.devices = devices
+        self.selectedDeviceID = selectedDeviceID
+        self.onSelect = onSelect
+        self.health = health
+        isConnected = nil
+    }
+
+    init(
+        title: String,
+        name: String,
+        systemImage: String,
+        isConnected: Bool,
+        devices: [AudioDeviceOption],
+        selectedDeviceID: AudioObjectID?,
+        onSelect: @escaping (AudioObjectID) -> Void
+    ) {
+        self.title = title
+        self.name = name
+        self.systemImage = systemImage
+        self.devices = devices
+        self.selectedDeviceID = selectedDeviceID
+        self.onSelect = onSelect
+        health = nil
+        self.isConnected = isConnected
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            AudioDeviceMenu(
+                title: title,
+                name: name,
+                systemImage: systemImage,
+                color: iconColor,
+                devices: devices,
+                selectedDeviceID: selectedDeviceID,
+                onSelect: onSelect
+            )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .help(name)
+            }
+            Spacer(minLength: 6)
+            if let health {
+                AudioHealthBadge(health: health)
+            } else if let isConnected {
+                ConnectionBadge(isConnected: isConnected)
+            }
+        }
+    }
+
+    private var iconColor: Color {
+        health == nil ? .indigo : .blue
+    }
+}
+
+private struct AudioDeviceMenu: View {
+    let title: String
+    let name: String
+    let systemImage: String
+    let color: Color
+    let devices: [AudioDeviceOption]
+    let selectedDeviceID: AudioObjectID?
+    let onSelect: (AudioObjectID) -> Void
+
+    var body: some View {
+        Menu {
+            if devices.isEmpty {
+                Text("No compatible devices found")
+            } else {
+                ForEach(devices) { device in
+                    Button {
+                        onSelect(device.id)
+                    } label: {
+                        if device.id == selectedDeviceID {
+                            Label(device.name, systemImage: "checkmark")
+                        } else {
+                            Text(device.name)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 18, height: 18)
+        }
+        .menuStyle(.button)
+        .controlSize(.small)
+        .fixedSize()
+        .accessibilityLabel("Choose \(title.lowercased())")
+        .help("Choose \(title.lowercased()). Current device: \(name)")
+    }
+}
+
+private struct ConnectionBadge: View {
+    let isConnected: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(isConnected ? Color.green : Color.red)
+                .frame(width: 7, height: 7)
+            Text(isConnected ? "Connected" : "Not connected")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .fixedSize()
+    }
+}
+
+private struct AudioHealthBadge: View {
+    let health: AudioStreamHealth
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(health.label)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(color)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.10), in: Capsule())
+        .fixedSize()
+        .help(health.detail)
+    }
+
+    private var color: Color {
+        switch health {
+        case .healthy:
+            .green
+        case .checking, .dropping, .permissionRequired:
+            .orange
+        case .unavailable, .noData:
+            .red
+        case .ready:
+            .secondary
+        }
     }
 }
 
 private struct TrackCard: View {
     let title: String
+    let systemImage: String
     let subtitle: String
     let color: Color
     let state: TrackViewState
+    let health: AudioStreamHealth
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Label(title, systemImage: systemImage)
                         .font(.callout.bold())
                         .foregroundStyle(color)
                     Text(subtitle)
@@ -391,11 +712,19 @@ private struct TrackCard: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                SocketBadge(state: state.socket, color: color)
+                VStack(alignment: .trailing, spacing: 4) {
+                    AudioHealthBadge(health: health)
+                    HStack(spacing: 4) {
+                        Text("Transcription")
+                        SocketBadge(state: state.socket, color: color)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             WaveformView(samples: state.telemetry.waveform, color: color)
-                .frame(height: 64)
+                .frame(height: 44)
 
             HStack(spacing: 10) {
                 LevelBar(label: "RMS", value: state.telemetry.rms, color: color)
@@ -406,27 +735,44 @@ private struct TrackCard: View {
                 .font(.body)
                 .foregroundStyle(state.partialTranscript.isEmpty ? .secondary : .primary)
                 .lineLimit(2)
-                .frame(maxWidth: .infinity, minHeight: 42, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
                 .textSelection(.enabled)
 
             HStack {
                 Text(state.telemetry.sourceFormat)
+                    .lineLimit(1)
+                Spacer()
+                Text("Signal \(signalLevel)")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+
+            HStack {
+                Text(health.detail)
+                    .lineLimit(1)
                 Spacer()
                 Text("\(state.telemetry.packets) packets")
                 Text("·")
                 Text("\(state.telemetry.droppedBuffers) dropped")
                     .foregroundStyle(state.telemetry.droppedBuffers > 0 ? .orange : .secondary)
             }
-            .font(.callout.monospacedDigit())
+            .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
-        .padding(14)
+        .padding(12)
         .background(color.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(color.opacity(0.22), lineWidth: 1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var signalLevel: String {
+        guard state.telemetry.packets > 0 else { return "—" }
+        guard state.telemetry.rms > 0.000_01 else { return "silent" }
+        let decibels = 20 * log10(Double(state.telemetry.rms))
+        return "\(Int(decibels.rounded())) dB"
     }
 }
 
