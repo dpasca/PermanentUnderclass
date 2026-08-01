@@ -34,6 +34,7 @@ final class MeetingController: ObservableObject {
     @Published var isDictating = false
     @Published var dictationTelemetry = TrackTelemetry()
     @Published var lastDictation = ""
+    @Published private(set) var parakeetPreparation = ParakeetPreparationState()
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -50,6 +51,7 @@ final class MeetingController: ObservableObject {
     private var microphoneRestartWorkItem: DispatchWorkItem?
     private var microphoneCaptureGeneration: UUID?
     private var dictationService: HoldToDictateService?
+    private var parakeetWarmupTask: Task<Void, Never>?
 
     private static let dictationEnabledDefaultsKey =
         "MeetingCopilot.HoldToDictateEnabled"
@@ -80,6 +82,8 @@ final class MeetingController: ObservableObject {
         } catch {
             present(error)
         }
+
+        startParakeetWarmup()
 
         if UserDefaults.standard.bool(forKey: Self.dictationEnabledDefaultsKey) {
             dictationEnabled = true
@@ -381,6 +385,9 @@ final class MeetingController: ObservableObject {
     func selectRefinementEngine(_ engine: TranscriptRefinementEngine) {
         guard !isListening, !isDictationBusy, refinementEngine != engine else { return }
         refinementEngine = engine
+        if engine == .localParakeet, parakeetPreparation.isFailed {
+            startParakeetWarmup()
+        }
         if dictationEnabled {
             restartDictationService()
         }
@@ -680,6 +687,9 @@ final class MeetingController: ObservableObject {
     }
 
     private func startDictationService(requestAccess: Bool) {
+        if refinementEngine == .localParakeet, parakeetPreparation.isFailed {
+            startParakeetWarmup()
+        }
         let service: HoldToDictateService
         if let dictationService {
             service = dictationService
@@ -726,6 +736,82 @@ final class MeetingController: ObservableObject {
         dictationService?.disable()
         dictationService = nil
         startDictationService(requestAccess: false)
+    }
+
+    private func startParakeetWarmup() {
+        guard
+            parakeetWarmupTask == nil,
+            !parakeetPreparation.isInProgress,
+            !parakeetPreparation.isReady
+        else {
+            return
+        }
+
+        let startedAt = Date()
+        parakeetPreparation = ParakeetPreparationState(
+            stage: .checkingCache,
+            startedAt: startedAt
+        )
+        let progressRelay = ParakeetPreparationProgressRelay { [weak self] event in
+            self?.handleParakeetPreparationEvent(
+                event,
+                startedAt: startedAt
+            )
+        }
+        parakeetWarmupTask = Task(priority: .utility) { [weak self] in
+            do {
+                try await ParakeetTranscriber.shared.prepare { event in
+                    progressRelay.send(event)
+                }
+                await MainActor.run { [weak self] in
+                    guard self?.parakeetPreparation.startedAt == startedAt else { return }
+                    self?.parakeetWarmupTask = nil
+                    self?.parakeetPreparation = ParakeetPreparationState(
+                        stage: .ready,
+                        startedAt: startedAt,
+                        finishedAt: Date()
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard self?.parakeetPreparation.startedAt == startedAt else { return }
+                    self?.parakeetWarmupTask = nil
+                    self?.parakeetPreparation = ParakeetPreparationState(
+                        stage: .failed(error.localizedDescription),
+                        startedAt: startedAt,
+                        finishedAt: Date()
+                    )
+                }
+            }
+        }
+    }
+
+    private func handleParakeetPreparationEvent(
+        _ event: ParakeetPreparationEvent,
+        startedAt: Date
+    ) {
+        guard
+            parakeetPreparation.startedAt == startedAt,
+            parakeetPreparation.isInProgress
+        else {
+            return
+        }
+
+        let stage: ParakeetPreparationStage
+        switch event {
+        case .checkingCache:
+            stage = .checkingCache
+        case let .downloading(fractionCompleted):
+            stage = .downloading(fractionCompleted: fractionCompleted)
+        case let .loading(component):
+            stage = .loading(component: component)
+        }
+        parakeetPreparation = ParakeetPreparationState(
+            stage: stage,
+            startedAt: startedAt
+        )
     }
 
     private func dictationLanguages() -> [String] {
@@ -920,9 +1006,24 @@ final class MeetingController: ObservableObject {
     }
 
     deinit {
+        parakeetWarmupTask?.cancel()
         dictationService?.disable()
         inputDeviceMonitor?.stop()
         outputDeviceMonitor?.stop()
         stopImmediately()
+    }
+}
+
+private final class ParakeetPreparationProgressRelay: @unchecked Sendable {
+    private let handler: (ParakeetPreparationEvent) -> Void
+
+    init(handler: @escaping (ParakeetPreparationEvent) -> Void) {
+        self.handler = handler
+    }
+
+    func send(_ event: ParakeetPreparationEvent) {
+        DispatchQueue.main.async { [handler] in
+            handler(event)
+        }
     }
 }

@@ -74,6 +74,67 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
     }
 }
 
+enum ParakeetPreparationStage: Equatable, Sendable {
+    case idle
+    case checkingCache
+    case downloading(fractionCompleted: Double)
+    case loading(component: String)
+    case ready
+    case failed(String)
+}
+
+struct ParakeetPreparationState: Equatable, Sendable {
+    var stage: ParakeetPreparationStage = .idle
+    var startedAt: Date?
+    var finishedAt: Date?
+
+    var isInProgress: Bool {
+        switch stage {
+        case .checkingCache, .downloading, .loading:
+            true
+        case .idle, .ready, .failed:
+            false
+        }
+    }
+
+    var isReady: Bool {
+        stage == .ready
+    }
+
+    var isFailed: Bool {
+        if case .failed = stage { return true }
+        return false
+    }
+
+    var downloadFraction: Double? {
+        guard case let .downloading(fractionCompleted) = stage else { return nil }
+        return fractionCompleted
+    }
+
+    func hint(at now: Date) -> String? {
+        switch stage {
+        case .idle:
+            nil
+        case .checkingCache:
+            "Background Parakeet warmup · checking cache · \(elapsedText(at: now))"
+        case let .downloading(fractionCompleted):
+            "Background Parakeet warmup · downloading \(Int((fractionCompleted * 100).rounded()))% · \(elapsedText(at: now))"
+        case let .loading(component):
+            "Background Parakeet warmup · loading \(component) · \(elapsedText(at: now))"
+        case .ready:
+            "Local Parakeet ready · initialized in \(elapsedText(at: finishedAt ?? now))"
+        case let .failed(message):
+            "Parakeet warmup failed after \(elapsedText(at: finishedAt ?? now)): \(message)"
+        }
+    }
+
+    private func elapsedText(at date: Date) -> String {
+        let elapsed = max(0, Int(date.timeIntervalSince(startedAt ?? date)))
+        guard elapsed >= 60 else { return "\(elapsed)s" }
+        return "\(elapsed / 60)m \(elapsed % 60)s"
+    }
+}
+
 struct RealtimeRefinementRequest {
     let transcriptID: String
     let speaker: SpeakerTag

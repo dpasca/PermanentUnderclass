@@ -2,6 +2,7 @@ import AVFAudio
 import CoreML
 import FluidAudio
 import Foundation
+import OSLog
 
 final class ParakeetRefinementClient: TranscriptRefining, @unchecked Sendable {
     typealias StateHandler = (SocketState) -> Void
@@ -221,22 +222,72 @@ final class ParakeetRefinementClient: TranscriptRefining, @unchecked Sendable {
     }
 }
 
+enum ParakeetPreparationEvent: Equatable, Sendable {
+    case checkingCache
+    case downloading(fractionCompleted: Double)
+    case loading(component: String)
+}
+
 actor ParakeetTranscriber {
     static let shared = ParakeetTranscriber()
+    private static let logger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "ParakeetPreparation"
+    )
 
     private var manager: AsrManager?
+    private var preparationTask: Task<AsrManager, Error>?
 
-    func prepare() async throws {
+    func prepare(
+        onProgress: (@Sendable (ParakeetPreparationEvent) -> Void)? = nil
+    ) async throws {
         guard manager == nil else { return }
+        if let preparationTask {
+            do {
+                manager = try await preparationTask.value
+                self.preparationTask = nil
+                return
+            } catch {
+                self.preparationTask = nil
+                throw error
+            }
+        }
+
+        onProgress?(.checkingCache)
         // FluidAudio's v3 benchmarks show the large encoder is WER-neutral
         // and faster on Apple Silicon GPUs. More importantly for this desktop
         // app, this avoids a slow or occasionally stalled ANE compilation on
         // each fresh process. Decoder and joint models retain their defaults.
-        let models = try await AsrModels.downloadAndLoad(
-            version: .v3,
-            encoderComputeUnits: .cpuAndGPU
-        )
-        manager = AsrManager(models: models)
+        // Loading directly from the default cache still downloads missing
+        // assets through FluidAudio, while avoiding downloadAndLoad's extra
+        // load-and-discard pass over every Core ML bundle.
+        let task = Task(priority: .utility) {
+            let models = try await AsrModels.loadFromCache(
+                version: .v3,
+                encoderComputeUnits: .cpuAndGPU,
+                progressHandler: { progress in
+                    guard let event = Self.preparationEvent(from: progress) else { return }
+                    onProgress?(event)
+                }
+            )
+            let manager = AsrManager(models: models)
+
+            // Core ML's first prediction can be much slower than later calls.
+            // Run a quiet, deterministic non-silent probe so that cost is paid
+            // during background warmup instead of the first real dictation.
+            onProgress?(.loading(component: "inference pipeline"))
+            await Self.warmInferencePipeline(manager)
+            return manager
+        }
+        preparationTask = task
+
+        do {
+            manager = try await task.value
+            preparationTask = nil
+        } catch {
+            preparationTask = nil
+            throw error
+        }
     }
 
     func transcribe(
@@ -256,6 +307,65 @@ actor ParakeetTranscriber {
             language: language
         )
         return result.text
+    }
+
+    nonisolated private static func preparationEvent(
+        from progress: DownloadUtils.DownloadProgress
+    ) -> ParakeetPreparationEvent? {
+        switch progress.phase {
+        case .listing:
+            return .checkingCache
+        case let .downloading(_, totalFiles):
+            guard totalFiles > 0 else { return nil }
+            return .downloading(
+                fractionCompleted: min(1, max(0, progress.fractionCompleted * 2))
+            )
+        case let .compiling(modelName):
+            guard !modelName.isEmpty else { return nil }
+            return .loading(component: modelComponentName(modelName))
+        }
+    }
+
+    nonisolated private static func modelComponentName(_ modelName: String) -> String {
+        let name = URL(fileURLWithPath: modelName)
+            .deletingPathExtension()
+            .lastPathComponent
+        switch name {
+        case "Preprocessor":
+            return "audio preprocessor"
+        case "Encoder", "EncoderInt4":
+            return "encoder"
+        case "Decoder":
+            return "decoder"
+        case "JointDecision", "JointDecisionv3":
+            return "joint decoder"
+        default:
+            return name
+        }
+    }
+
+    nonisolated private static func warmInferencePipeline(_ manager: AsrManager) async {
+        let sampleCount = ASRConstants.minimumRequiredSamples(
+            forSampleRate: ASRConstants.sampleRate
+        )
+        let frequency = 220.0
+        let sampleRate = Double(ASRConstants.sampleRate)
+        let samples = (0..<sampleCount).map { index in
+            Float(sin(2 * Double.pi * frequency * Double(index) / sampleRate) * 0.002)
+        }
+
+        do {
+            let decoderLayers = await manager.decoderLayerCount
+            var decoderState = try TdtDecoderState(decoderLayers: decoderLayers)
+            _ = try await manager.transcribe(
+                samples,
+                decoderState: &decoderState
+            )
+        } catch {
+            logger.debug(
+                "parakeet_inference_warmup_skipped error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     private static func audioBuffer(from pcm16Audio: Data) throws -> AVAudioPCMBuffer {

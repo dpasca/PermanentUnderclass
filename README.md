@@ -63,6 +63,11 @@ The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
 paused while meeting capture is using the microphone.
 
+PUnderclass speculatively prepares Local Parakeet in the background at launch,
+even when GPT-Transcribe is selected. A model-panel hint shows the current
+download/load phase and elapsed time. This warmup does not gate the selected
+cloud transcriber, and all local callers share the same in-flight preparation.
+
 ## Current scope
 
 The proof of concept includes:
@@ -80,8 +85,9 @@ The proof of concept includes:
     Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
     Neural Engine preparation while retaining the same model and recognition
     quality. The first use downloads roughly 483 MB to FluidAudio's
-    application-support cache and each fresh app process performs a short
-    Core ML preparation when Local Parakeet is selected.
+    application-support cache. Each fresh app process warms the cached Core ML
+    models and their first inference in the background so later local use does
+    not pay the cold-start cost.
   - **OpenAI GPT-Transcribe** runs a persistent committed-turn
     `gpt-transcribe` session for each audio track. The two tracks finalize in
     parallel while retaining deterministic speaker labels. Each turn includes

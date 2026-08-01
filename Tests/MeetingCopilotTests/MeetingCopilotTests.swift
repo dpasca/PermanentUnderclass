@@ -538,6 +538,41 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(cloud is RealtimeRefinementClient)
     }
 
+    func testParakeetWarmupHintReportsProgressAndElapsedTime() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let checking = ParakeetPreparationState(
+            stage: .checkingCache,
+            startedAt: startedAt
+        )
+        XCTAssertEqual(
+            checking.hint(at: startedAt.addingTimeInterval(7)),
+            "Background Parakeet warmup · checking cache · 7s"
+        )
+        XCTAssertTrue(checking.isInProgress)
+
+        let downloading = ParakeetPreparationState(
+            stage: .downloading(fractionCompleted: 0.375),
+            startedAt: startedAt
+        )
+        XCTAssertEqual(downloading.downloadFraction, 0.375)
+        XCTAssertEqual(
+            downloading.hint(at: startedAt.addingTimeInterval(65)),
+            "Background Parakeet warmup · downloading 38% · 1m 5s"
+        )
+
+        let ready = ParakeetPreparationState(
+            stage: .ready,
+            startedAt: startedAt,
+            finishedAt: startedAt.addingTimeInterval(9)
+        )
+        XCTAssertEqual(
+            ready.hint(at: startedAt.addingTimeInterval(30)),
+            "Local Parakeet ready · initialized in 9s"
+        )
+        XCTAssertTrue(ready.isReady)
+        XCTAssertFalse(ready.isInProgress)
+    }
+
     func testLoadingDictationStateNamesTheSelectedModel() {
         let local = DictationPhase.preparing(.localParakeet)
         XCTAssertEqual(local.label, "Loading Parakeet…")

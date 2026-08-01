@@ -152,6 +152,10 @@ struct ContentView: View {
                     )
                 }
             }
+
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                parakeetWarmupHint(at: timeline.date)
+            }
         }
         .padding(10)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
@@ -160,6 +164,36 @@ struct ContentView: View {
                 .stroke(.separator.opacity(0.45), lineWidth: 1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func parakeetWarmupHint(at date: Date) -> some View {
+        if let hint = controller.parakeetPreparation.hint(at: date) {
+            HStack(spacing: 6) {
+                if let fraction = controller.parakeetPreparation.downloadFraction {
+                    ProgressView(value: fraction)
+                        .frame(width: 54)
+                } else if controller.parakeetPreparation.isInProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if controller.parakeetPreparation.isReady {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                Text(hint)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(
+                controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
+            )
+            .padding(.leading, 52)
+            .help(hint)
+        }
     }
 
     private var audioRoutePanel: some View {
