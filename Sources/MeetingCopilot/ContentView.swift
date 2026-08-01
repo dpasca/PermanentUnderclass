@@ -278,7 +278,7 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("Estimated OpenAI transcription cost since the counter was reset")
+        .help("Estimated transcription cost and assistant token usage since reset")
         .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
             APIExpensePopover(
                 summary: controller.apiExpenses,
@@ -623,6 +623,17 @@ struct ContentView: View {
                 .help(snapshot.issues.map { "\($0.relativePath): \($0.message)" }.joined(separator: "\n"))
             }
 
+            HStack(spacing: 8) {
+                Image(systemName: "display")
+                    .foregroundStyle(.green)
+                Text(controller.companionGatewayStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Open Live Assistant", action: controller.openCompanionDisplay)
+            }
+
             Text("The Mac ingests PDF, RTF, Markdown, and common UTF-8 text files at launch and after folder changes. Reference contents and the API key stay out of the display client.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -767,6 +778,27 @@ private struct APIExpensePopover: View {
                 cost: summary.finalCostUSD,
                 color: .purple
             )
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(InterviewWingmanClient.model)
+                        .font(.subheadline.weight(.medium))
+                    Text(
+                        "Interview Wingman · \(summary.assistantGenerations) generations · "
+                            + "\(summary.assistantInputTokens) input / "
+                            + "\(summary.assistantOutputTokens) output / "
+                            + "\(summary.assistantReasoningTokens) reasoning tokens"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("usage")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
             expenseRow(
                 title: "Local Parakeet",
                 detail: "Runs on this Mac",
@@ -783,6 +815,7 @@ private struct APIExpensePopover: View {
                 Text(
                     "Rates configured \(APIExpenseSummary.pricingEffectiveAt): "
                         + "$0.017/min live and $0.0045/min final. "
+                        + "Assistant tokens are tracked but excluded from the total until a rate is configured. "
                         + "The OpenAI invoice is the source of truth."
                 )
                 .font(.caption)
@@ -794,7 +827,10 @@ private struct APIExpensePopover: View {
                 Button("Reset Counter") {
                     onReset()
                 }
-                .disabled(summary.totalAudioSeconds == 0)
+                .disabled(
+                    summary.totalAudioSeconds == 0
+                        && summary.assistantGenerations == 0
+                )
             }
         }
         .padding(14)

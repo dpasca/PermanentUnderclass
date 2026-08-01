@@ -40,6 +40,7 @@ final class MeetingController: ObservableObject {
     @Published var dictationPreviewEnabled = true
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
+    @Published private(set) var companionGatewayStatus = "Starting companion display…"
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -58,6 +59,10 @@ final class MeetingController: ObservableObject {
     private var dictationService: HoldToDictateService?
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
+    private let companionGateway = CompanionGateway()
+    private let interviewWingmanClient = InterviewWingmanClient()
+    private var companionUpdateTail: Task<Void, Never>?
+    private var assistantGenerationTask: Task<Void, Never>?
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
 
@@ -111,6 +116,10 @@ final class MeetingController: ObservableObject {
 
         startParakeetWarmup()
         configureReferenceLibrary()
+        startCompanionGateway()
+        publishCompanionSession()
+        publishCompanionReference()
+        publishCompanionUsage()
 
         if UserDefaults.standard.bool(forKey: Self.dictationEnabledDefaultsKey) {
             dictationEnabled = true
@@ -229,6 +238,7 @@ final class MeetingController: ObservableObject {
             activeContext = context
             isListening = true
             statusMessage = "Starting capture…"
+            publishCompanionSession()
             let monitoringStartedAt = Date()
             localTrack = TrackViewState(
                 socket: .connecting,
@@ -361,6 +371,7 @@ final class MeetingController: ObservableObject {
         guard activeSessionID != nil else { return }
         isListening = false
         statusMessage = "Finalizing transcript…"
+        publishCompanionSession()
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil
@@ -393,6 +404,7 @@ final class MeetingController: ObservableObject {
             } else {
                 self?.statusMessage = "Stopped"
             }
+            self?.publishCompanionSession()
         }
     }
 
@@ -519,6 +531,9 @@ final class MeetingController: ObservableObject {
         transcript.removeAll()
         localTrack.partialTranscript = ""
         remoteTrack.partialTranscript = ""
+        enqueueCompanionUpdate { hub in
+            await hub.clearTranscript()
+        }
     }
 
     @discardableResult
@@ -561,6 +576,7 @@ final class MeetingController: ObservableObject {
 
     func resetAPIExpenses() {
         apiExpenses = APIExpenseSummary()
+        publishCompanionUsage()
     }
 
     func chooseReferenceFolder() {
@@ -595,6 +611,10 @@ final class MeetingController: ObservableObject {
     func clearReferenceFolder() {
         UserDefaults.standard.removeObject(forKey: Self.referenceFolderDefaultsKey)
         referenceLibraryService?.setFolder(nil)
+    }
+
+    func openCompanionDisplay() {
+        NSWorkspace.shared.open(CompanionGateway.url)
     }
 
     func copyTranscript() {
@@ -647,6 +667,11 @@ final class MeetingController: ObservableObject {
                     self.remoteTrack.lastItemID = itemID
                     self.remoteTrack.partialTranscript = text
                 }
+                self.publishCompanionPartial(
+                    id: "\(speaker.rawValue)-\(itemID)",
+                    speaker: speaker,
+                    text: text
+                )
             },
             onFinal: { [weak self] itemID, text, startedAt, endedAt, pcm16Audio in
                 guard
@@ -660,22 +685,25 @@ final class MeetingController: ObservableObject {
                 let refinement: TranscriptRefinementState = pcm16Audio.isEmpty
                     ? .liveOnly("No buffered audio was available for the second pass.")
                     : .refining
-                self.transcript.append(
-                    TranscriptTurn(
-                        id: transcriptID,
-                        speaker: speaker,
-                        startedAt: startedAt,
-                        endedAt: endedAt,
-                        liveText: text,
-                        text: text,
-                        refinement: refinement
-                    )
+                let turn = TranscriptTurn(
+                    id: transcriptID,
+                    speaker: speaker,
+                    startedAt: startedAt,
+                    endedAt: endedAt,
+                    liveText: text,
+                    text: text,
+                    refinement: refinement
                 )
+                self.transcript.append(turn)
                 self.transcript.sort {
                     if $0.startedAt == $1.startedAt {
                         return $0.id < $1.id
                     }
                     return $0.startedAt < $1.startedAt
+                }
+                self.publishCompanionFinal(turn)
+                if speaker == .other {
+                    self.scheduleInterviewWingman()
                 }
                 guard
                     !pcm16Audio.isEmpty,
@@ -769,6 +797,7 @@ final class MeetingController: ObservableObject {
         }
         transcript[index].text = text
         transcript[index].refinement = .refined
+        publishCompanionRevision(transcript[index])
     }
 
     private func markTurnLiveOnly(transcriptID: String, message: String) {
@@ -898,6 +927,7 @@ final class MeetingController: ObservableObject {
         var updated = apiExpenses
         updated.record(usage)
         apiExpenses = updated
+        publishCompanionUsage()
     }
 
     private func recordQuickDictation(_ text: String) {
@@ -920,6 +950,7 @@ final class MeetingController: ObservableObject {
     private func configureReferenceLibrary() {
         let service = ReferenceLibraryService { [weak self] state in
             self?.referenceLibraryState = state
+            self?.publishCompanionReference()
         }
         referenceLibraryService = service
         guard
@@ -931,6 +962,233 @@ final class MeetingController: ObservableObject {
             return
         }
         service.setFolder(URL(fileURLWithPath: storedPath, isDirectory: true))
+    }
+
+    private func startCompanionGateway() {
+        companionGateway.start(
+            onReady: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.companionGatewayStatus =
+                        "Companion ready at \(CompanionGateway.url.absoluteString)"
+                }
+            },
+            onFailure: { [weak self] message in
+                DispatchQueue.main.async {
+                    self?.companionGatewayStatus = "Companion unavailable: \(message)"
+                }
+            }
+        )
+    }
+
+    private func enqueueCompanionUpdate(
+        _ operation: @escaping @Sendable (CompanionEventHub) async -> Void
+    ) {
+        let previous = companionUpdateTail
+        let hub = companionGateway.hub
+        companionUpdateTail = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await operation(hub)
+        }
+    }
+
+    private func publishCompanionSession() {
+        let listening = isListening
+        let status = statusMessage
+        enqueueCompanionUpdate { hub in
+            await hub.updateSession(isListening: listening, status: status)
+        }
+    }
+
+    private func publishCompanionPartial(
+        id: String,
+        speaker: SpeakerTag,
+        text: String
+    ) {
+        let partial = CompanionTranscriptPartial(
+            id: id,
+            speaker: speaker.rawValue.lowercased(),
+            text: text
+        )
+        enqueueCompanionUpdate { hub in
+            await hub.updatePartial(partial)
+        }
+    }
+
+    private func publishCompanionFinal(_ turn: TranscriptTurn) {
+        let projected = companionTurn(turn)
+        enqueueCompanionUpdate { hub in
+            await hub.appendFinal(projected)
+        }
+    }
+
+    private func publishCompanionRevision(_ turn: TranscriptTurn) {
+        let projected = companionTurn(turn)
+        enqueueCompanionUpdate { hub in
+            await hub.revise(projected)
+        }
+    }
+
+    private func companionTurn(_ turn: TranscriptTurn) -> CompanionTranscriptTurn {
+        let isRefined: Bool
+        if case .refined = turn.refinement {
+            isRefined = true
+        } else {
+            isRefined = false
+        }
+        return CompanionTranscriptTurn(
+            id: turn.id,
+            speaker: turn.speaker.rawValue.lowercased(),
+            text: turn.text,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            isRefined: isRefined
+        )
+    }
+
+    private func publishCompanionReference() {
+        let phase: String
+        switch referenceLibraryState.phase {
+        case .notConfigured:
+            phase = "notConfigured"
+        case .scanning:
+            phase = "scanning"
+        case .ready:
+            phase = "ready"
+        case .failed:
+            phase = "failed"
+        }
+        let snapshot = referenceLibraryState.snapshot
+        let reference = CompanionReferenceState(
+            configured: referenceLibraryState.folderURL != nil,
+            folderName: referenceLibraryState.folderURL?.lastPathComponent
+                ?? "No reference folder",
+            phase: phase,
+            documentCount: snapshot?.documents.count ?? 0,
+            revision: snapshot?.revision ?? "",
+            isWatching: referenceLibraryState.isWatching,
+            issueCount: snapshot?.issues.count ?? 0
+        )
+        enqueueCompanionUpdate { hub in
+            await hub.updateReference(reference)
+        }
+    }
+
+    private func publishCompanionUsage() {
+        let usage = CompanionUsageState(
+            estimatedTranscriptionCostUSD: apiExpenses.totalCostUSD,
+            estimatedLiveTranscriptionCostUSD: apiExpenses.liveCostUSD,
+            estimatedFinalTranscriptionCostUSD: apiExpenses.finalCostUSD,
+            liveAudioSeconds: apiExpenses.liveAudioSeconds,
+            finalAudioSeconds: apiExpenses.finalAudioSeconds,
+            assistantGenerations: apiExpenses.assistantGenerations,
+            assistantInputTokens: apiExpenses.assistantInputTokens,
+            assistantCachedInputTokens: apiExpenses.assistantCachedInputTokens,
+            assistantCacheWriteTokens: apiExpenses.assistantCacheWriteTokens,
+            assistantOutputTokens: apiExpenses.assistantOutputTokens,
+            assistantReasoningTokens: apiExpenses.assistantReasoningTokens
+        )
+        enqueueCompanionUpdate { hub in
+            await hub.updateUsage(usage)
+        }
+    }
+
+    private func scheduleInterviewWingman() {
+        assistantGenerationTask?.cancel()
+        let apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let references = referenceLibraryState.snapshot
+        let recentTranscript = transcript.suffix(16)
+            .map { "\($0.speaker.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+        let partialTranscript = [
+            (SpeakerTag.you, localTrack.partialTranscript),
+            (SpeakerTag.other, remoteTrack.partialTranscript)
+        ]
+        .filter { !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        .map { "\($0.0.rawValue): \($0.1)" }
+        .joined(separator: "\n")
+        let pendingCompanionUpdates = companionUpdateTail
+        let hub = companionGateway.hub
+        let client = interviewWingmanClient
+        let controller = WeakMeetingController(self)
+
+        assistantGenerationTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                await pendingCompanionUpdates?.value
+                guard !(await hub.suggestionsPaused()) else { return }
+
+                guard !apiKey.isEmpty else {
+                    await hub.assistantFailed(
+                        "Save an OpenAI API key on the Mac to enable Interview Wingman.",
+                        unavailable: true
+                    )
+                    return
+                }
+                guard
+                    let references,
+                    !references.documents.isEmpty
+                else {
+                    await hub.assistantFailed(
+                        "Choose a non-empty reference folder on the Mac to enable grounded suggestions.",
+                        unavailable: true
+                    )
+                    return
+                }
+
+                let currentRevision = await MainActor.run {
+                    controller.value?.referenceLibraryState.snapshot?.revision
+                }
+                guard currentRevision == references.revision else { return }
+
+                let basedOnSequence = await hub.currentWatermark()
+                await hub.assistantWorking(
+                    basedOnSequence: basedOnSequence
+                )
+
+                let generation = try await client.generate(
+                    apiKey: apiKey,
+                    references: references,
+                    recentTranscript: recentTranscript,
+                    currentPartial: partialTranscript,
+                    basedOnSequence: basedOnSequence
+                )
+                await MainActor.run {
+                    controller.value?.recordAssistantUsage(generation.usage)
+                }
+                guard !Task.isCancelled else { return }
+                let isCurrentRevision = await MainActor.run {
+                    controller.value?.referenceLibraryState.snapshot?.revision
+                        == references.revision
+                }
+                guard isCurrentRevision else {
+                    await hub.assistantFinishedWithoutSuggestion()
+                    return
+                }
+                guard !(await hub.suggestionsPaused()) else {
+                    await hub.assistantFinishedWithoutSuggestion()
+                    return
+                }
+                if let suggestion = generation.suggestion {
+                    await hub.assistantSuggested(suggestion)
+                } else {
+                    await hub.assistantFinishedWithoutSuggestion()
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                await hub.assistantFailed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func recordAssistantUsage(_ usage: AssistantGenerationUsage) {
+        var updated = apiExpenses
+        updated.record(usage)
+        apiExpenses = updated
+        publishCompanionUsage()
     }
 
     private func startParakeetWarmup() {
@@ -1171,6 +1429,8 @@ final class MeetingController: ObservableObject {
     }
 
     private func stopImmediately() {
+        assistantGenerationTask?.cancel()
+        assistantGenerationTask = nil
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil
@@ -1193,14 +1453,17 @@ final class MeetingController: ObservableObject {
         localTrack.socket = .idle
         remoteTrack.socket = .idle
         refinementState = .idle
+        publishCompanionSession()
     }
 
     private func present(_ error: Error) {
         errorMessage = error.localizedDescription
         statusMessage = "Needs attention"
+        publishCompanionSession()
     }
 
     deinit {
+        assistantGenerationTask?.cancel()
         parakeetWarmupTask?.cancel()
         referenceLibraryService?.stop()
         dictationOverlay.setEnabled(false)
@@ -1208,6 +1471,16 @@ final class MeetingController: ObservableObject {
         inputDeviceMonitor?.stop()
         outputDeviceMonitor?.stop()
         stopImmediately()
+        companionUpdateTail?.cancel()
+        companionGateway.stop()
+    }
+}
+
+private final class WeakMeetingController: @unchecked Sendable {
+    weak var value: MeetingController?
+
+    init(_ value: MeetingController) {
+        self.value = value
     }
 }
 

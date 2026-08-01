@@ -14,13 +14,18 @@ let package = Package(
         .package(
             url: "https://github.com/FluidInference/FluidAudio",
             exact: "0.15.4"
+        ),
+        .package(
+            url: "https://github.com/hummingbird-project/hummingbird.git",
+            exact: "2.22.0"
         )
     ],
     targets: [
         .executableTarget(
             name: "MeetingCopilot",
             dependencies: [
-                .product(name: "FluidAudio", package: "FluidAudio")
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "Hummingbird", package: "hummingbird")
             ],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
@@ -36,7 +41,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MeetingCopilotTests",
-            dependencies: ["MeetingCopilot"]
+            dependencies: [
+                "MeetingCopilot",
+                .product(name: "HummingbirdTesting", package: "hummingbird")
+            ]
         )
     ]
 )

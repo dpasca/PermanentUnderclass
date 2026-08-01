@@ -9,6 +9,15 @@ Source: https://github.com/FluidInference/FluidAudio
 
 The complete Apache 2.0 license is included as `FluidAudio-LICENSE.txt`.
 
+## Hummingbird
+
+PUnderclass uses Hummingbird, Copyright the Hummingbird project authors,
+under the Apache License 2.0.
+
+Source: https://github.com/hummingbird-project/hummingbird
+
+The complete Apache 2.0 license is included as `Hummingbird-LICENSE.txt`.
+
 ## NVIDIA Parakeet TDT 0.6B v3
 
 The optional local transcription engine uses NVIDIA Parakeet TDT 0.6B v3,

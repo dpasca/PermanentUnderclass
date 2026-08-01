@@ -231,6 +231,12 @@ struct APIExpenseSummary: Equatable {
     var finalAudioSeconds: Double = 0
     var serverReportedRecords = 0
     var estimatedRecords = 0
+    var assistantGenerations = 0
+    var assistantInputTokens = 0
+    var assistantCachedInputTokens = 0
+    var assistantCacheWriteTokens = 0
+    var assistantOutputTokens = 0
+    var assistantReasoningTokens = 0
 
     var liveCostUSD: Double {
         liveAudioSeconds / 60 * Self.liveTranscriptionUSDPerMinute
@@ -267,6 +273,15 @@ struct APIExpenseSummary: Equatable {
         case .submittedAudioEstimate:
             estimatedRecords += 1
         }
+    }
+
+    mutating func record(_ usage: AssistantGenerationUsage) {
+        assistantGenerations += 1
+        assistantInputTokens += max(0, usage.inputTokens)
+        assistantCachedInputTokens += max(0, usage.cachedInputTokens)
+        assistantCacheWriteTokens += max(0, usage.cacheWriteTokens)
+        assistantOutputTokens += max(0, usage.outputTokens)
+        assistantReasoningTokens += max(0, usage.reasoningTokens)
     }
 }
 

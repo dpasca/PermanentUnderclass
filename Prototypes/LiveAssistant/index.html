@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
-  <div class="prototype-ribbon">Thin-display prototype · local mock events</div>
+  <div class="prototype-ribbon" id="modeRibbon">Connecting to PUnderclass host…</div>
 
   <div class="app-shell">
     <header class="topbar">
@@ -24,7 +24,7 @@
       <div class="meeting-identity">
         <span class="eyebrow">ACTIVE SESSION</span>
         <div class="meeting-title-row">
-          <strong>Product engineering interview</strong>
+          <strong id="meetingTitle">Product engineering interview</strong>
           <span class="quiet-dot">·</span>
           <span id="elapsedTime" class="mono">24:18</span>
         </div>
@@ -84,11 +84,11 @@
           <div class="source-list">
             <div class="source-row host-source">
               <span class="file-icon folder">DIR</span>
-              <span><strong>Interview references</strong><small>3 documents · rev 2a0f91c8</small></span>
+              <span><strong id="referenceFolderName">Interview references</strong><small id="referenceFolderDetail">3 documents · rev 2a0f91c8</small></span>
               <span class="source-ready" aria-label="Ready"></span>
             </div>
           </div>
-          <div class="folder-sync"><span class="sync-ring" aria-hidden="true"></span><span><strong>Watched by Davide’s Mac</strong><small>Changes are ingested automatically</small></span></div>
+          <div class="folder-sync"><span class="sync-ring" aria-hidden="true"></span><span><strong id="referenceWatchTitle">Watched by Davide’s Mac</strong><small id="referenceWatchDetail">Changes are ingested automatically</small></span></div>
         </section>
 
         <section class="rail-section compact">
@@ -119,7 +119,7 @@
               Next mock moment
               <kbd>N</kbd>
             </button>
-            <button class="icon-button" type="button" aria-label="More options" title="More options">
+            <button class="icon-button" id="dismissButton" type="button" aria-label="Dismiss current suggestion" title="Dismiss current suggestion">
               <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg>
             </button>
           </div>
@@ -131,7 +131,7 @@
             <small>THEY’RE ASKING ABOUT</small>
             <strong id="questionText">“Tell me about a time you improved the performance of a critical system.”</strong>
           </span>
-          <span class="confidence"><i></i> high confidence</span>
+          <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
         </div>
 
         <article class="answer-card" id="answerCard">
@@ -157,13 +157,13 @@
             <li><span>03</span><p><strong>Land the result.</strong> We brought p95 down by <mark>41%</mark>, held the gain through holiday load, and added a latency budget to stop regressions.</p></li>
           </ol>
           <footer>
-            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded in 2 Mac-hosted references</span>
-            <span class="generation-time">generated in 640 ms</span>
+            <span id="groundingLabel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded in 2 Mac-hosted references</span>
+            <span class="generation-time" id="generationTime">generated in 640 ms</span>
             <button class="text-button" id="shorterButton" type="button">Make shorter</button>
           </footer>
         </article>
 
-        <div class="evidence-grid">
+        <div class="evidence-grid" id="evidenceGrid">
           <article class="evidence-card">
             <header><span class="eyebrow">PROOF TO USE</span><span class="card-number">03</span></header>
             <ul id="proofList">
@@ -171,7 +171,7 @@
               <li><strong>18k</strong><span>peak requests / minute</span></li>
               <li><strong>0</strong><span>regressions over 6 months</span></li>
             </ul>
-            <button class="source-citation" type="button"><span class="file-icon note">TXT</span> Checkout latency · project brief <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button>
+            <button class="source-citation" id="sourceCitation" type="button"><span class="file-icon note">TXT</span><span id="sourceCitationText">Checkout latency · project brief</span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button>
           </article>
 
           <article class="watchout-card">
@@ -183,7 +183,7 @@
           </article>
         </div>
 
-        <article class="next-question-card">
+        <article class="next-question-card" id="nextQuestionCard">
           <div>
             <span class="eyebrow">LIKELY FOLLOW-UP</span>
             <p id="followupText">“How did you prove the cache would not return stale inventory?”</p>
@@ -193,8 +193,8 @@
 
         <div class="paused-state" id="pausedState" hidden>
           <span class="pause-symbol">Ⅱ</span>
-          <h2>Live suggestions paused</h2>
-          <p>The transcript is still arriving. Turn suggestions back on whenever you want help.</p>
+          <h2 id="emptyStateTitle">Live suggestions paused</h2>
+          <p id="emptyStateDetail">The transcript is still arriving. Turn suggestions back on whenever you want help.</p>
         </div>
       </section>
 
@@ -251,7 +251,7 @@
     <header><span class="status-pulse"></span><div><strong>Connected</strong><small>Davide’s Mac · local network</small></div></header>
     <dl>
       <div><dt>Stream</dt><dd>HTTP / SSE</dd></div>
-      <div><dt>Last event</dt><dd>#2,487</dd></div>
+      <div><dt>Last event</dt><dd id="popoverLastEvent">#2,487</dd></div>
       <div><dt>Round trip</dt><dd>38 ms</dd></div>
       <div><dt>Recovery</dt><dd>Resume + replay</dd></div>
     </dl>
@@ -266,11 +266,11 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
         </button>
       </header>
-      <div class="cost-total"><strong>$0.37</strong><span>estimated so far</span></div>
+      <div class="cost-total"><strong id="costDialogTotal">$0.37</strong><span>estimated so far</span></div>
       <div class="cost-breakdown">
-        <div><span class="cost-swatch live"></span><span><strong>Live transcription</strong><small>2 tracks · 24.3 min</small></span><b>$0.28</b></div>
-        <div><span class="cost-swatch final"></span><span><strong>Final transcription</strong><small>GPT-Transcribe · 17.1 min</small></span><b>$0.08</b></div>
-        <div><span class="cost-swatch assist"></span><span><strong>Assistant suggestions</strong><small>14 generations</small></span><b>$0.01</b></div>
+        <div><span class="cost-swatch live"></span><span><strong>Live transcription</strong><small id="liveUsageDetail">2 tracks · 24.3 min</small></span><b id="liveUsageCost">$0.28</b></div>
+        <div><span class="cost-swatch final"></span><span><strong>Final transcription</strong><small id="finalUsageDetail">GPT-Transcribe · 17.1 min</small></span><b id="finalUsageCost">$0.08</b></div>
+        <div><span class="cost-swatch assist"></span><span><strong>Assistant suggestions</strong><small id="assistantUsageDetail">14 generations</small></span><b id="assistantUsageCost">tracked</b></div>
         <div class="free-row"><span class="cost-swatch local"></span><span><strong>Local Parakeet</strong><small>No API charge</small></span><b>$0.00</b></div>
       </div>
       <p class="cost-note">This prototype uses current configured rates to estimate spend from reported usage. Your OpenAI invoice remains the source of truth.</p>
@@ -285,6 +285,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden>Copied answer</div>
 
-  <script src="app.js?v=1"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

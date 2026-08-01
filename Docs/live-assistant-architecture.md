@@ -1,6 +1,6 @@
 # Live Assistant companion architecture
 
-Status: proposed for the client spike  
+Status: loopback vertical slice implemented
 Decision date: 2026-08-01
 
 ## Decision
@@ -16,7 +16,7 @@ Stream ordered JSON events from host to display with Server-Sent Events (SSE);
 send the small number of presentation actions back as idempotent JSON HTTP
 requests.
 
-The first implementation should bind to `127.0.0.1` only. This lets us prove
+The implemented gateway binds to `127.0.0.1` only. This lets us prove
 the assistant behavior, event contract, recovery, and cost reporting without
 turning a prototype into an unauthenticated LAN service. The protocol and web
 client are cross-platform. LAN access is a separate hardening milestone (see
@@ -27,8 +27,8 @@ Security and pairing).
 - Host/server: Swift plus Hummingbird 2.x. Hummingbird is small enough to
   embed, uses Swift concurrency, and can write a streaming response body. Do
   not add the WebSocket extension for v1.
-- Client: standards-based HTML/CSS/TypeScript, compiled to static assets. The
-  prototype deliberately has no runtime framework or package install.
+- Client: standards-based HTML/CSS/JavaScript static assets. The prototype
+  deliberately has no runtime framework or package install.
 - Discovery later: Bonjour service `_punderclass._tcp` plus a manual URL/QR
   fallback.
 - Persistence: an in-memory event ring for the first loopback slice. A local
@@ -94,15 +94,15 @@ SSE's `id` is the ordered cursor. The JSON repeats it so recorded fixtures and
 non-browser clients remain self-contained.
 
 ```text
-id: 2487
+id: 01J...:2487
 event: transcript.final
-data: {"v":1,"streamId":"01J...","sequence":2487,"emittedAt":"2026-08-01T01:24:42.318Z","payload":{"turnId":"other-91","speaker":"other","text":"Tell me about a time...","startedAt":"2026-08-01T01:24:39.082Z"}}
+data: {"v":1,"streamId":"01J...","sequence":2487,"emittedAt":"2026-08-01T01:24:42Z","name":"transcript.final","payload":{"id":"Other-item-91","speaker":"other","text":"Tell me about a time...","startedAt":"2026-08-01T01:24:39Z","endedAt":"2026-08-01T01:24:42Z","isRefined":false}}
 
 ```
 
 Initial event set:
 
-- `session.snapshot`: full replaceable state and its `watermark`.
+- `GET /v1/snapshot`: full replaceable state and its `watermark`.
 - `session.status`: listening/stopped, capture health, active host behavior.
 - `transcript.partial`: replace the partial for one `turnId`; safe to coalesce.
 - `transcript.final`: append or replace the finalized `turnId`.
@@ -182,6 +182,8 @@ product's current in-memory-only privacy promise.
 ## Security and pairing
 
 Loopback is the safe default for the spike. Do not bind `0.0.0.0` silently.
+The loopback gateway also rejects non-loopback HTTP authorities so DNS
+rebinding cannot turn another origin into a reader of local transcript state.
 
 For LAN mode:
 
@@ -315,7 +317,8 @@ The initial meter covers:
 - `gpt-live-transcribe` for each live audio track;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- future assistant generations from the model response's own token usage.
+- `gpt-5.6-luna` assistant generations from the model response's own token
+  usage (tracked separately until a dollar rate is configured).
 
 For GPT-5.6 assistant calls, record uncached input, cached input, cache writes,
 output, and reasoning tokens separately. This makes a folder edit's one-time
@@ -327,13 +330,16 @@ the source of truth.
 
 ## Delivery slices
 
-1. **This spike:** interactive thin-display mock, transport decision, reconnect
-   simulation, host-side reference-folder ingestion/watch, deterministic prompt
-   prefix builder, and host-side transcription cost meter.
-2. **Loopback vertical slice:** Hummingbird service, event hub, snapshot, real
-   transcript/usage events, one assistant behavior, and reconnect tests.
-3. **Reliability:** bounded replay, slow-client handling, app-sleep tests, fault
-   injection, and optional SQLite journal decision.
+1. **Completed foundation:** interactive thin-display mock, transport decision,
+   host-side reference-folder ingestion/watch, deterministic prompt prefix
+   builder, and host-side transcription cost meter.
+2. **Completed loopback vertical slice:** Hummingbird service, event hub,
+   snapshot, real transcript/reference/usage events, structured Interview
+   Wingman behavior, idempotent commands, and reconnect/replay tests.
+3. **Reliability:** durable replay across host restarts, app-sleep tests, fault
+   injection, and an optional SQLite journal decision. The loopback slice
+   already bounds replay and disconnects slow consumers so they recover from a
+   fresh snapshot.
 4. **LAN:** explicit sharing toggle, Bonjour, pairing/revocation, transport
    encryption, and mobile/tablet validation.
 

@@ -47,22 +47,34 @@ Open the shared transcription settings from the gear button, paste an API key,
 and press **Save to Keychain**. Select the meeting application (it may appear
 under a helper-process name), then start listening.
 
-## Live Assistant companion prototype
+## Live Assistant companion
 
-An interactive cross-platform companion mockup lives in
-`Prototypes/LiveAssistant`. It is intentionally a thin display: the Mac owns
-the active behavior, local references, model calls, and cost calculation, while
-the client renders complete guidance cards, transcript events, connection
-state, and the intended resume-and-replay experience after a dropped
-connection.
+PUnderclass now embeds a loopback-only HTTP/SSE gateway and serves the
+cross-platform thin display itself. Start the Mac app, expand **References and
+meeting context**, choose a reference folder, then press **Open Live
+Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
+local references, OpenAI request, usage tracking, event ordering, and replay;
+the browser receives only transcript text, reference status, citations, and
+presentation-ready guidance.
+
+The first real behavior is **Interview Wingman**. Each finalized interviewer
+turn can trigger a structured `gpt-5.6-luna` Responses API decision. The stable
+behavior/reference prefix uses an explicit prompt-cache breakpoint and cache
+key, while recent transcript stays in the volatile suffix. Assistant token and
+cache usage is counted separately; it is not folded into the dollar estimate
+until a model rate is configured.
+
+To view the same client without starting the native host, run the standalone
+preview:
 
 ```sh
 ./scripts/run-companion-prototype.sh
 ```
 
-Open <http://127.0.0.1:4173>. The prototype uses local mock data and makes no
-network or model requests. The proposed HTTP/SSE protocol, retry contract,
-pairing boundary, and implementation slices are in
+The standalone server falls back to simulated data and makes no model request.
+The live host exposes an atomic snapshot, a replayable composite SSE cursor,
+and idempotent pause/pin/dismiss commands. The protocol, retry contract,
+pairing boundary, and follow-up durability work are in
 `Docs/live-assistant-architecture.md`.
 
 ## Reference material
@@ -76,11 +88,9 @@ unreadable or truncated files are reported instead of silently disappearing.
 
 Reference contents are owned by the Mac host and are never copied to the thin
 display. The prompt builder places stable behavior and reference material
-before volatile transcript content and exposes a stable cache key plus an
-explicit breakpoint boundary. A future cloud assistant request will send the
-selected reference text to its model provider; the current spike builds the
-host-side reference snapshot and prompt contract but does not yet issue
-assistant model calls.
+before volatile transcript content and sends that exact prefix to OpenAI with
+an explicit cache breakpoint. Recent transcript is appended afterward. The
+browser never receives the reference corpus, assembled prompt, or API key.
 
 ## Quick Dictation
 

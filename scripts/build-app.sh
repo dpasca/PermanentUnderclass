@@ -20,11 +20,20 @@ mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 /usr/bin/install -m 0644 \
     "$project_dir/AppBundle/THIRD_PARTY_NOTICES.md" \
     "$contents_dir/Resources/THIRD_PARTY_NOTICES.md"
+/usr/bin/ditto \
+    "$project_dir/Prototypes/LiveAssistant" \
+    "$contents_dir/Resources/LiveAssistant"
 
 fluid_audio_license="$project_dir/.build/checkouts/FluidAudio/LICENSE"
 if [[ -f "$fluid_audio_license" ]]; then
     /usr/bin/install -m 0644 \
         "$fluid_audio_license" "$contents_dir/Resources/FluidAudio-LICENSE.txt"
+fi
+
+hummingbird_license="$project_dir/.build/checkouts/hummingbird/LICENSE.txt"
+if [[ -f "$hummingbird_license" ]]; then
+    /usr/bin/install -m 0644 \
+        "$hummingbird_license" "$contents_dir/Resources/Hummingbird-LICENSE.txt"
 fi
 
 if [[ -z "$signing_identity" ]]; then
