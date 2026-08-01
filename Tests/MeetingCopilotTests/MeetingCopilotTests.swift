@@ -516,11 +516,41 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(PCM16SignalGate.containsAudibleSignal(audible))
     }
 
-    func testLoadingDictationStateTellsTheUserToWait() {
-        XCTAssertEqual(DictationPhase.preparing.label, "Loading Parakeet…")
+    func testQuickDictationUsesOnlyTheSelectedTranscriber() {
+        let callbacks = DictationTranscriberCallbacks(
+            onState: { _ in },
+            onRefined: { _, _ in },
+            onFailure: { _, _ in }
+        )
+
+        let local = QuickDictationTranscriberFactory.make(
+            engine: .localParakeet,
+            apiKey: "",
+            callbacks: callbacks
+        )
+        let cloud = QuickDictationTranscriberFactory.make(
+            engine: .openAITranscribe,
+            apiKey: "test-key",
+            callbacks: callbacks
+        )
+
+        XCTAssertTrue(local is ParakeetRefinementClient)
+        XCTAssertTrue(cloud is RealtimeRefinementClient)
+    }
+
+    func testLoadingDictationStateNamesTheSelectedModel() {
+        let local = DictationPhase.preparing(.localParakeet)
+        XCTAssertEqual(local.label, "Loading Parakeet…")
         XCTAssertEqual(
-            DictationPhase.preparing.detail,
+            local.detail,
             "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+        )
+
+        let cloud = DictationPhase.preparing(.openAITranscribe)
+        XCTAssertEqual(cloud.label, "Connecting to GPT-Transcribe…")
+        XCTAssertEqual(
+            cloud.detail,
+            "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
         )
     }
 }

@@ -246,7 +246,7 @@ struct DictationPermissionState: Equatable {
 enum DictationPhase: Equatable {
     case off
     case needsPermission
-    case preparing
+    case preparing(TranscriptRefinementEngine)
     case ready
     case recording
     case transcribing
@@ -258,8 +258,13 @@ enum DictationPhase: Equatable {
             "Off"
         case .needsPermission:
             "Needs permission"
-        case .preparing:
-            "Loading Parakeet…"
+        case let .preparing(engine):
+            switch engine {
+            case .localParakeet:
+                "Loading Parakeet…"
+            case .openAITranscribe:
+                "Connecting to GPT-Transcribe…"
+            }
         case .ready:
             "Ready"
         case .recording:
@@ -273,8 +278,13 @@ enum DictationPhase: Equatable {
 
     var detail: String? {
         switch self {
-        case .preparing:
-            return "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+        case let .preparing(engine):
+            switch engine {
+            case .localParakeet:
+                return "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+            case .openAITranscribe:
+                return "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
+            }
         case let .failed(message):
             return message
         default:

@@ -147,8 +147,8 @@ struct ContentView: View {
                     ModelChoiceButton(
                         engine: engine,
                         isSelected: controller.refinementEngine == engine,
-                        isDisabled: controller.isListening,
-                        action: { controller.refinementEngine = engine }
+                        isDisabled: controller.isListening || controller.isDictationBusy,
+                        action: { controller.selectRefinementEngine(engine) }
                     )
                 }
             }

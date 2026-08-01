@@ -179,6 +179,37 @@ final class ModifierHoldMonitor {
     }
 }
 
+struct DictationTranscriberCallbacks {
+    let onState: (SocketState) -> Void
+    let onRefined: (_ transcriptID: String, _ text: String) -> Void
+    let onFailure: (_ transcriptID: String, _ message: String) -> Void
+}
+
+enum QuickDictationTranscriberFactory {
+    static func make(
+        engine: TranscriptRefinementEngine,
+        apiKey: String,
+        callbacks: DictationTranscriberCallbacks
+    ) -> TranscriptRefining {
+        switch engine {
+        case .localParakeet:
+            ParakeetRefinementClient(
+                onState: callbacks.onState,
+                onRefined: callbacks.onRefined,
+                onFailure: callbacks.onFailure
+            )
+        case .openAITranscribe:
+            RealtimeRefinementClient(
+                apiKey: apiKey,
+                label: "QuickDictation",
+                onState: callbacks.onState,
+                onRefined: callbacks.onRefined,
+                onFailure: callbacks.onFailure
+            )
+        }
+    }
+}
+
 final class HoldToDictateService {
     typealias PhaseHandler = (DictationPhase) -> Void
     typealias PermissionHandler = (DictationPermissionState) -> Void
@@ -198,6 +229,8 @@ final class HoldToDictateService {
     private let telemetryHandler: TelemetryHandler
     private let resultHandler: ResultHandler
     private let transcribesAfterRecording: Bool
+    private let transcriptionEngine: TranscriptRefinementEngine
+    private let apiKey: String
 
     private lazy var monitor = ModifierHoldMonitor { [weak self] signal in
         self?.handle(signal)
@@ -206,8 +239,8 @@ final class HoldToDictateService {
     private var pipeline: AudioTrackPipeline?
     private var audioBuffer: LockedAudioBuffer?
     private var recordingID: UUID?
-    private var preparationTask: Task<Void, Never>?
-    private var transcriptionTask: Task<Void, Never>?
+    private var transcriber: TranscriptRefining?
+    private var activeTranscriptionID: String?
     private var generation = UUID()
     private var isModelReady = false
     private var wantsEnabled = false
@@ -221,6 +254,8 @@ final class HoldToDictateService {
         onRecording: @escaping RecordingHandler,
         onTelemetry: @escaping TelemetryHandler,
         onResult: @escaping ResultHandler,
+        transcriptionEngine: TranscriptRefinementEngine = .localParakeet,
+        apiKey: String = "",
         transcribesAfterRecording: Bool = true
     ) {
         self.canRecord = canRecord
@@ -230,6 +265,8 @@ final class HoldToDictateService {
         recordingHandler = onRecording
         telemetryHandler = onTelemetry
         resultHandler = onResult
+        self.transcriptionEngine = transcriptionEngine
+        self.apiKey = apiKey
         self.transcribesAfterRecording = transcribesAfterRecording
     }
 
@@ -255,13 +292,20 @@ final class HoldToDictateService {
             phaseHandler(.needsPermission)
             return false
         }
+        guard
+            transcriptionEngine != .openAITranscribe
+                || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            phaseHandler(.failed("Save an OpenAI API key before using Quick Dictation with GPT-Transcribe."))
+            return false
+        }
 
         do {
             try monitor.start()
             isRunning = true
             isModelReady = false
             generation = UUID()
-            prepareModel(generation: generation)
+            connectTranscriber(generation: generation)
             return true
         } catch {
             phaseHandler(.failed(error.localizedDescription))
@@ -273,17 +317,16 @@ final class HoldToDictateService {
         let hadActiveWork = wantsEnabled
             || isRunning
             || recordingID != nil
-            || preparationTask != nil
-            || transcriptionTask != nil
+            || transcriber != nil
+            || activeTranscriptionID != nil
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
         monitor.stop()
         cancelRecording(nextPhase: .off)
-        preparationTask?.cancel()
-        transcriptionTask?.cancel()
-        preparationTask = nil
-        transcriptionTask = nil
+        transcriber?.disconnect()
+        transcriber = nil
+        activeTranscriptionID = nil
         isModelReady = false
         isRunning = false
     }
@@ -332,33 +375,57 @@ final class HoldToDictateService {
         }
     }
 
-    private func prepareModel(generation: UUID) {
-        phaseHandler(.preparing)
-        preparationTask = Task { [weak self] in
-            do {
-                try await ParakeetTranscriber.shared.prepare()
-                await MainActor.run { [weak self] in
-                    guard
-                        let self,
-                        self.generation == generation,
-                        self.isRunning
-                    else {
-                        return
-                    }
-                    self.preparationTask = nil
-                    self.isModelReady = true
-                    if self.recordingID == nil, self.transcriptionTask == nil {
-                        self.phaseHandler(.ready)
-                    }
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self, self.generation == generation else { return }
-                    self.preparationTask = nil
-                    self.isModelReady = false
-                    self.phaseHandler(.failed(error.localizedDescription))
-                }
+    private func connectTranscriber(generation: UUID) {
+        phaseHandler(.preparing(transcriptionEngine))
+        let callbacks = DictationTranscriberCallbacks(
+            onState: { [weak self] state in
+                self?.handleTranscriberState(state, generation: generation)
+            },
+            onRefined: { [weak self] transcriptID, text in
+                self?.handleTranscription(
+                    transcriptID: transcriptID,
+                    text: text,
+                    generation: generation
+                )
+            },
+            onFailure: { [weak self] transcriptID, message in
+                self?.handleTranscriptionFailure(
+                    transcriptID: transcriptID,
+                    message: message,
+                    generation: generation
+                )
             }
+        )
+        let transcriber = QuickDictationTranscriberFactory.make(
+            engine: transcriptionEngine,
+            apiKey: apiKey,
+            callbacks: callbacks
+        )
+        self.transcriber = transcriber
+        transcriber.connect()
+    }
+
+    private func handleTranscriberState(
+        _ state: SocketState,
+        generation: UUID
+    ) {
+        guard self.generation == generation, isRunning else { return }
+        switch state {
+        case .idle:
+            isModelReady = false
+        case .connecting:
+            isModelReady = false
+            if recordingID == nil, activeTranscriptionID == nil {
+                phaseHandler(.preparing(transcriptionEngine))
+            }
+        case .connected:
+            isModelReady = true
+            if recordingID == nil, activeTranscriptionID == nil {
+                phaseHandler(.ready)
+            }
+        case let .failed(message):
+            isModelReady = false
+            phaseHandler(.failed(message))
         }
     }
 
@@ -374,11 +441,9 @@ final class HoldToDictateService {
     }
 
     private func startRecording() {
-        guard isRunning, recordingID == nil, transcriptionTask == nil else { return }
+        guard isRunning, recordingID == nil, activeTranscriptionID == nil else { return }
         guard isModelReady else {
-            if preparationTask != nil {
-                phaseHandler(.preparing)
-            }
+            phaseHandler(.preparing(transcriptionEngine))
             return
         }
         guard canRecord() else {
@@ -476,60 +541,84 @@ final class HoldToDictateService {
             return
         }
 
-        let generation = generation
         let languages = expectedLanguages()
         phaseHandler(.transcribing)
         Self.logger.notice("transcription_started")
-        transcriptionTask = Task { [weak self] in
-            do {
-                try await ParakeetTranscriber.shared.prepare()
-                let text = try await ParakeetTranscriber.shared.transcribe(
-                    pcm16Audio: audio,
-                    expectedLanguages: languages
-                )
-                await MainActor.run { [weak self] in
-                    guard
-                        let self,
-                        self.generation == generation,
-                        self.isRunning,
-                        self.recordingID == nil
-                    else {
-                        return
-                    }
-                    self.transcriptionTask = nil
-                    let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !result.isEmpty else {
-                        Self.logger.error("transcription_empty")
-                        self.phaseHandler(.failed("Parakeet returned no dictation text."))
-                        return
-                    }
-                    do {
-                        try PasteInjector.paste(result)
-                        Self.logger.notice(
-                            "transcription_completed characters=\(result.count, privacy: .public)"
-                        )
-                        self.resultHandler(result)
-                        self.phaseHandler(.ready)
-                    } catch {
-                        Self.logger.error(
-                            "paste_failed error=\(error.localizedDescription, privacy: .public)"
-                        )
-                        self.resultHandler(result)
-                        self.phaseHandler(.failed(error.localizedDescription))
-                    }
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self, self.generation == generation else { return }
-                    self.transcriptionTask = nil
-                    Self.logger.error(
-                        "transcription_failed error=\(error.localizedDescription, privacy: .public)"
-                    )
-                    self.phaseHandler(.failed(error.localizedDescription))
-                }
-            }
+        let transcriptID = "dictation-\(UUID().uuidString)"
+        activeTranscriptionID = transcriptID
+        guard let transcriber else {
+            activeTranscriptionID = nil
+            phaseHandler(.failed("The selected Quick Dictation model is unavailable."))
+            return
         }
+        transcriber.refine(
+            RealtimeRefinementRequest(
+                transcriptID: transcriptID,
+                speaker: .you,
+                pcm16Audio: audio,
+                context: TranscriptionContext(
+                    prompt: "",
+                    keywords: [],
+                    languages: languages,
+                    delay: .medium
+                ),
+                recentTranscript: ""
+            )
+        )
+    }
 
+    private func handleTranscription(
+        transcriptID: String,
+        text: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            recordingID == nil,
+            activeTranscriptionID == transcriptID
+        else {
+            return
+        }
+        activeTranscriptionID = nil
+        let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else {
+            Self.logger.error("transcription_empty")
+            phaseHandler(.failed("\(transcriptionEngine.title) returned no dictation text."))
+            return
+        }
+        do {
+            try PasteInjector.paste(result)
+            Self.logger.notice(
+                "transcription_completed characters=\(result.count, privacy: .public)"
+            )
+            resultHandler(result)
+            phaseHandler(.ready)
+        } catch {
+            Self.logger.error(
+                "paste_failed error=\(error.localizedDescription, privacy: .public)"
+            )
+            resultHandler(result)
+            phaseHandler(.failed(error.localizedDescription))
+        }
+    }
+
+    private func handleTranscriptionFailure(
+        transcriptID: String,
+        message: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            activeTranscriptionID == transcriptID
+        else {
+            return
+        }
+        activeTranscriptionID = nil
+        Self.logger.error(
+            "transcription_failed error=\(message, privacy: .public)"
+        )
+        phaseHandler(.failed(message))
     }
 
     private func cancelRecording(nextPhase: DictationPhase) {

@@ -53,10 +53,11 @@ Enable **Quick Dictation**, then grant Accessibility and Microphone access when
 prompted. Accessibility allows both global shortcut monitoring and automatic
 paste. macOS may require PUnderclass to be quit and reopened after this
 permission changes. Hold the exact modifier-only chord **Command + Option**
-while speaking and release either modifier to transcribe locally with Parakeet
-and paste into the currently focused application. Pressing another keyboard key
-while the chord is down cancels the recording, so normal Command-Option
-shortcuts do not become dictations.
+while speaking and release either modifier to transcribe with the currently
+selected **FINAL** model and paste into the focused application. Local Parakeet
+keeps dictation audio on this Mac; GPT-Transcribe sends the captured dictation
+audio to OpenAI. Pressing another keyboard key while the chord is down cancels
+the recording, so normal Command-Option shortcuts do not become dictations.
 
 The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
@@ -80,7 +81,7 @@ The proof of concept includes:
     Neural Engine preparation while retaining the same model and recognition
     quality. The first use downloads roughly 483 MB to FluidAudio's
     application-support cache and each fresh app process performs a short
-    Core ML preparation before Quick Dictation becomes ready.
+    Core ML preparation when Local Parakeet is selected.
   - **OpenAI GPT-Transcribe** runs a persistent committed-turn
     `gpt-transcribe` session for each audio track. The two tracks finalize in
     parallel while retaining deterministic speaker labels. Each turn includes
@@ -103,7 +104,7 @@ The proof of concept includes:
   buffers, missing permission/device, and stopped packet flow. The microphone
   and speaker pull-down buttons list compatible devices and change the current
   macOS default input or output without opening System Settings.
-- Optional global hold-to-dictate using the same embedded Parakeet model,
+- Optional global hold-to-dictate using the selected final transcription model,
   modifier-only Command-Option monitoring, and automatic paste into the focused
   application.
 

@@ -157,6 +157,13 @@ final class MeetingController: ObservableObject {
             try KeychainStore.saveAPIKey(key)
             apiKeyDraft = key
             keyStatus = "Saved in Keychain"
+            if
+                dictationEnabled,
+                !isDictationBusy,
+                refinementEngine == .openAITranscribe
+            {
+                restartDictationService()
+            }
         } catch {
             present(error)
         }
@@ -371,6 +378,14 @@ final class MeetingController: ObservableObject {
         statusMessage = "Finishing your current turn…"
     }
 
+    func selectRefinementEngine(_ engine: TranscriptRefinementEngine) {
+        guard !isListening, !isDictationBusy, refinementEngine != engine else { return }
+        refinementEngine = engine
+        if dictationEnabled {
+            restartDictationService()
+        }
+    }
+
     func setDictationEnabled(_ enabled: Bool) {
         dictationEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.dictationEnabledDefaultsKey)
@@ -378,6 +393,7 @@ final class MeetingController: ObservableObject {
             startDictationService(requestAccess: true)
         } else {
             dictationService?.disable()
+            dictationService = nil
             dictationPhase = .off
             isDictating = false
         }
@@ -415,6 +431,10 @@ final class MeetingController: ObservableObject {
 
     var isMicrophoneMonitoring: Bool {
         isListening || isDictating
+    }
+
+    var isDictationBusy: Bool {
+        isDictating || dictationPhase == .transcribing
     }
 
     var visibleMicrophoneTelemetry: TrackTelemetry {
@@ -692,12 +712,20 @@ final class MeetingController: ObservableObject {
                 },
                 onResult: { [weak self] text in
                     self?.lastDictation = text
-                }
+                },
+                transcriptionEngine: refinementEngine,
+                apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             dictationService = created
             service = created
         }
         _ = service.enable(requestAccess: requestAccess)
+    }
+
+    private func restartDictationService() {
+        dictationService?.disable()
+        dictationService = nil
+        startDictationService(requestAccess: false)
     }
 
     private func dictationLanguages() -> [String] {
