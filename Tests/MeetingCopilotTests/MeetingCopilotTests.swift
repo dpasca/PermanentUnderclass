@@ -644,6 +644,13 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertFalse(ready.isInProgress)
     }
 
+    func testParakeetEncoderAvoidsCrashProneMetalBackend() {
+        XCTAssertEqual(
+            ParakeetTranscriber.encoderComputeUnits,
+            .cpuOnly
+        )
+    }
+
     func testLoadingDictationStateNamesTheSelectedModel() {
         let local = DictationPhase.preparing(.localParakeet)
         XCTAssertEqual(local.label, "Loading Parakeet…")

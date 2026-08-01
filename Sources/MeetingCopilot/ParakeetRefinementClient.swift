@@ -230,6 +230,7 @@ enum ParakeetPreparationEvent: Equatable, Sendable {
 
 actor ParakeetTranscriber {
     static let shared = ParakeetTranscriber()
+    static let encoderComputeUnits: MLComputeUnits = .cpuOnly
     private static let logger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
         category: "ParakeetPreparation"
@@ -254,17 +255,18 @@ actor ParakeetTranscriber {
         }
 
         onProgress?(.checkingCache)
-        // FluidAudio's v3 benchmarks show the large encoder is WER-neutral
-        // and faster on Apple Silicon GPUs. More importantly for this desktop
-        // app, this avoids a slow or occasionally stalled ANE compilation on
-        // each fresh process. Decoder and joint models retain their defaults.
+        // Keep the encoder off Metal. On macOS 26.4.1, Core ML's asynchronous
+        // GPU path can abort inside MPSGraphTensorData while bridging a
+        // three-dimensional encoder tensor. This is a framework
+        // assertion, so it cannot be recovered as a Swift error. CPU-only
+        // avoids MPSGraph without the large encoder's slow ANE compile.
         // Loading directly from the default cache still downloads missing
         // assets through FluidAudio, while avoiding downloadAndLoad's extra
         // load-and-discard pass over every Core ML bundle.
         let task = Task(priority: .utility) {
             let models = try await AsrModels.loadFromCache(
                 version: .v3,
-                encoderComputeUnits: .cpuAndGPU,
+                encoderComputeUnits: Self.encoderComputeUnits,
                 progressHandler: { progress in
                     guard let event = Self.preparationEvent(from: progress) else { return }
                     onProgress?(event)
