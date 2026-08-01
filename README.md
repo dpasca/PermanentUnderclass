@@ -8,18 +8,19 @@ tracks and transcribes them in real time:
 
 Each track is sent to its own OpenAI Realtime transcription session, so speaker
 labels come from the audio route rather than diarization guesses. Completed
-turns are finalized by an embedded local Parakeet model by default. The local
-engine runs directly inside Meeting Copilot and does not use the MacParakeet
-application, process, settings, microphone handling, or database.
+turns are finalized by `gpt-transcribe` by default. An embedded local Parakeet
+model remains available as an offline fallback and evaluation baseline. The
+local engine runs directly inside Meeting Copilot and does not use the
+MacParakeet application, process, settings, microphone handling, or database.
 
 ## Requirements
 
 - macOS 14.2 or newer.
-- Apple Silicon for the local Parakeet finalizer.
+- Apple Silicon when using the local Parakeet finalizer.
 - Xcode command-line tools.
 - Wired or USB headphones during the proof of concept.
 - An OpenAI API key with access to `gpt-live-transcribe`. The optional OpenAI
-  finalizer also requires access to `gpt-realtime-2.1`.
+  finalizer also requires access to `gpt-transcribe`.
 
 ## Run
 
@@ -78,8 +79,11 @@ The proof of concept includes:
     quality. The first use downloads roughly 483 MB to FluidAudio's
     application-support cache and each fresh app process performs a short
     Core ML preparation before Quick Dictation becomes ready.
-  - **OpenAI audio second pass** retains the existing serialized,
-    out-of-band `gpt-realtime-2.1` worker for comparison.
+  - **OpenAI GPT-Transcribe** runs a persistent committed-turn
+    `gpt-transcribe` session for each audio track. The two tracks finalize in
+    parallel while retaining deterministic speaker labels. Each turn includes
+    the meeting prompt, terminology and language hints, plus recent
+    cross-speaker transcript context.
 - Client-side audio voice-activity detection with a 300 ms pre-roll, a 3
   second end-of-turn pause, and explicit turn commits. Partial text continues
   streaming during the finalization pause. A **Finish My Turn** button supplies
@@ -87,7 +91,7 @@ The proof of concept includes:
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt
-  and terminology hints still improve the OpenAI live pass.
+  and terminology hints improve both OpenAI transcription passes.
 - Per-track waveform, levels, packet/drop counters, live partial text, and a
   combined final transcript. Each finalized turn is labeled **Refining**,
   **Refined**, or **Live only**; when refinement changes the wording, the

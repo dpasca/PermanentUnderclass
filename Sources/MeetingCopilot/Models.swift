@@ -1,7 +1,7 @@
 import CoreAudio
 import Foundation
 
-enum SpeakerTag: String, Codable {
+enum SpeakerTag: String, Codable, Hashable {
     case you = "You"
     case other = "Other"
 }
@@ -24,7 +24,7 @@ enum TranscriptRefinementState: Equatable {
 
 enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
     case localParakeet
-    case openAIRealtime
+    case openAITranscribe
 
     var id: String { rawValue }
 
@@ -32,8 +32,8 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
         switch self {
         case .localParakeet:
             "Local Parakeet"
-        case .openAIRealtime:
-            "OpenAI audio second pass"
+        case .openAITranscribe:
+            "OpenAI GPT-Transcribe"
         }
     }
 
@@ -41,8 +41,8 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
         switch self {
         case .localParakeet:
             "Parakeet TDT v3 runs directly inside Meeting Copilot through Core ML."
-        case .openAIRealtime:
-            "The bounded turn audio is transcribed again by an OpenAI audio model."
+        case .openAITranscribe:
+            "Each bounded turn is transcribed again by the high-accuracy GPT-Transcribe model."
         }
     }
 }

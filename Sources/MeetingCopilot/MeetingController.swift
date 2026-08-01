@@ -9,7 +9,7 @@ final class MeetingController: ObservableObject {
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
-    @Published var refinementEngine: TranscriptRefinementEngine = .localParakeet
+    @Published var refinementEngine: TranscriptRefinementEngine = .openAITranscribe
     @Published var processes: [AudioProcessInfo] = []
     @Published var selectedProcessID: AudioObjectID?
     @Published var localTrack = TrackViewState()
@@ -34,7 +34,8 @@ final class MeetingController: ObservableObject {
     private var remotePipeline: AudioTrackPipeline?
     private var localClient: RealtimeTranscriptionClient?
     private var remoteClient: RealtimeTranscriptionClient?
-    private var refinementClient: TranscriptRefining?
+    private var refinementClients: [SpeakerTag: TranscriptRefining] = [:]
+    private var refinementStates: [SpeakerTag: SocketState] = [:]
     private var activeContext: TranscriptionContext?
     private var activeSessionID: UUID?
     private var defaultInputDeviceID: AudioObjectID?
@@ -132,7 +133,9 @@ final class MeetingController: ObservableObject {
             }
             let selectedProcess = try refreshSelection(previous: previousSelection)
             let context = try transcriptionContext()
-            refinementClient?.disconnect()
+            uniqueRefinementClients().forEach { $0.disconnect() }
+            refinementClients.removeAll()
+            refinementStates.removeAll()
             markRefiningTurnsLiveOnly(
                 "Refinement was interrupted when a new meeting started."
             )
@@ -160,20 +163,6 @@ final class MeetingController: ObservableObject {
             self.localClient = localClient
             self.remoteClient = remoteClient
 
-            let stateHandler: (SocketState) -> Void = { [weak self] state in
-                guard let self, self.activeSessionID == sessionID else { return }
-                self.refinementState = state
-                switch state {
-                case let .failed(message):
-                    self.markRefiningTurnsLiveOnly(message)
-                    self.errorMessage =
-                        "Final transcription: \(message) Live transcription continues."
-                case .idle where !self.isListening:
-                    self.statusMessage = "Stopped — transcript refinement complete"
-                default:
-                    break
-                }
-            }
             let refinedHandler: (String, String) -> Void = {
                 [weak self] transcriptID, text in
                 guard let self, self.activeSessionID == sessionID else { return }
@@ -184,23 +173,41 @@ final class MeetingController: ObservableObject {
                 guard let self, self.activeSessionID == sessionID else { return }
                 self.markTurnLiveOnly(transcriptID: transcriptID, message: message)
             }
-            let refinementClient: TranscriptRefining
+            refinementStates = [.you: .connecting, .other: .connecting]
             switch refinementEngine {
             case .localParakeet:
-                refinementClient = ParakeetRefinementClient(
-                    onState: stateHandler,
+                let client = ParakeetRefinementClient(
+                    onState: { [weak self] state in
+                        self?.handleRefinementState(
+                            state,
+                            speaker: nil,
+                            sessionID: sessionID
+                        )
+                    },
                     onRefined: refinedHandler,
                     onFailure: failureHandler
                 )
-            case .openAIRealtime:
-                refinementClient = RealtimeRefinementClient(
-                    apiKey: key,
-                    onState: stateHandler,
-                    onRefined: refinedHandler,
-                    onFailure: failureHandler
-                )
+                refinementClients = [.you: client, .other: client]
+
+            case .openAITranscribe:
+                var clients: [SpeakerTag: TranscriptRefining] = [:]
+                for speaker in [SpeakerTag.you, .other] {
+                    clients[speaker] = RealtimeRefinementClient(
+                        apiKey: key,
+                        label: speaker.rawValue,
+                        onState: { [weak self] state in
+                            self?.handleRefinementState(
+                                state,
+                                speaker: speaker,
+                                sessionID: sessionID
+                            )
+                        },
+                        onRefined: refinedHandler,
+                        onFailure: failureHandler
+                    )
+                }
+                refinementClients = clients
             }
-            self.refinementClient = refinementClient
 
             let localPipeline = AudioTrackPipeline(
                 label: "MeetingCopilot.Audio.You",
@@ -227,7 +234,7 @@ final class MeetingController: ObservableObject {
 
             localClient.connect()
             remoteClient.connect()
-            refinementClient.connect()
+            uniqueRefinementClients().forEach { $0.connect() }
 
             let processCapture = ProcessTapCapture()
             do {
@@ -271,14 +278,14 @@ final class MeetingController: ObservableObject {
         remotePipeline = nil
 
         let clients = [localClient, remoteClient].compactMap { $0 }
-        let refinementClient = refinementClient
+        let refinementClients = uniqueRefinementClients()
         clients.forEach { $0.commitPendingAudio() }
         localClient = nil
         remoteClient = nil
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             clients.forEach { $0.disconnect() }
-            refinementClient?.finishWhenIdle()
+            refinementClients.forEach { $0.finishWhenIdle() }
             guard self?.activeSessionID != nil, self?.isListening == false else { return }
             if self?.transcript.contains(where: {
                 if case .refining = $0.refinement { return true }
@@ -428,7 +435,7 @@ final class MeetingController: ObservableObject {
                 }
                 guard
                     !pcm16Audio.isEmpty,
-                    let refinementClient = self.refinementClient,
+                    let refinementClient = self.refinementClients[speaker],
                     let activeContext = self.activeContext
                 else {
                     return
@@ -451,6 +458,63 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    private func uniqueRefinementClients() -> [TranscriptRefining] {
+        var seen: Set<ObjectIdentifier> = []
+        return [SpeakerTag.you, .other].compactMap { speaker in
+            guard let client = refinementClients[speaker] else { return nil }
+            let identifier = ObjectIdentifier(client)
+            guard seen.insert(identifier).inserted else { return nil }
+            return client
+        }
+    }
+
+    private func handleRefinementState(
+        _ state: SocketState,
+        speaker: SpeakerTag?,
+        sessionID: UUID
+    ) {
+        guard activeSessionID == sessionID else { return }
+        if let speaker {
+            refinementStates[speaker] = state
+        } else {
+            refinementStates[.you] = state
+            refinementStates[.other] = state
+        }
+        refinementState = combinedRefinementState()
+
+        if case let .failed(message) = state {
+            markRefiningTurnsLiveOnly(message, speaker: speaker)
+            let track = speaker.map { "\($0.rawValue) " } ?? ""
+            errorMessage =
+                "\(track)final transcription: \(message) Live transcription continues."
+        }
+
+        if
+            !isListening,
+            refinementStates[.you] == .idle,
+            refinementStates[.other] == .idle
+        {
+            statusMessage = "Stopped — transcript refinement complete"
+        }
+    }
+
+    private func combinedRefinementState() -> SocketState {
+        let states = [SpeakerTag.you, .other].compactMap { refinementStates[$0] }
+        if let failed = states.first(where: {
+            if case .failed = $0 { return true }
+            return false
+        }) {
+            return failed
+        }
+        if states.contains(.connecting) {
+            return .connecting
+        }
+        if states.contains(.connected) {
+            return .connected
+        }
+        return .idle
+    }
+
     private func applyRefinement(transcriptID: String, text: String) {
         guard let index = transcript.firstIndex(where: { $0.id == transcriptID }) else {
             return
@@ -466,9 +530,13 @@ final class MeetingController: ObservableObject {
         transcript[index].refinement = .liveOnly(message)
     }
 
-    private func markRefiningTurnsLiveOnly(_ message: String) {
+    private func markRefiningTurnsLiveOnly(
+        _ message: String,
+        speaker: SpeakerTag? = nil
+    ) {
         for index in transcript.indices {
             guard case .refining = transcript[index].refinement else { continue }
+            if let speaker, transcript[index].speaker != speaker { continue }
             transcript[index].refinement = .liveOnly(message)
         }
     }
@@ -712,14 +780,15 @@ final class MeetingController: ObservableObject {
         processCapture?.stop()
         localClient?.disconnect()
         remoteClient?.disconnect()
-        refinementClient?.disconnect()
+        uniqueRefinementClients().forEach { $0.disconnect() }
         microphoneCapture = nil
         processCapture = nil
         localPipeline = nil
         remotePipeline = nil
         localClient = nil
         remoteClient = nil
-        refinementClient = nil
+        refinementClients.removeAll()
+        refinementStates.removeAll()
         activeContext = nil
         activeSessionID = nil
         isListening = false

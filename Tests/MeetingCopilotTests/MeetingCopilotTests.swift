@@ -75,47 +75,58 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(input["turn_detection"] is NSNull)
     }
 
-    func testRefinementEventParsing() throws {
-        let deltaData = try XCTUnwrap(
-            #"{"type":"response.output_text.delta","response_id":"resp_42","delta":"Thread block"}"#
+    func testGPTTranscribeEventParsing() throws {
+        let committedData = try XCTUnwrap(
+            #"{"type":"input_audio_buffer.committed","item_id":"item_42"}"#
                 .data(using: .utf8)
         )
         XCTAssertEqual(
-            RealtimeRefinementServerEvent.parse(deltaData),
-            .textDelta(responseID: "resp_42", delta: "Thread block")
+            RealtimeRefinementServerEvent.parse(committedData),
+            .audioCommitted(itemID: "item_42")
         )
 
-        let doneData = try XCTUnwrap(
+        let completedData = try XCTUnwrap(
             """
             {
-              "type": "response.done",
-              "response": {
-                "id": "resp_42",
-                "status": "completed",
-                "output": [{
-                  "type": "message",
-                  "content": [{"type": "output_text", "text": "Thread blocks and warps."}]
-                }]
-              }
+              "type": "conversation.item.input_audio_transcription.completed",
+              "item_id": "item_42",
+              "transcript": "Thread blocks and warps.",
+              "languages": [{"code": "en"}]
             }
             """.data(using: .utf8)
         )
         XCTAssertEqual(
-            RealtimeRefinementServerEvent.parse(doneData),
-            .responseDone(
-                responseID: "resp_42",
-                status: "completed",
-                outputText: "Thread blocks and warps.",
-                error: nil
+            RealtimeRefinementServerEvent.parse(completedData),
+            .transcriptionCompleted(
+                itemID: "item_42",
+                transcript: "Thread blocks and warps.",
+                languages: ["en"]
+            )
+        )
+
+        let failedData = try XCTUnwrap(
+            """
+            {
+              "type": "conversation.item.input_audio_transcription.failed",
+              "item_id": "item_43",
+              "error": {"message": "The audio could not be transcribed."}
+            }
+            """.data(using: .utf8)
+        )
+        XCTAssertEqual(
+            RealtimeRefinementServerEvent.parse(failedData),
+            .transcriptionFailed(
+                itemID: "item_43",
+                message: "The audio could not be transcribed."
             )
         )
     }
 
-    func testRefinementSessionUsesCurrentAudioNativeModel() throws {
-        XCTAssertEqual(RealtimeRefinementClient.model, "gpt-realtime-2.1")
+    func testRefinementSessionUsesGPTTranscribe() throws {
+        XCTAssertEqual(RealtimeRefinementClient.model, "gpt-transcribe")
         XCTAssertEqual(
             RealtimeRefinementClient.webSocketURL.query,
-            "model=gpt-realtime-2.1"
+            "intent=transcription"
         )
 
         let data = try RealtimeRefinementClient.sessionUpdateJSON()
@@ -123,18 +134,19 @@ final class MeetingCopilotTests: XCTestCase {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         let session = try XCTUnwrap(root["session"] as? [String: Any])
-        XCTAssertEqual(session["type"] as? String, "realtime")
-        XCTAssertEqual(session["output_modalities"] as? [String], ["text"])
+        XCTAssertEqual(session["type"] as? String, "transcription")
 
         let audio = try XCTUnwrap(session["audio"] as? [String: Any])
         let input = try XCTUnwrap(audio["input"] as? [String: Any])
         let format = try XCTUnwrap(input["format"] as? [String: Any])
         XCTAssertEqual(format["type"] as? String, "audio/pcm")
         XCTAssertEqual(format["rate"] as? Int, 24_000)
+        let transcription = try XCTUnwrap(input["transcription"] as? [String: Any])
+        XCTAssertEqual(transcription["model"] as? String, "gpt-transcribe")
         XCTAssertTrue(input["turn_detection"] is NSNull)
     }
 
-    func testRefinementRequestIsOutOfBandAndContainsRawAudio() throws {
+    func testRefinementRequestConfiguresContextAndCommitsRawAudio() throws {
         let audio = Data([0, 1, 2, 3])
         let request = RealtimeRefinementRequest(
             transcriptID: "You-item_7",
@@ -148,28 +160,71 @@ final class MeetingCopilotTests: XCTestCase {
             ),
             recentTranscript: "Other: How are thread blocks organized?"
         )
-        let data = try RealtimeRefinementClient.responseCreateJSON(request)
+        let data = try RealtimeRefinementClient.sessionUpdateJSON(request)
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        let response = try XCTUnwrap(root["response"] as? [String: Any])
-        XCTAssertEqual(response["conversation"] as? String, "none")
-        XCTAssertEqual(response["output_modalities"] as? [String], ["text"])
+        let session = try XCTUnwrap(root["session"] as? [String: Any])
+        let sessionAudio = try XCTUnwrap(session["audio"] as? [String: Any])
+        let input = try XCTUnwrap(sessionAudio["input"] as? [String: Any])
+        let transcription = try XCTUnwrap(input["transcription"] as? [String: Any])
+        XCTAssertEqual(transcription["model"] as? String, "gpt-transcribe")
+        XCTAssertEqual(
+            transcription["keywords"] as? [String],
+            ["CUDA", "thread block", "warp"]
+        )
+        XCTAssertEqual(transcription["languages"] as? [String], ["en"])
+        let prompt = try XCTUnwrap(transcription["prompt"] as? String)
+        XCTAssertTrue(prompt.contains("GPU architecture discussion"))
+        XCTAssertTrue(prompt.contains("thread blocks organized"))
+        XCTAssertNil(transcription["delay"])
 
-        let metadata = try XCTUnwrap(response["metadata"] as? [String: String])
-        XCTAssertEqual(metadata["transcript_id"], "You-item_7")
+        let appendData = try RealtimeRefinementClient.inputAudioAppendJSON(audio)
+        let append = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: appendData) as? [String: String]
+        )
+        XCTAssertEqual(append["type"], "input_audio_buffer.append")
+        XCTAssertEqual(append["audio"], audio.base64EncodedString())
 
-        let input = try XCTUnwrap(response["input"] as? [[String: Any]])
-        let message = try XCTUnwrap(input.first)
-        let content = try XCTUnwrap(message["content"] as? [[String: Any]])
-        let audioPart = try XCTUnwrap(content.first)
-        XCTAssertEqual(audioPart["type"] as? String, "input_audio")
-        XCTAssertEqual(audioPart["audio"] as? String, audio.base64EncodedString())
+        let commitData = try RealtimeRefinementClient.inputAudioCommitJSON()
+        let commit = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: commitData) as? [String: String]
+        )
+        XCTAssertEqual(commit["type"], "input_audio_buffer.commit")
+    }
 
-        let instructions = try XCTUnwrap(response["instructions"] as? String)
-        XCTAssertTrue(instructions.contains("CUDA"))
-        XCTAssertTrue(instructions.contains("thread blocks organized"))
-        XCTAssertTrue(instructions.contains("Do not answer, summarize"))
+    func testRefinementRejectsTurnsAfterFinishing() {
+        let rejected = expectation(description: "Late refinement request rejected")
+        let client = RealtimeRefinementClient(
+            apiKey: "unused",
+            onState: { _ in },
+            onRefined: { _, _ in
+                XCTFail("A closed refinement client must not return a transcript.")
+            },
+            onFailure: { transcriptID, message in
+                XCTAssertEqual(transcriptID, "late-turn")
+                XCTAssertTrue(message.contains("meeting ended"))
+                rejected.fulfill()
+            }
+        )
+
+        client.finishWhenIdle()
+        client.refine(
+            RealtimeRefinementRequest(
+                transcriptID: "late-turn",
+                speaker: .you,
+                pcm16Audio: Data([0, 1]),
+                context: TranscriptionContext(
+                    prompt: "",
+                    keywords: [],
+                    languages: ["en"],
+                    delay: .medium
+                ),
+                recentTranscript: ""
+            )
+        )
+
+        wait(for: [rejected], timeout: 2)
     }
 
     func testAudioPipelineConvertsToTwentyMillisecondPCMChunks() throws {
