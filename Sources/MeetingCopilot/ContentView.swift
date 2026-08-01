@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @State private var contextExpanded = false
+    @State private var expenseExpanded = false
 
     var body: some View {
         ScrollView {
@@ -71,6 +72,36 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                expenseExpanded = true
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "dollarsign.circle")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("API ESTIMATE")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                        Text(controller.apiExpenses.displayCost)
+                            .font(.callout.monospacedDigit().weight(.semibold))
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(.green.opacity(0.24), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Estimated OpenAI transcription cost since the counter was reset")
+            .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
+                APIExpensePopover(
+                    summary: controller.apiExpenses,
+                    onReset: controller.resetAPIExpenses
+                )
+            }
             Label("Headphones required", systemImage: "headphones")
                 .font(.callout.bold())
                 .foregroundStyle(.secondary)
@@ -446,6 +477,10 @@ struct ContentView: View {
     private var contextPanel: some View {
         DisclosureGroup(isExpanded: $contextExpanded) {
             VStack(alignment: .leading, spacing: 12) {
+                referenceMaterialPanel
+
+                Divider()
+
                 HStack {
                     SecureField("OpenAI API key", text: $controller.apiKeyDraft)
                         .textFieldStyle(.roundedBorder)
@@ -502,16 +537,250 @@ struct ContentView: View {
             }
             .padding(.top, 10)
         } label: {
-            Label("Context, accuracy and API", systemImage: "slider.horizontal.3")
+            Label(
+                "References, context, accuracy and API",
+                systemImage: "slider.horizontal.3"
+            )
                 .font(.headline)
         }
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
     }
 
+    private var referenceMaterialPanel: some View {
+        let state = controller.referenceLibraryState
+        let snapshot = state.snapshot
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Label("Reference material", systemImage: "folder.fill")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                if state.phase == .scanning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if state.phase == .ready {
+                    Circle()
+                        .fill(state.isWatching ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                }
+                Text(state.phaseLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: state.folderURL == nil ? "folder.badge.plus" : "folder")
+                    .font(.title3)
+                    .foregroundStyle(state.folderURL == nil ? Color.secondary : Color.accentColor)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let folderURL = state.folderURL {
+                        Text(folderURL.lastPathComponent)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Text(referenceSummary(snapshot: snapshot, folderURL: folderURL))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help((folderURL.path as NSString).abbreviatingWithTildeInPath)
+                    } else {
+                        Text("Choose one folder for resumes, project notes, and other context.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+                if state.folderURL != nil {
+                    Button("Reveal", action: controller.revealReferenceFolder)
+                    Button {
+                        controller.rescanReferenceFolder()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Rescan reference material now")
+                    Button("Change…", action: controller.chooseReferenceFolder)
+                    Button {
+                        controller.clearReferenceFolder()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("Stop using this reference folder")
+                } else {
+                    Button("Choose Folder…", action: controller.chooseReferenceFolder)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(9)
+            .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(.separator.opacity(0.55), lineWidth: 1)
+            }
+
+            if case let .failed(message) = state.phase {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            } else if let snapshot, !snapshot.issues.isEmpty {
+                Text(
+                    "Indexed with \(snapshot.issues.count) warning"
+                        + (snapshot.issues.count == 1 ? "" : "s")
+                        + ": \(snapshot.issues[0].relativePath) — \(snapshot.issues[0].message)"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+                .help(snapshot.issues.map { "\($0.relativePath): \($0.message)" }.joined(separator: "\n"))
+            }
+
+            Text("The Mac ingests PDF, RTF, Markdown, and common UTF-8 text files at launch and after folder changes. Reference contents and the API key stay out of the display client.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func referenceSummary(
+        snapshot: ReferenceLibrarySnapshot?,
+        folderURL: URL
+    ) -> String {
+        guard let snapshot else {
+            return (folderURL.path as NSString).abbreviatingWithTildeInPath
+        }
+        let documentLabel = snapshot.documents.count == 1 ? "document" : "documents"
+        let ignored = snapshot.ignoredFileCount > 0
+            ? " · \(snapshot.ignoredFileCount) unsupported ignored"
+            : ""
+        return "\(snapshot.documents.count) \(documentLabel) · \(compactCharacterCount(snapshot.totalCharacters)) chars · rev \(snapshot.revision.prefix(8))\(ignored)"
+    }
+
+    private func compactCharacterCount(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fM", Double(count) / 1_000_000)
+        }
+        if count >= 1_000 {
+            return String(format: "%.1fk", Double(count) / 1_000)
+        }
+        return String(count)
+    }
+
     private var selectedProcessName: String {
         controller.processes.first(where: { $0.id == controller.selectedProcessID })?.name
             ?? "No meeting app selected"
+    }
+}
+
+private struct APIExpensePopover: View {
+    let summary: APIExpenseSummary
+    let onReset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("OpenAI usage estimate", systemImage: "dollarsign.circle")
+                        .font(.headline)
+                    Text("Since the last reset")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(summary.displayCost)
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+
+            Divider()
+
+            expenseRow(
+                title: RealtimeTranscriptionClient.model,
+                detail: "Live · \(durationText(summary.liveAudioSeconds))",
+                cost: summary.liveCostUSD,
+                color: .blue
+            )
+            expenseRow(
+                title: RealtimeRefinementClient.model,
+                detail: "Final + cloud dictation · \(durationText(summary.finalAudioSeconds))",
+                cost: summary.finalCostUSD,
+                color: .purple
+            )
+            expenseRow(
+                title: "Local Parakeet",
+                detail: "Runs on this Mac",
+                cost: 0,
+                color: .green
+            )
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(measurementDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(
+                    "Rates configured \(APIExpenseSummary.pricingEffectiveAt): "
+                        + "$0.017/min live and $0.0045/min final. "
+                        + "The OpenAI invoice is the source of truth."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Reset Counter") {
+                    onReset()
+                }
+                .disabled(summary.totalAudioSeconds == 0)
+            }
+        }
+        .padding(14)
+        .frame(width: 360)
+    }
+
+    private func expenseRow(
+        title: String,
+        detail: String,
+        cost: Double,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout.monospaced().weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(displayCost(cost))
+                .font(.callout.monospacedDigit().weight(.medium))
+        }
+    }
+
+    private var measurementDetail: String {
+        guard summary.serverReportedRecords + summary.estimatedRecords > 0 else {
+            return "Usage appears after OpenAI completes a transcription turn."
+        }
+        if summary.estimatedRecords == 0 {
+            return "Calculated from server-reported transcription duration."
+        }
+        return "Uses server-reported duration when available; "
+            + "\(summary.estimatedRecords) completed turn(s) use submitted PCM duration."
+    }
+
+    private func durationText(_ seconds: Double) -> String {
+        String(format: "%.1f min", seconds / 60)
+    }
+
+    private func displayCost(_ value: Double) -> String {
+        String(format: value < 0.01 ? "$%.4f" : "$%.2f", value)
     }
 }
 

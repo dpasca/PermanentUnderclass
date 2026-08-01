@@ -37,6 +37,8 @@ final class MeetingController: ObservableObject {
     @Published private(set) var parakeetPreparation = ParakeetPreparationState()
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
+    @Published private(set) var apiExpenses = APIExpenseSummary()
+    @Published private(set) var referenceLibraryState = ReferenceLibraryState()
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -54,12 +56,15 @@ final class MeetingController: ObservableObject {
     private var microphoneCaptureGeneration: UUID?
     private var dictationService: HoldToDictateService?
     private var parakeetWarmupTask: Task<Void, Never>?
+    private var referenceLibraryService: ReferenceLibraryService?
     private let dictationOverlay = QuickDictationOverlayController()
 
     private static let dictationEnabledDefaultsKey =
         "MeetingCopilot.HoldToDictateEnabled"
     private static let dictationPreviewEnabledDefaultsKey =
         "MeetingCopilot.QuickDictationPreviewEnabled"
+    private static let referenceFolderDefaultsKey =
+        "MeetingCopilot.ReferenceFolderPath"
 
     init() {
         apiKeyDraft = KeychainStore.loadAPIKey()
@@ -93,6 +98,7 @@ final class MeetingController: ObservableObject {
         }
 
         startParakeetWarmup()
+        configureReferenceLibrary()
 
         if UserDefaults.standard.bool(forKey: Self.dictationEnabledDefaultsKey) {
             dictationEnabled = true
@@ -247,6 +253,11 @@ final class MeetingController: ObservableObject {
                 guard let self, self.activeSessionID == sessionID else { return }
                 self.markTurnLiveOnly(transcriptID: transcriptID, message: message)
             }
+            let usageHandler: (OpenAITranscriptionUsageRecord) -> Void = {
+                [weak self] usage in
+                guard let self, self.activeSessionID == sessionID else { return }
+                self.recordOpenAIUsage(usage)
+            }
             refinementStates = [.you: .connecting, .other: .connecting]
             switch refinementEngine {
             case .localParakeet:
@@ -277,7 +288,8 @@ final class MeetingController: ObservableObject {
                             )
                         },
                         onRefined: refinedHandler,
-                        onFailure: failureHandler
+                        onFailure: failureHandler,
+                        onUsage: usageHandler
                     )
                 }
                 refinementClients = clients
@@ -487,6 +499,44 @@ final class MeetingController: ObservableObject {
         remoteTrack.partialTranscript = ""
     }
 
+    func resetAPIExpenses() {
+        apiExpenses = APIExpenseSummary()
+    }
+
+    func chooseReferenceFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Reference Material Folder"
+        panel.message =
+            "PUnderclass reads supported documents locally and watches this folder for changes."
+        panel.prompt = "Use Folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = referenceLibraryState.folderURL
+        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
+
+        UserDefaults.standard.set(
+            folderURL.standardizedFileURL.path,
+            forKey: Self.referenceFolderDefaultsKey
+        )
+        referenceLibraryService?.setFolder(folderURL)
+    }
+
+    func rescanReferenceFolder() {
+        referenceLibraryService?.rescan()
+    }
+
+    func revealReferenceFolder() {
+        guard let folderURL = referenceLibraryState.folderURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([folderURL])
+    }
+
+    func clearReferenceFolder() {
+        UserDefaults.standard.removeObject(forKey: Self.referenceFolderDefaultsKey)
+        referenceLibraryService?.setFolder(nil)
+    }
+
     func copyTranscript() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(transcriptText(), forType: .string)
@@ -588,6 +638,10 @@ final class MeetingController: ObservableObject {
                         recentTranscript: recentTranscript
                     )
                 )
+            },
+            onUsage: { [weak self] usage in
+                guard let self, self.activeSessionID == sessionID else { return }
+                self.recordOpenAIUsage(usage)
             }
         )
     }
@@ -761,6 +815,9 @@ final class MeetingController: ObservableObject {
                     self?.dictationPartialTranscript = text
                     self?.dictationOverlay.show(result: text)
                 },
+                onUsage: { [weak self] usage in
+                    self?.recordOpenAIUsage(usage)
+                },
                 transcriptionEngine: refinementEngine,
                 apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             )
@@ -774,6 +831,28 @@ final class MeetingController: ObservableObject {
         dictationService?.disable()
         dictationService = nil
         startDictationService(requestAccess: false)
+    }
+
+    private func recordOpenAIUsage(_ usage: OpenAITranscriptionUsageRecord) {
+        var updated = apiExpenses
+        updated.record(usage)
+        apiExpenses = updated
+    }
+
+    private func configureReferenceLibrary() {
+        let service = ReferenceLibraryService { [weak self] state in
+            self?.referenceLibraryState = state
+        }
+        referenceLibraryService = service
+        guard
+            let storedPath = UserDefaults.standard.string(
+                forKey: Self.referenceFolderDefaultsKey
+            ),
+            !storedPath.isEmpty
+        else {
+            return
+        }
+        service.setFolder(URL(fileURLWithPath: storedPath, isDirectory: true))
     }
 
     private func startParakeetWarmup() {
@@ -1045,6 +1124,7 @@ final class MeetingController: ObservableObject {
 
     deinit {
         parakeetWarmupTask?.cancel()
+        referenceLibraryService?.stop()
         dictationOverlay.setEnabled(false)
         dictationService?.disable()
         inputDeviceMonitor?.stop()

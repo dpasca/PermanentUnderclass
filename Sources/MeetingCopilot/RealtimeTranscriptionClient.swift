@@ -98,6 +98,7 @@ final class RealtimeTranscriptionClient: NSObject {
         _ endedAt: Date?,
         _ pcm16Audio: Data
     ) -> Void
+    typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
 
     private struct OutboundMessage {
         let text: String
@@ -108,6 +109,7 @@ final class RealtimeTranscriptionClient: NSObject {
         let startedAt: Date
         let endedAt: Date
         let pcm16Audio: Data
+        let submittedAudioSeconds: Double
     }
 
     private let apiKey: String
@@ -115,6 +117,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private let stateHandler: StateHandler
     private let partialHandler: PartialHandler
     private let finalHandler: FinalHandler
+    private let usageHandler: UsageHandler
     private let socketQueue: DispatchQueue
 
     private var session: URLSession?
@@ -140,6 +143,7 @@ final class RealtimeTranscriptionClient: NSObject {
     // Partial text still streams while this 3 s finalization window is open.
     private let speechEndSilenceChunkCount = 150
     private let retainedPostRollChunkCount = 10
+    private static let pcm16BytesPerSecond = 24_000 * MemoryLayout<Int16>.size
     static let model = "gpt-live-transcribe"
     static let webSocketURL = URL(
         string: "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -151,13 +155,15 @@ final class RealtimeTranscriptionClient: NSObject {
         label: String,
         onState: @escaping StateHandler,
         onPartial: @escaping PartialHandler,
-        onFinal: @escaping FinalHandler
+        onFinal: @escaping FinalHandler,
+        onUsage: @escaping UsageHandler = { _ in }
     ) {
         self.apiKey = apiKey
         self.context = context
         stateHandler = onState
         partialHandler = onPartial
         finalHandler = onFinal
+        usageHandler = onUsage
         socketQueue = DispatchQueue(label: "MeetingCopilot.Realtime.\(label)")
         super.init()
     }
@@ -314,7 +320,9 @@ final class RealtimeTranscriptionClient: NSObject {
             CommittedTurn(
                 startedAt: startedAt,
                 endedAt: endedAt,
-                pcm16Audio: Data(activeTurnAudio.prefix(retainedByteCount))
+                pcm16Audio: Data(activeTurnAudio.prefix(retainedByteCount)),
+                submittedAudioSeconds: Double(activeTurnAudio.count)
+                    / Double(Self.pcm16BytesPerSecond)
             )
         )
         activeTurnStartedAt = nil
@@ -359,7 +367,12 @@ final class RealtimeTranscriptionClient: NSObject {
                         data = nil
                     }
                     if let data {
-                        self.handle(RealtimeServerEvent.parse(data))
+                        self.handle(
+                            RealtimeServerEvent.parse(data),
+                            completionUsage: TranscriptionCompletionUsage.parse(
+                                from: data
+                            )
+                        )
                     }
                     self.receiveNext()
 
@@ -372,7 +385,10 @@ final class RealtimeTranscriptionClient: NSObject {
         }
     }
 
-    private func handle(_ event: RealtimeServerEvent) {
+    private func handle(
+        _ event: RealtimeServerEvent,
+        completionUsage: TranscriptionCompletionUsage?
+    ) {
         switch event {
         case let .transcriptionDelta(itemID, delta):
             partials[itemID, default: ""].append(delta)
@@ -382,6 +398,19 @@ final class RealtimeTranscriptionClient: NSObject {
             partials[itemID] = nil
             publishPartial(itemID: itemID, text: "")
             let turn = committedTurns.removeValue(forKey: itemID)
+            if let audioSeconds = completionUsage?.seconds
+                ?? turn?.submittedAudioSeconds {
+                publishUsage(
+                    OpenAITranscriptionUsageRecord(
+                        pass: .live,
+                        model: Self.model,
+                        audioSeconds: audioSeconds,
+                        measurement: completionUsage?.seconds == nil
+                            ? .submittedAudioEstimate
+                            : .serverReported
+                    )
+                )
+            }
             publishFinal(
                 itemID: itemID,
                 transcript: transcript,
@@ -445,6 +474,12 @@ final class RealtimeTranscriptionClient: NSObject {
     ) {
         DispatchQueue.main.async { [finalHandler] in
             finalHandler(itemID, transcript, startedAt, endedAt, pcm16Audio)
+        }
+    }
+
+    private func publishUsage(_ usage: OpenAITranscriptionUsageRecord) {
+        DispatchQueue.main.async { [usageHandler] in
+            usageHandler(usage)
         }
     }
 

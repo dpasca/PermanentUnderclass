@@ -143,6 +143,133 @@ struct RealtimeRefinementRequest {
     let recentTranscript: String
 }
 
+struct TranscriptionCompletionUsage: Equatable {
+    enum BillingUnit: String, Equatable {
+        case duration
+        case tokens
+    }
+
+    let billingUnit: BillingUnit
+    let seconds: Double?
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let totalTokens: Int?
+    let audioInputTokens: Int?
+    let textInputTokens: Int?
+
+    static func parse(from data: Data) -> TranscriptionCompletionUsage? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let json = object as? [String: Any],
+            json["type"] as? String
+                == "conversation.item.input_audio_transcription.completed",
+            let usage = json["usage"] as? [String: Any],
+            let rawUnit = usage["type"] as? String,
+            let billingUnit = BillingUnit(rawValue: rawUnit)
+        else {
+            return nil
+        }
+
+        let inputDetails = usage["input_token_details"] as? [String: Any]
+        return TranscriptionCompletionUsage(
+            billingUnit: billingUnit,
+            seconds: number(usage["seconds"]),
+            inputTokens: integer(usage["input_tokens"]),
+            outputTokens: integer(usage["output_tokens"]),
+            totalTokens: integer(usage["total_tokens"]),
+            audioInputTokens: integer(inputDetails?["audio_tokens"]),
+            textInputTokens: integer(inputDetails?["text_tokens"])
+        )
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let value = value as? Double {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.doubleValue
+        }
+        return nil
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+}
+
+enum OpenAITranscriptionPass: Equatable {
+    case live
+    case final
+}
+
+enum OpenAIUsageMeasurement: Equatable {
+    case serverReported
+    case submittedAudioEstimate
+}
+
+struct OpenAITranscriptionUsageRecord: Equatable {
+    let pass: OpenAITranscriptionPass
+    let model: String
+    let audioSeconds: Double
+    let measurement: OpenAIUsageMeasurement
+}
+
+struct APIExpenseSummary: Equatable {
+    // Pricing is configuration, not an invoice. Keep the effective date visible
+    // so a future model or pricing update cannot silently change old estimates.
+    static let pricingEffectiveAt = "2026-08-01"
+    static let liveTranscriptionUSDPerMinute = 0.017
+    static let finalTranscriptionUSDPerMinute = 0.0045
+
+    var liveAudioSeconds: Double = 0
+    var finalAudioSeconds: Double = 0
+    var serverReportedRecords = 0
+    var estimatedRecords = 0
+
+    var liveCostUSD: Double {
+        liveAudioSeconds / 60 * Self.liveTranscriptionUSDPerMinute
+    }
+
+    var finalCostUSD: Double {
+        finalAudioSeconds / 60 * Self.finalTranscriptionUSDPerMinute
+    }
+
+    var totalCostUSD: Double {
+        liveCostUSD + finalCostUSD
+    }
+
+    var totalAudioSeconds: Double {
+        liveAudioSeconds + finalAudioSeconds
+    }
+
+    var displayCost: String {
+        let decimalPlaces = totalCostUSD < 0.01 ? 4 : 2
+        return String(format: "$%.*f", decimalPlaces, totalCostUSD)
+    }
+
+    mutating func record(_ usage: OpenAITranscriptionUsageRecord) {
+        let seconds = max(0, usage.audioSeconds)
+        switch usage.pass {
+        case .live:
+            liveAudioSeconds += seconds
+        case .final:
+            finalAudioSeconds += seconds
+        }
+        switch usage.measurement {
+        case .serverReported:
+            serverReportedRecords += 1
+        case .submittedAudioEstimate:
+            estimatedRecords += 1
+        }
+    }
+}
+
 protocol TranscriptRefining: AnyObject {
     func connect()
     func refine(_ request: RealtimeRefinementRequest)

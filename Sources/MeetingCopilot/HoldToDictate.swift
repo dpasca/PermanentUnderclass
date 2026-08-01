@@ -183,6 +183,19 @@ struct DictationTranscriberCallbacks {
     let onState: (SocketState) -> Void
     let onRefined: (_ transcriptID: String, _ text: String) -> Void
     let onFailure: (_ transcriptID: String, _ message: String) -> Void
+    let onUsage: (OpenAITranscriptionUsageRecord) -> Void
+
+    init(
+        onState: @escaping (SocketState) -> Void,
+        onRefined: @escaping (_ transcriptID: String, _ text: String) -> Void,
+        onFailure: @escaping (_ transcriptID: String, _ message: String) -> Void,
+        onUsage: @escaping (OpenAITranscriptionUsageRecord) -> Void = { _ in }
+    ) {
+        self.onState = onState
+        self.onRefined = onRefined
+        self.onFailure = onFailure
+        self.onUsage = onUsage
+    }
 }
 
 enum QuickDictationTranscriberFactory {
@@ -204,7 +217,8 @@ enum QuickDictationTranscriberFactory {
                 label: "QuickDictation",
                 onState: callbacks.onState,
                 onRefined: callbacks.onRefined,
-                onFailure: callbacks.onFailure
+                onFailure: callbacks.onFailure,
+                onUsage: callbacks.onUsage
             )
         }
     }
@@ -217,6 +231,7 @@ final class HoldToDictateService {
     typealias TelemetryHandler = (TrackTelemetry) -> Void
     typealias PartialHandler = (String) -> Void
     typealias ResultHandler = (String) -> Void
+    typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
 
     private static let logger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
@@ -231,6 +246,7 @@ final class HoldToDictateService {
     private let telemetryHandler: TelemetryHandler
     private let partialHandler: PartialHandler
     private let resultHandler: ResultHandler
+    private let usageHandler: UsageHandler
     private let transcribesAfterRecording: Bool
     private let transcriptionEngine: TranscriptRefinementEngine
     private let apiKey: String
@@ -262,6 +278,7 @@ final class HoldToDictateService {
         onTelemetry: @escaping TelemetryHandler,
         onPartial: @escaping PartialHandler = { _ in },
         onResult: @escaping ResultHandler,
+        onUsage: @escaping UsageHandler = { _ in },
         transcriptionEngine: TranscriptRefinementEngine = .localParakeet,
         apiKey: String = "",
         transcribesAfterRecording: Bool = true
@@ -275,6 +292,7 @@ final class HoldToDictateService {
         telemetryHandler = onTelemetry
         partialHandler = onPartial
         resultHandler = onResult
+        usageHandler = onUsage
         self.transcriptionEngine = transcriptionEngine
         self.apiKey = apiKey
         self.transcribesAfterRecording = transcribesAfterRecording
@@ -423,6 +441,9 @@ final class HoldToDictateService {
                     message: message,
                     generation: generation
                 )
+            },
+            onUsage: { [usageHandler] usage in
+                usageHandler(usage)
             }
         )
         let transcriber = QuickDictationTranscriberFactory.make(

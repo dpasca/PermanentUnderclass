@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1314">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23172021'/%3E%3Cpath d='M9 20v-7m7 9V8m7 12v-5' stroke='%23c9f970' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <title>PUnderclass Live Assistant — interactive prototype</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+  <div class="prototype-ribbon">Thin-display prototype · local mock events</div>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="PUnderclass Live Assistant">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>
+          <strong>PUnderclass</strong>
+          <small>Live Assistant</small>
+        </span>
+      </a>
+
+      <div class="meeting-identity">
+        <span class="eyebrow">ACTIVE SESSION</span>
+        <div class="meeting-title-row">
+          <strong>Product engineering interview</strong>
+          <span class="quiet-dot">·</span>
+          <span id="elapsedTime" class="mono">24:18</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="cost-chip" id="costButton" type="button" aria-haspopup="dialog">
+          <span>
+            <small>SESSION EST.</small>
+            <strong id="sessionCost">$0.37</strong>
+          </span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 8l4 4 4-4"/></svg>
+        </button>
+        <button class="connection-chip is-connected" id="connectionButton" type="button" aria-expanded="false">
+          <span class="status-pulse" aria-hidden="true"></span>
+          <span>
+            <small id="connectionEyebrow">CAUGHT UP</small>
+            <strong id="connectionLabel">Connected to Davide’s Mac</strong>
+          </span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 8l4 4 4-4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="control-rail" aria-label="Assistant controls">
+        <section class="rail-section behavior-section">
+          <div class="section-heading">
+            <span class="eyebrow">BEHAVIOR</span>
+            <span class="host-badge">FROM MAC</span>
+          </div>
+          <div class="behavior-card" aria-label="Host-controlled behavior">
+            <span class="behavior-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M8 8.5a4 4 0 118 0c0 2.2-1.8 4-4 4s-4-1.8-4-4zM5.5 20c.5-3.4 2.7-5.2 6.5-5.2s6 1.8 6.5 5.2"/></svg>
+            </span>
+            <span>
+              <strong id="behaviorName">Interview wingman</strong>
+              <small id="behaviorDetail">Anticipate questions, answer with proof</small>
+            </span>
+            <span class="host-lock" aria-hidden="true">MAC</span>
+          </div>
+          <label class="switch-row">
+            <span>
+              <strong>Live suggestions</strong>
+              <small id="assistantState">Watching the conversation</small>
+            </span>
+            <input id="assistantToggle" type="checkbox" checked>
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+        </section>
+
+        <section class="rail-section">
+          <div class="section-heading">
+            <span class="eyebrow">REFERENCE MATERIAL</span>
+            <span class="host-badge">HOST STATUS</span>
+          </div>
+          <div class="source-list">
+            <div class="source-row host-source">
+              <span class="file-icon folder">DIR</span>
+              <span><strong>Interview references</strong><small>3 documents · rev 2a0f91c8</small></span>
+              <span class="source-ready" aria-label="Ready"></span>
+            </div>
+          </div>
+          <div class="folder-sync"><span class="sync-ring" aria-hidden="true"></span><span><strong>Watched by Davide’s Mac</strong><small>Changes are ingested automatically</small></span></div>
+        </section>
+
+        <section class="rail-section compact">
+          <div class="privacy-row">
+            <span class="shield-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.7-2.8 8.4-7 10-4.2-1.6-7-5.3-7-10V6l7-3zM9 12l2 2 4-5"/></svg>
+            </span>
+            <span><strong>Receives screen-ready events</strong><small>No source files, audio, prompts, or API key</small></span>
+          </div>
+        </section>
+
+        <div class="rail-spacer"></div>
+        <button class="reliability-button" id="simulateDropButton" type="button">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10a7 7 0 0112-4.9L17 7M17 3v4h-4M17 10a7 7 0 01-12 4.9L3 13m0 4v-4h4"/></svg>
+          Test reconnect
+        </button>
+        <div class="build-label">PROTOCOL PREVIEW · v1</div>
+      </aside>
+
+      <section class="guidance-workspace" aria-label="Live guidance">
+        <div class="workspace-heading">
+          <div>
+            <span class="eyebrow">LIVE GUIDANCE</span>
+            <h1>What to say next</h1>
+          </div>
+          <div class="workspace-actions">
+            <button class="secondary-button" id="nextMomentButton" type="button">
+              Next mock moment
+              <kbd>N</kbd>
+            </button>
+            <button class="icon-button" type="button" aria-label="More options" title="More options">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="listening-strip" id="listeningStrip">
+          <span class="wave-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+          <span>
+            <small>THEY’RE ASKING ABOUT</small>
+            <strong id="questionText">“Tell me about a time you improved the performance of a critical system.”</strong>
+          </span>
+          <span class="confidence"><i></i> high confidence</span>
+        </div>
+
+        <article class="answer-card" id="answerCard">
+          <header>
+            <div class="answer-title">
+              <span class="spark-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z"/></svg>
+              </span>
+              <span><small>SUGGESTED ANSWER</small><strong id="answerLead">Lead with the checkout latency story</strong></span>
+            </div>
+            <div class="answer-actions">
+              <button class="icon-button pin-button" id="pinButton" type="button" aria-label="Pin answer" title="Pin answer">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-.8 4 2.3 2.2v1.3H11V17l-1 1-1-1v-6.5H5.5V9.2L7.8 7 7 3z"/></svg>
+              </button>
+              <button class="icon-button" id="copyButton" type="button" aria-label="Copy answer" title="Copy answer">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 011-1h9v1"/></svg>
+              </button>
+            </div>
+          </header>
+          <ol class="talking-points" id="talkingPoints">
+            <li><span>01</span><p><strong>Set the stakes.</strong> Checkout p95 had climbed to <mark>1.8 seconds</mark> during peak traffic and was starting to affect conversion.</p></li>
+            <li><span>02</span><p><strong>Name your move.</strong> I traced the path across services, found an N+1 inventory lookup, and proposed a request-scoped batcher with a short-lived cache.</p></li>
+            <li><span>03</span><p><strong>Land the result.</strong> We brought p95 down by <mark>41%</mark>, held the gain through holiday load, and added a latency budget to stop regressions.</p></li>
+          </ol>
+          <footer>
+            <span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded in 2 Mac-hosted references</span>
+            <span class="generation-time">generated in 640 ms</span>
+            <button class="text-button" id="shorterButton" type="button">Make shorter</button>
+          </footer>
+        </article>
+
+        <div class="evidence-grid">
+          <article class="evidence-card">
+            <header><span class="eyebrow">PROOF TO USE</span><span class="card-number">03</span></header>
+            <ul id="proofList">
+              <li><strong>41%</strong><span>p95 latency reduction</span></li>
+              <li><strong>18k</strong><span>peak requests / minute</span></li>
+              <li><strong>0</strong><span>regressions over 6 months</span></li>
+            </ul>
+            <button class="source-citation" type="button"><span class="file-icon note">TXT</span> Checkout latency · project brief <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button>
+          </article>
+
+          <article class="watchout-card">
+            <header>
+              <span class="watch-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2l8 15H2l8-15zM10 7v4M10 14v.1"/></svg></span>
+              <span><small>WATCH FOR</small><strong id="watchTitle">They may ask what you personally owned</strong></span>
+            </header>
+            <p id="watchBody">Be precise: you led diagnosis and rollout; the inventory team owned the service-side API change.</p>
+          </article>
+        </div>
+
+        <article class="next-question-card">
+          <div>
+            <span class="eyebrow">LIKELY FOLLOW-UP</span>
+            <p id="followupText">“How did you prove the cache would not return stale inventory?”</p>
+          </div>
+          <button class="prepare-button" type="button">Prepare answer <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12M11 5l5 5-5 5"/></svg></button>
+        </article>
+
+        <div class="paused-state" id="pausedState" hidden>
+          <span class="pause-symbol">Ⅱ</span>
+          <h2>Live suggestions paused</h2>
+          <p>The transcript is still arriving. Turn suggestions back on whenever you want help.</p>
+        </div>
+      </section>
+
+      <aside class="transcript-panel" aria-label="Live transcript">
+        <div class="transcript-heading">
+          <div>
+            <span class="eyebrow">TRANSCRIPT</span>
+            <h2>Live conversation</h2>
+          </div>
+          <button class="icon-button" type="button" aria-label="Transcript options" title="Transcript options">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg>
+          </button>
+        </div>
+
+        <div class="transcript-meta">
+          <span><i></i> Live</span>
+          <span>gpt-live-transcribe</span>
+        </div>
+
+        <div class="transcript-scroll" id="transcriptScroll">
+          <div class="time-divider"><span>10:24 AM</span></div>
+
+          <article class="turn interviewer">
+            <header><span class="speaker-avatar">AM</span><strong>Alex Morgan</strong><time>10:24:06</time></header>
+            <p>Before we go deeper, could you give me the quick version of what you’re working on now?</p>
+          </article>
+
+          <article class="turn you">
+            <header><span class="speaker-avatar">YOU</span><strong>You</strong><time>10:24:18</time></header>
+            <p>I’m building tools around low-latency audio and language models—mostly the systems work needed to make them feel immediate and dependable.</p>
+          </article>
+
+          <article class="turn interviewer active-turn">
+            <header><span class="speaker-avatar">AM</span><strong>Alex Morgan</strong><time>10:24:42</time></header>
+            <p id="transcriptQuestion">That’s relevant to this team. Tell me about a time you improved the performance of a critical system.</p>
+            <div class="turn-match"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l1.4 5.1L16.5 8.5l-5.1 1.4L10 15l-1.4-5.1-5.1-1.4 5.1-1.4L10 2z"/></svg> Guidance shown</div>
+          </article>
+
+          <article class="turn partial-turn" id="partialTurn">
+            <header><span class="speaker-avatar">YOU</span><strong>You</strong><time>now</time></header>
+            <p><span id="partialWords">The best example is probably our checkout path...</span><span class="partial-caret"></span></p>
+          </article>
+        </div>
+
+        <div class="resume-watermark" id="resumeWatermark">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10l4 4 8-9"/></svg>
+          <span><strong>Everything received</strong><small>Event 2,487 · 38 ms behind</small></span>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="popover connection-popover" id="connectionPopover" hidden>
+    <header><span class="status-pulse"></span><div><strong>Connected</strong><small>Davide’s Mac · local network</small></div></header>
+    <dl>
+      <div><dt>Stream</dt><dd>HTTP / SSE</dd></div>
+      <div><dt>Last event</dt><dd>#2,487</dd></div>
+      <div><dt>Round trip</dt><dd>38 ms</dd></div>
+      <div><dt>Recovery</dt><dd>Resume + replay</dd></div>
+    </dl>
+    <button id="popoverDropButton" type="button">Simulate a dropped connection</button>
+  </div>
+
+  <dialog class="cost-dialog" id="costDialog">
+    <form method="dialog">
+      <header>
+        <div><span class="eyebrow">USAGE & COST</span><h2>Session estimate</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close cost details">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+        </button>
+      </header>
+      <div class="cost-total"><strong>$0.37</strong><span>estimated so far</span></div>
+      <div class="cost-breakdown">
+        <div><span class="cost-swatch live"></span><span><strong>Live transcription</strong><small>2 tracks · 24.3 min</small></span><b>$0.28</b></div>
+        <div><span class="cost-swatch final"></span><span><strong>Final transcription</strong><small>GPT-Transcribe · 17.1 min</small></span><b>$0.08</b></div>
+        <div><span class="cost-swatch assist"></span><span><strong>Assistant suggestions</strong><small>14 generations</small></span><b>$0.01</b></div>
+        <div class="free-row"><span class="cost-swatch local"></span><span><strong>Local Parakeet</strong><small>No API charge</small></span><b>$0.00</b></div>
+      </div>
+      <p class="cost-note">This prototype uses current configured rates to estimate spend from reported usage. Your OpenAI invoice remains the source of truth.</p>
+      <button class="dialog-done" value="default">Done</button>
+    </form>
+  </dialog>
+
+  <div class="recovery-banner" id="recoveryBanner" role="status" aria-live="polite" hidden>
+    <span class="banner-spinner" aria-hidden="true"></span>
+    <span><strong id="recoveryTitle">Connection interrupted</strong><small id="recoveryDetail">The Mac keeps recording. Reconnecting…</small></span>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>Copied answer</div>
+
+  <script src="app.js?v=1"></script>
+</body>
+</html>

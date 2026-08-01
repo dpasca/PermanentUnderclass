@@ -47,6 +47,41 @@ Paste an API key into the app and press **Save to Keychain**. Select the
 meeting application (it may appear under a helper-process name), then start
 listening.
 
+## Live Assistant companion prototype
+
+An interactive cross-platform companion mockup lives in
+`Prototypes/LiveAssistant`. It is intentionally a thin display: the Mac owns
+the active behavior, local references, model calls, and cost calculation, while
+the client renders complete guidance cards, transcript events, connection
+state, and the intended resume-and-replay experience after a dropped
+connection.
+
+```sh
+./scripts/run-companion-prototype.sh
+```
+
+Open <http://127.0.0.1:4173>. The prototype uses local mock data and makes no
+network or model requests. The proposed HTTP/SSE protocol, retry contract,
+pairing boundary, and implementation slices are in
+`Docs/live-assistant-architecture.md`.
+
+## Reference material
+
+Expand **References, context, accuracy and API** and choose one reference
+folder. The Swift app restores and ingests that folder at launch, watches it
+recursively for changes, and debounces change bursts into a fresh deterministic
+revision. It currently reads PDF, RTF, Markdown, plain text, CSV/TSV,
+JSON/JSONL, YAML, XML, and HTML files. Unsupported files are counted;
+unreadable or truncated files are reported instead of silently disappearing.
+
+Reference contents are owned by the Mac host and are never copied to the thin
+display. The prompt builder places stable behavior and reference material
+before volatile transcript content and exposes a stable cache key plus an
+explicit breakpoint boundary. A future cloud assistant request will send the
+selected reference text to its model provider; the current spike builds the
+host-side reference snapshot and prompt contract but does not yet issue
+assistant model calls.
+
 ## Quick Dictation
 
 Enable **Quick Dictation**, then grant Accessibility and Microphone access when
@@ -114,6 +149,14 @@ The proof of concept includes:
   combined final transcript. Each finalized turn is labeled **Refining**,
   **Refined**, or **Live only**; when refinement changes the wording, the
   original live result remains visible for comparison.
+- An always-visible OpenAI API estimate with a per-model breakdown. It prefers
+  server-reported transcription duration and falls back to the submitted PCM
+  duration, separates live and final passes, includes cloud Quick Dictation,
+  and shows Local Parakeet as zero API cost.
+- A host-side reference folder that is restored and scanned at launch, watched
+  recursively for changes, and converted into a stable content revision and
+  cache-friendly assistant prompt prefix. The display client receives only
+  readiness metadata, citations, and presentation-ready assistant results.
 - A main-screen audio-device dashboard with explicit microphone and system
   output names. Stream health distinguishes ready, checking, healthy, dropped
   buffers, missing permission/device, and stopped packet flow. The microphone

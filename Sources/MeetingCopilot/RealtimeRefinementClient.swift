@@ -89,6 +89,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     typealias StateHandler = (SocketState) -> Void
     typealias RefinedHandler = (_ transcriptID: String, _ text: String) -> Void
     typealias FailureHandler = (_ transcriptID: String, _ message: String) -> Void
+    typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
 
     static let model = "gpt-transcribe"
     static let webSocketURL = URL(
@@ -96,11 +97,13 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     )!
 
     private static let maximumAppendBytes = 1_048_576
+    private static let pcm16BytesPerSecond = 24_000 * MemoryLayout<Int16>.size
 
     private let apiKey: String
     private let stateHandler: StateHandler
     private let refinedHandler: RefinedHandler
     private let failureHandler: FailureHandler
+    private let usageHandler: UsageHandler
     private let socketQueue: DispatchQueue
 
     private var session: URLSession?
@@ -120,12 +123,14 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         label: String = "Default",
         onState: @escaping StateHandler,
         onRefined: @escaping RefinedHandler,
-        onFailure: @escaping FailureHandler
+        onFailure: @escaping FailureHandler,
+        onUsage: @escaping UsageHandler = { _ in }
     ) {
         self.apiKey = apiKey
         stateHandler = onState
         refinedHandler = onRefined
         failureHandler = onFailure
+        usageHandler = onUsage
         socketQueue = DispatchQueue(
             label: "MeetingCopilot.GPTTranscribe.\(label)",
             qos: .userInitiated
@@ -400,7 +405,12 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
                         data = nil
                     }
                     if let data {
-                        self.handle(RealtimeRefinementServerEvent.parse(data))
+                        self.handle(
+                            RealtimeRefinementServerEvent.parse(data),
+                            completionUsage: TranscriptionCompletionUsage.parse(
+                                from: data
+                            )
+                        )
                     }
                     self.receiveNext()
 
@@ -412,7 +422,10 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         }
     }
 
-    private func handle(_ event: RealtimeRefinementServerEvent) {
+    private func handle(
+        _ event: RealtimeRefinementServerEvent,
+        completionUsage: TranscriptionCompletionUsage?
+    ) {
         switch event {
         case .sessionCreated:
             break
@@ -436,6 +449,22 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
         case let .transcriptionCompleted(itemID, transcript, _):
             guard activeItemID == itemID else { return }
+            if let request = activeRequest {
+                let reportedSeconds = completionUsage?.seconds
+                let audioSeconds = reportedSeconds
+                    ?? Double(request.pcm16Audio.count)
+                        / Double(Self.pcm16BytesPerSecond)
+                publishUsage(
+                    OpenAITranscriptionUsageRecord(
+                        pass: .final,
+                        model: Self.model,
+                        audioSeconds: audioSeconds,
+                        measurement: reportedSeconds == nil
+                            ? .submittedAudioEstimate
+                            : .serverReported
+                    )
+                )
+            }
             completeActiveRequest(with: transcript)
             processNextRequest()
 
@@ -565,6 +594,12 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private func publishFailure(transcriptID: String, message: String) {
         DispatchQueue.main.async { [failureHandler] in
             failureHandler(transcriptID, message)
+        }
+    }
+
+    private func publishUsage(_ usage: OpenAITranscriptionUsageRecord) {
+        DispatchQueue.main.async { [usageHandler] in
+            usageHandler(usage)
         }
     }
 }

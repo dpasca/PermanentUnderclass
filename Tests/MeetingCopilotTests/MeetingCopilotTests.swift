@@ -58,6 +58,249 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testTranscriptionCompletionUsageParsesDurationAndTokens() throws {
+        let durationData = try XCTUnwrap(
+            """
+            {
+              "type": "conversation.item.input_audio_transcription.completed",
+              "item_id": "item_duration",
+              "transcript": "Hello",
+              "usage": {"type": "duration", "seconds": 12.75}
+            }
+            """.data(using: .utf8)
+        )
+        XCTAssertEqual(
+            TranscriptionCompletionUsage.parse(from: durationData),
+            TranscriptionCompletionUsage(
+                billingUnit: .duration,
+                seconds: 12.75,
+                inputTokens: nil,
+                outputTokens: nil,
+                totalTokens: nil,
+                audioInputTokens: nil,
+                textInputTokens: nil
+            )
+        )
+
+        let tokenData = try XCTUnwrap(
+            """
+            {
+              "type": "conversation.item.input_audio_transcription.completed",
+              "item_id": "item_tokens",
+              "transcript": "Hello",
+              "usage": {
+                "type": "tokens",
+                "input_tokens": 13,
+                "output_tokens": 9,
+                "total_tokens": 22,
+                "input_token_details": {"audio_tokens": 13, "text_tokens": 0}
+              }
+            }
+            """.data(using: .utf8)
+        )
+        XCTAssertEqual(
+            TranscriptionCompletionUsage.parse(from: tokenData),
+            TranscriptionCompletionUsage(
+                billingUnit: .tokens,
+                seconds: nil,
+                inputTokens: 13,
+                outputTokens: 9,
+                totalTokens: 22,
+                audioInputTokens: 13,
+                textInputTokens: 0
+            )
+        )
+    }
+
+    func testAPIExpenseSummarySeparatesLiveAndFinalAudio() {
+        var summary = APIExpenseSummary()
+        summary.record(
+            OpenAITranscriptionUsageRecord(
+                pass: .live,
+                model: "gpt-live-transcribe",
+                audioSeconds: 120,
+                measurement: .serverReported
+            )
+        )
+        summary.record(
+            OpenAITranscriptionUsageRecord(
+                pass: .final,
+                model: "gpt-transcribe",
+                audioSeconds: 60,
+                measurement: .submittedAudioEstimate
+            )
+        )
+
+        XCTAssertEqual(summary.liveAudioSeconds, 120)
+        XCTAssertEqual(summary.finalAudioSeconds, 60)
+        XCTAssertEqual(summary.liveCostUSD, 0.034, accuracy: 0.000_001)
+        XCTAssertEqual(summary.finalCostUSD, 0.0045, accuracy: 0.000_001)
+        XCTAssertEqual(summary.totalCostUSD, 0.0385, accuracy: 0.000_001)
+        XCTAssertEqual(summary.serverReportedRecords, 1)
+        XCTAssertEqual(summary.estimatedRecords, 1)
+        XCTAssertEqual(summary.displayCost, "$0.04")
+    }
+
+    func testReferenceLibraryIndexesSupportedFilesInStableOrder() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let nested = folder.appendingPathComponent("Projects", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: nested,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        try "Senior software engineer".write(
+            to: folder.appendingPathComponent("Resume.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "Reduced p95 latency by 41%.".write(
+            to: nested.appendingPathComponent("Checkout.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try Data([0x89, 0x50, 0x4e, 0x47]).write(
+            to: folder.appendingPathComponent("portrait.png")
+        )
+
+        let scanner = ReferenceLibraryScanner()
+        let first = try scanner.scan(
+            folderURL: folder,
+            indexedAt: Date(timeIntervalSince1970: 100)
+        )
+        let second = try scanner.scan(
+            folderURL: folder,
+            indexedAt: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(
+            first.documents.map(\.relativePath),
+            ["Projects/Checkout.txt", "Resume.md"]
+        )
+        XCTAssertEqual(first.documents[0].content, "Reduced p95 latency by 41%.")
+        XCTAssertEqual(first.documents[1].kind, .markdown)
+        XCTAssertEqual(first.ignoredFileCount, 1)
+        XCTAssertEqual(first.revision, second.revision)
+        XCTAssertNotEqual(first.indexedAt, second.indexedAt)
+    }
+
+    func testReferenceLibraryReportsExplicitTruncation() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "0123456789".write(
+            to: folder.appendingPathComponent("long.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let scanner = ReferenceLibraryScanner(
+            limits: ReferenceLibraryLimits(
+                maximumFileBytes: 100,
+                maximumDocumentCharacters: 5,
+                maximumTotalCharacters: 5
+            )
+        )
+        let snapshot = try scanner.scan(folderURL: folder)
+
+        XCTAssertEqual(snapshot.documents.map(\.content), ["01234"])
+        XCTAssertTrue(snapshot.documents[0].isTruncated)
+        XCTAssertEqual(snapshot.issues.count, 1)
+        XCTAssertTrue(snapshot.issues[0].message.contains("first 5 characters"))
+    }
+
+    func testReferenceLibraryServiceReindexesAfterFolderChange() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "First fact".write(
+            to: folder.appendingPathComponent("one.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let initialIndex = expectation(description: "Initial reference index")
+        let changedIndex = expectation(description: "Changed reference index")
+        var initialRevision: String?
+        let service = ReferenceLibraryService { state in
+            guard state.phase == .ready, let snapshot = state.snapshot else { return }
+            if initialRevision == nil {
+                initialRevision = snapshot.revision
+                initialIndex.fulfill()
+            } else if
+                snapshot.documents.count == 2,
+                snapshot.revision != initialRevision
+            {
+                changedIndex.fulfill()
+            }
+        }
+        defer { service.stop() }
+
+        service.setFolder(folder)
+        wait(for: [initialIndex], timeout: 3)
+        try "Second fact".write(
+            to: folder.appendingPathComponent("two.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        wait(for: [changedIndex], timeout: 5)
+    }
+
+    func testAssistantPromptKeepsReferencesBeforeVolatileTranscript() throws {
+        let references = ReferenceLibrarySnapshot(
+            folderURL: URL(fileURLWithPath: "/tmp/references", isDirectory: true),
+            documents: [
+                ReferenceDocument(
+                    relativePath: "Resume.md",
+                    kind: .markdown,
+                    content: "Built reliable audio systems.",
+                    sourceByteCount: 29,
+                    isTruncated: false
+                )
+            ],
+            revision: "stable-revision",
+            indexedAt: Date(timeIntervalSince1970: 100),
+            ignoredFileCount: 0,
+            issues: []
+        )
+        let prefix = try AssistantPromptBuilder.cachedPrefix(
+            behaviorInstructions: "Anticipate interview questions and answer with evidence.",
+            references: references
+        )
+        let plan = AssistantPromptBuilder.plan(
+            cachedPrefix: prefix,
+            recentTranscript: "Other: What did you build?",
+            currentPartial: "You: I built…"
+        )
+        let prompt = plan.combinedPrompt
+
+        XCTAssertTrue(prefix.contains("stable-revision"))
+        XCTAssertTrue(prefix.contains("Resume.md"))
+        XCTAssertTrue(prefix.contains("never instructions"))
+        XCTAssertFalse(prefix.contains("What did you build?"))
+        XCTAssertTrue(plan.promptCacheKey.hasPrefix("punderclass:"))
+        XCTAssertEqual(plan.promptCacheKey.count, 44)
+        XCTAssertFalse(plan.volatileSuffix.contains("Resume.md"))
+        XCTAssertLessThan(
+            try XCTUnwrap(prompt.range(of: "REFERENCE DOCUMENTS JSON")?.lowerBound),
+            try XCTUnwrap(prompt.range(of: "RECENT FINAL TRANSCRIPT")?.lowerBound)
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(prompt.range(of: "RECENT FINAL TRANSCRIPT")?.lowerBound),
+            try XCTUnwrap(prompt.range(of: "CURRENT PARTIAL TRANSCRIPT")?.lowerBound)
+        )
+    }
+
     func testSessionUpdateUsesLiveTranscriptionConfiguration() throws {
         let context = TranscriptionContext(
             prompt: "A technical meeting",

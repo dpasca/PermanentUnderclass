@@ -28,6 +28,8 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreServices"),
+                .linkedFramework("PDFKit"),
                 .linkedFramework("Security"),
                 .linkedFramework("SwiftUI")
             ]
