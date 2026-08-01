@@ -14,7 +14,7 @@ struct MeetingCopilotApp: App {
                 Color.clear
             }
         }
-        .defaultSize(width: 1_150, height: 820)
+        .defaultSize(width: 1_160, height: 900)
     }
 }
 

@@ -239,6 +239,125 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertEqual(observedDevice, expectedDevice)
     }
 
+    func testDefaultOutputMonitorPublishesTheCurrentDevice() throws {
+        guard let expectedDevice = CoreAudioUtilities.defaultOutputDevice() else {
+            throw XCTSkip("This Mac currently has no default output device.")
+        }
+
+        let received = expectation(description: "Initial default output device")
+        var observedDevice: AudioOutputDeviceInfo?
+        let monitor = DefaultOutputDeviceMonitor { device in
+            observedDevice = device
+            received.fulfill()
+        }
+        try monitor.start()
+        wait(for: [received], timeout: 2)
+        monitor.stop()
+
+        XCTAssertEqual(observedDevice, expectedDevice)
+    }
+
+    func testAudioDeviceMenusIncludeTheCurrentDefaultsFirst() throws {
+        var testedADeviceType = false
+
+        if let defaultInput = CoreAudioUtilities.defaultInputDevice() {
+            let inputs = try CoreAudioUtilities.availableInputDevices()
+            XCTAssertEqual(inputs.first?.id, defaultInput.id)
+            XCTAssertEqual(inputs.first?.name, defaultInput.name)
+            testedADeviceType = true
+        }
+
+        if let defaultOutput = CoreAudioUtilities.defaultOutputDevice() {
+            let outputs = try CoreAudioUtilities.availableOutputDevices()
+            XCTAssertEqual(outputs.first?.id, defaultOutput.id)
+            XCTAssertEqual(outputs.first?.name, defaultOutput.name)
+            testedADeviceType = true
+        }
+
+        if !testedADeviceType {
+            throw XCTSkip("This Mac currently has no default audio devices.")
+        }
+    }
+
+    func testAudioHealthDistinguishesReadyHealthyDropsAndStalls() {
+        let now = Date(timeIntervalSince1970: 100)
+        var telemetry = TrackTelemetry(monitoringStartedAt: now.addingTimeInterval(-1))
+
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: false,
+                telemetry: telemetry,
+                now: now
+            ),
+            .ready
+        )
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now
+            ),
+            .checking
+        )
+
+        telemetry.packets = 12
+        telemetry.lastPacketAt = now.addingTimeInterval(-0.2)
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now
+            ),
+            .healthy
+        )
+
+        telemetry.droppedBuffers = 1
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now
+            ),
+            .dropping
+        )
+
+        telemetry.lastPacketAt = now.addingTimeInterval(-3)
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now
+            ),
+            .noData
+        )
+    }
+
+    func testAudioHealthPrioritizesAvailabilityAndMicrophoneAccess() {
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: false,
+                permissionGranted: true,
+                isMonitoring: false,
+                telemetry: TrackTelemetry()
+            ),
+            .unavailable
+        )
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                permissionGranted: false,
+                isMonitoring: false,
+                telemetry: TrackTelemetry()
+            ),
+            .permissionRequired
+        )
+    }
+
     func testAudioProcessSelectionSurvivesCoreAudioObjectReplacement() {
         let previous = AudioProcessInfo(
             id: 41,

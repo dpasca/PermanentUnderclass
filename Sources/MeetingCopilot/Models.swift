@@ -33,7 +33,34 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
         case .localParakeet:
             "Local Parakeet"
         case .openAIRealtime:
-            "OpenAI audio second pass"
+            "OpenAI Realtime"
+        }
+    }
+
+    var modelName: String {
+        switch self {
+        case .localParakeet:
+            ParakeetRefinementClient.modelDescription
+        case .openAIRealtime:
+            RealtimeRefinementClient.model
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .localParakeet:
+            "desktopcomputer"
+        case .openAIRealtime:
+            "cloud"
+        }
+    }
+
+    var purpose: String {
+        switch self {
+        case .localParakeet:
+            "Finalizes each turn privately on this Mac."
+        case .openAIRealtime:
+            "Finalizes each turn in the cloud from captured audio."
         }
     }
 
@@ -104,7 +131,85 @@ struct TrackTelemetry: Equatable {
     var packets: UInt64 = 0
     var bytes: UInt64 = 0
     var droppedBuffers: UInt64 = 0
+    var monitoringStartedAt: Date?
+    var lastPacketAt: Date?
     var sourceFormat = "Waiting for audio"
+}
+
+enum AudioStreamHealth: Equatable {
+    case unavailable
+    case permissionRequired
+    case ready
+    case checking
+    case healthy
+    case dropping
+    case noData
+
+    var label: String {
+        switch self {
+        case .unavailable:
+            "Not connected"
+        case .permissionRequired:
+            "Access needed"
+        case .ready:
+            "Ready"
+        case .checking:
+            "Checking…"
+        case .healthy:
+            "Healthy"
+        case .dropping:
+            "Drops detected"
+        case .noData:
+            "No audio data"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .unavailable:
+            "No audio source is currently available."
+        case .permissionRequired:
+            "Microphone access is required before the input can be checked."
+        case .ready:
+            "The device is selected. Start listening to run a live signal check."
+        case .checking:
+            "Capture has started and is waiting for its first audio packets."
+        case .healthy:
+            "Audio packets are arriving normally."
+        case .dropping:
+            "Audio is arriving, but one or more buffers were dropped."
+        case .noData:
+            "Capture is active, but audio packets have stopped arriving."
+        }
+    }
+
+    static func evaluate(
+        sourceAvailable: Bool,
+        permissionGranted: Bool = true,
+        isMonitoring: Bool,
+        telemetry: TrackTelemetry,
+        now: Date = Date(),
+        staleAfter: TimeInterval = 2
+    ) -> AudioStreamHealth {
+        guard sourceAvailable else { return .unavailable }
+        guard permissionGranted else { return .permissionRequired }
+        guard isMonitoring else { return .ready }
+
+        if let lastPacketAt = telemetry.lastPacketAt {
+            guard now.timeIntervalSince(lastPacketAt) <= staleAfter else {
+                return .noData
+            }
+            return telemetry.droppedBuffers > 0 ? .dropping : .healthy
+        }
+
+        if
+            let monitoringStartedAt = telemetry.monitoringStartedAt,
+            now.timeIntervalSince(monitoringStartedAt) > staleAfter
+        {
+            return .noData
+        }
+        return .checking
+    }
 }
 
 struct TrackViewState: Equatable {

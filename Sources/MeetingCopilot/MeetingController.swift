@@ -21,6 +21,13 @@ final class MeetingController: ObservableObject {
     @Published var errorMessage: String?
     @Published var keyStatus = ""
     @Published var microphoneName = "System default microphone"
+    @Published private(set) var microphoneAvailable = false
+    @Published private(set) var inputDevices: [AudioDeviceOption] = []
+    @Published private(set) var selectedInputDeviceID: AudioObjectID?
+    @Published private(set) var audioOutputName = "System default output"
+    @Published private(set) var audioOutputAvailable = false
+    @Published private(set) var outputDevices: [AudioDeviceOption] = []
+    @Published private(set) var selectedOutputDeviceID: AudioObjectID?
     @Published var dictationEnabled = false
     @Published var dictationPhase: DictationPhase = .off
     @Published var dictationPermissions = HoldToDictateService.currentPermissions()
@@ -37,8 +44,8 @@ final class MeetingController: ObservableObject {
     private var refinementClient: TranscriptRefining?
     private var activeContext: TranscriptionContext?
     private var activeSessionID: UUID?
-    private var defaultInputDeviceID: AudioObjectID?
     private var inputDeviceMonitor: DefaultInputDeviceMonitor?
+    private var outputDeviceMonitor: DefaultOutputDeviceMonitor?
     private var microphoneRestartWorkItem: DispatchWorkItem?
     private var microphoneCaptureGeneration: UUID?
     private var dictationService: HoldToDictateService?
@@ -50,17 +57,25 @@ final class MeetingController: ObservableObject {
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
-        let initialInput = CoreAudioUtilities.defaultInputDevice()
-        defaultInputDeviceID = initialInput?.id
-        microphoneName = initialInput?.name ?? "No input device"
+        refreshAudioDevices()
         refreshProcesses()
 
-        let monitor = DefaultInputDeviceMonitor { [weak self] device in
-            self?.handleDefaultInputDeviceChange(device)
+        let monitor = DefaultInputDeviceMonitor { [weak self] _ in
+            self?.refreshAudioDevices()
         }
         inputDeviceMonitor = monitor
         do {
             try monitor.start()
+        } catch {
+            present(error)
+        }
+
+        let outputMonitor = DefaultOutputDeviceMonitor { [weak self] _ in
+            self?.refreshAudioDevices()
+        }
+        outputDeviceMonitor = outputMonitor
+        do {
+            try outputMonitor.start()
         } catch {
             present(error)
         }
@@ -94,6 +109,38 @@ final class MeetingController: ObservableObject {
             if processes.isEmpty {
                 statusMessage = "Open the meeting application, then refresh the list."
             }
+        } catch {
+            present(error)
+        }
+    }
+
+    func refreshAudioDevices() {
+        do {
+            inputDevices = try CoreAudioUtilities.availableInputDevices()
+            outputDevices = try CoreAudioUtilities.availableOutputDevices()
+        } catch {
+            present(error)
+        }
+
+        handleDefaultInputDeviceChange(CoreAudioUtilities.defaultInputDevice())
+        handleDefaultOutputDeviceChange(CoreAudioUtilities.defaultOutputDevice())
+    }
+
+    func selectInputDevice(_ deviceID: AudioObjectID) {
+        guard deviceID != selectedInputDeviceID else { return }
+        do {
+            try CoreAudioUtilities.setDefaultInputDevice(deviceID)
+            refreshAudioDevices()
+        } catch {
+            present(error)
+        }
+    }
+
+    func selectOutputDevice(_ deviceID: AudioObjectID) {
+        guard deviceID != selectedOutputDeviceID else { return }
+        do {
+            try CoreAudioUtilities.setDefaultOutputDevice(deviceID)
+            refreshAudioDevices()
         } catch {
             present(error)
         }
@@ -141,8 +188,15 @@ final class MeetingController: ObservableObject {
             activeContext = context
             isListening = true
             statusMessage = "Starting capture…"
-            localTrack = TrackViewState(socket: .connecting)
-            remoteTrack = TrackViewState(socket: .connecting)
+            let monitoringStartedAt = Date()
+            localTrack = TrackViewState(
+                socket: .connecting,
+                telemetry: TrackTelemetry(monitoringStartedAt: monitoringStartedAt)
+            )
+            remoteTrack = TrackViewState(
+                socket: .connecting,
+                telemetry: TrackTelemetry(monitoringStartedAt: monitoringStartedAt)
+            )
             refinementState = .connecting
 
             let localClient = makeClient(
@@ -331,6 +385,33 @@ final class MeetingController: ObservableObject {
         } else if !dictationPermissions.allGranted {
             dictationPhase = .needsPermission
         }
+    }
+
+    func microphoneHealth(at now: Date = Date()) -> AudioStreamHealth {
+        AudioStreamHealth.evaluate(
+            sourceAvailable: microphoneAvailable,
+            permissionGranted: dictationPermissions.canUseMicrophone,
+            isMonitoring: isMicrophoneMonitoring,
+            telemetry: visibleMicrophoneTelemetry,
+            now: now
+        )
+    }
+
+    func meetingAudioHealth(at now: Date = Date()) -> AudioStreamHealth {
+        AudioStreamHealth.evaluate(
+            sourceAvailable: selectedProcessID != nil,
+            isMonitoring: isListening,
+            telemetry: remoteTrack.telemetry,
+            now: now
+        )
+    }
+
+    var isMicrophoneMonitoring: Bool {
+        isListening || isDictating
+    }
+
+    var visibleMicrophoneTelemetry: TrackTelemetry {
+        isDictating ? dictationTelemetry : localTrack.telemetry
     }
 
     func refreshDictationPermissions() {
@@ -533,6 +614,7 @@ final class MeetingController: ObservableObject {
                     self.isDictating = recording
                     if recording {
                         self.dictationTelemetry = TrackTelemetry(
+                            monitoringStartedAt: Date(),
                             sourceFormat: "Starting \(self.microphoneName)…"
                         )
                     }
@@ -578,9 +660,10 @@ final class MeetingController: ObservableObject {
     }
 
     private func handleDefaultInputDeviceChange(_ device: AudioInputDeviceInfo?) {
-        let previousDeviceID = defaultInputDeviceID
-        defaultInputDeviceID = device?.id
+        let previousDeviceID = selectedInputDeviceID
+        selectedInputDeviceID = device?.id
         microphoneName = device?.name ?? "No input device"
+        microphoneAvailable = device != nil
 
         guard previousDeviceID != device?.id, isListening, let sessionID = activeSessionID else {
             return
@@ -604,11 +687,17 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    private func handleDefaultOutputDeviceChange(_ device: AudioOutputDeviceInfo?) {
+        selectedOutputDeviceID = device?.id
+        audioOutputName = device?.name ?? "No output device"
+        audioOutputAvailable = device != nil
+    }
+
     private func scheduleMicrophoneRestart(sessionID: UUID, message: String) {
         guard
             isListening,
             activeSessionID == sessionID,
-            defaultInputDeviceID != nil
+            selectedInputDeviceID != nil
         else {
             return
         }
@@ -736,6 +825,7 @@ final class MeetingController: ObservableObject {
     deinit {
         dictationService?.disable()
         inputDeviceMonitor?.stop()
+        outputDeviceMonitor?.stop()
         stopImmediately()
     }
 }

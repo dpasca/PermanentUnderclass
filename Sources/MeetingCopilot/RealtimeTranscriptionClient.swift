@@ -140,6 +140,7 @@ final class RealtimeTranscriptionClient: NSObject {
     // Partial text still streams while this 3 s finalization window is open.
     private let speechEndSilenceChunkCount = 150
     private let retainedPostRollChunkCount = 10
+    static let model = "gpt-live-transcribe"
     static let webSocketURL = URL(
         string: "wss://api.openai.com/v1/realtime?intent=transcription"
     )!
@@ -449,7 +450,7 @@ final class RealtimeTranscriptionClient: NSObject {
 
     static func sessionUpdateJSON(_ context: TranscriptionContext) throws -> Data {
         var transcription: [String: Any] = [
-            "model": "gpt-live-transcribe",
+            "model": model,
             "delay": context.delay.rawValue
         ]
         if !context.prompt.isEmpty {

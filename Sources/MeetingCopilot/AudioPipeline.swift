@@ -11,7 +11,7 @@ final class AudioTrackPipeline {
     private var pendingBuffers = 0
     private var converter: PCM16Converter?
     private var chunker = PCMChunker(chunkSize: 960)
-    private var telemetry = TrackTelemetry()
+    private var telemetry = TrackTelemetry(monitoringStartedAt: Date())
     private var lastTelemetryUpdate = DispatchTime.now()
     private let onChunk: ChunkHandler
     private let onTelemetry: TelemetryHandler
@@ -61,6 +61,7 @@ final class AudioTrackPipeline {
                 for chunk in chunks {
                     self.telemetry.packets += 1
                     self.telemetry.bytes += UInt64(chunk.count)
+                    self.telemetry.lastPacketAt = Date()
                     self.updateLevels(with: chunk)
                     self.onChunk(chunk)
                 }
