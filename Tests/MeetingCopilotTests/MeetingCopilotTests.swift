@@ -974,6 +974,48 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testQuickDictationReconnectsAfterCloudSessionRollover() {
+        var policy = QuickDictationReconnectPolicy()
+
+        XCTAssertEqual(
+            policy.reconnectDelay(after: .idle, engine: .openAITranscribe),
+            0
+        )
+        XCTAssertNil(
+            policy.reconnectDelay(after: .idle, engine: .localParakeet)
+        )
+    }
+
+    func testQuickDictationReconnectUsesCappedFailureBackoff() {
+        var policy = QuickDictationReconnectPolicy()
+        let failure = SocketState.failed("Network unavailable")
+
+        XCTAssertEqual(
+            (0..<7).compactMap {
+                _ in policy.reconnectDelay(
+                    after: failure,
+                    engine: .openAITranscribe
+                )
+            },
+            [1, 2, 5, 15, 30, 30, 30]
+        )
+
+        XCTAssertNil(
+            policy.reconnectDelay(after: .connected, engine: .openAITranscribe)
+        )
+        XCTAssertEqual(
+            policy.reconnectDelay(after: failure, engine: .openAITranscribe),
+            1
+        )
+    }
+
+    func testGPTTranscribeConnectionAttemptHasABoundedTimeout() {
+        XCTAssertEqual(
+            RealtimeRefinementClient.connectionTimeoutSeconds,
+            30
+        )
+    }
+
     func testQuickDictationPreviewTracksCaptureAndTranscription() {
         var state = QuickDictationPreviewState()
 

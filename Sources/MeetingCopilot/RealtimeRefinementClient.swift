@@ -98,6 +98,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
     private static let maximumAppendBytes = 1_048_576
     private static let pcm16BytesPerSecond = 24_000 * MemoryLayout<Int16>.size
+    static let connectionTimeoutSeconds: TimeInterval = 30
 
     private let apiKey: String
     private let stateHandler: StateHandler
@@ -117,6 +118,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private var activeRequest: RealtimeRefinementRequest?
     private var activeItemID: String?
     private var disconnectWhenIdle = false
+    private var connectionTimeoutWorkItem: DispatchWorkItem?
 
     init(
         apiKey: String,
@@ -139,15 +141,15 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     }
 
     func connect() {
-        publishState(.connecting)
         socketQueue.async { [weak self] in
             guard let self, self.task == nil else { return }
+            self.publishState(.connecting)
             self.acceptsRequests = true
             self.unavailableMessage = nil
 
             var request = URLRequest(url: Self.webSocketURL)
             request.setValue("Bearer \(self.apiKey)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 30
+            request.timeoutInterval = Self.connectionTimeoutSeconds
 
             let configuration = URLSessionConfiguration.ephemeral
             configuration.waitsForConnectivity = true
@@ -161,6 +163,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
             self.task = task
             task.resume()
             self.receiveNext()
+            self.scheduleConnectionTimeout(for: task)
         }
     }
 
@@ -432,6 +435,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
         case .sessionUpdated:
             if !isConfigured {
+                cancelConnectionTimeout()
                 isConfigured = true
                 publishState(.connected)
                 processNextRequest()
@@ -517,6 +521,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     }
 
     private func failConnection(_ message: String) {
+        cancelConnectionTimeout()
         failActiveRequest(message)
         failQueuedRequests(message)
         acceptsRequests = false
@@ -543,6 +548,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     }
 
     private func disconnectNow() {
+        cancelConnectionTimeout()
         acceptsRequests = false
         if unavailableMessage == nil {
             unavailableMessage = "The GPT-Transcribe connection is closed."
@@ -557,6 +563,36 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         session?.invalidateAndCancel()
         session = nil
         publishState(.idle)
+    }
+
+    private func scheduleConnectionTimeout(for task: URLSessionWebSocketTask) {
+        // `waitsForConnectivity` can keep a task pending beyond the request's
+        // timeout, so readiness needs its own bounded watchdog.
+        cancelConnectionTimeout()
+        let taskIdentifier = task.taskIdentifier
+        let workItem = DispatchWorkItem { [weak self] in
+            guard
+                let self,
+                self.task?.taskIdentifier == taskIdentifier,
+                !self.isConfigured
+            else {
+                return
+            }
+            self.connectionTimeoutWorkItem = nil
+            self.failConnection(
+                "GPT-Transcribe did not connect within \(Int(Self.connectionTimeoutSeconds)) seconds."
+            )
+        }
+        connectionTimeoutWorkItem = workItem
+        socketQueue.asyncAfter(
+            deadline: .now() + Self.connectionTimeoutSeconds,
+            execute: workItem
+        )
+    }
+
+    private func cancelConnectionTimeout() {
+        connectionTimeoutWorkItem?.cancel()
+        connectionTimeoutWorkItem = nil
     }
 
     private func sendInitialSessionUpdate() {
@@ -625,6 +661,7 @@ extension RealtimeRefinementClient: URLSessionWebSocketDelegate {
     ) {
         socketQueue.async { [weak self] in
             guard let self, webSocketTask == self.task else { return }
+            self.cancelConnectionTimeout()
             self.acceptsRequests = false
             if self.unavailableMessage == nil {
                 self.unavailableMessage = "The GPT-Transcribe connection is closed."

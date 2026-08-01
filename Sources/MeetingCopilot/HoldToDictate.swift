@@ -224,6 +224,40 @@ enum QuickDictationTranscriberFactory {
     }
 }
 
+/// Keeps an enabled cloud dictation service ready across the Realtime API's
+/// expected session rollover and transient transport failures.
+struct QuickDictationReconnectPolicy {
+    private static let failureDelays: [TimeInterval] = [1, 2, 5, 15, 30]
+    private(set) var consecutiveFailures = 0
+
+    mutating func reconnectDelay(
+        after state: SocketState,
+        engine: TranscriptRefinementEngine
+    ) -> TimeInterval? {
+        if case .connected = state {
+            consecutiveFailures = 0
+        }
+        guard engine == .openAITranscribe else { return nil }
+
+        switch state {
+        case .idle:
+            return 0
+        case .connecting, .connected:
+            return nil
+        case .failed:
+            let delay = Self.failureDelays[
+                min(consecutiveFailures, Self.failureDelays.count - 1)
+            ]
+            consecutiveFailures += 1
+            return delay
+        }
+    }
+
+    mutating func reset() {
+        consecutiveFailures = 0
+    }
+}
+
 final class HoldToDictateService {
     typealias PhaseHandler = (DictationPhase) -> Void
     typealias PermissionHandler = (DictationPermissionState) -> Void
@@ -264,6 +298,9 @@ final class HoldToDictateService {
     private var livePreviewWorkItem: DispatchWorkItem?
     private var lastLivePreviewByteCount = 0
     private var generation = UUID()
+    private var transcriberState: SocketState = .idle
+    private var reconnectPolicy = QuickDictationReconnectPolicy()
+    private var reconnectWorkItem: DispatchWorkItem?
     private var isModelReady = false
     private var wantsEnabled = false
     private(set) var isRunning = false
@@ -332,6 +369,10 @@ final class HoldToDictateService {
             try monitor.start()
             isRunning = true
             isModelReady = false
+            transcriberState = .idle
+            reconnectPolicy.reset()
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
             generation = UUID()
             connectTranscriber(generation: generation)
             return true
@@ -349,15 +390,20 @@ final class HoldToDictateService {
             || activeTranscriptionID != nil
             || activeLivePreviewID != nil
             || livePreviewWorkItem != nil
+            || reconnectWorkItem != nil
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        reconnectPolicy.reset()
         monitor.stop()
         stopLivePreview()
         cancelRecording(nextPhase: .off)
         transcriber?.disconnect()
         transcriber = nil
         activeTranscriptionID = nil
+        transcriberState = .idle
         isModelReady = false
         isRunning = false
     }
@@ -423,7 +469,10 @@ final class HoldToDictateService {
     }
 
     private func connectTranscriber(generation: UUID) {
-        phaseHandler(.preparing(transcriptionEngine))
+        transcriberState = .connecting
+        if recordingID == nil, activeTranscriptionID == nil {
+            phaseHandler(.preparing(transcriptionEngine))
+        }
         let callbacks = DictationTranscriberCallbacks(
             onState: { [weak self] state in
                 self?.handleTranscriberState(state, generation: generation)
@@ -460,15 +509,25 @@ final class HoldToDictateService {
         generation: UUID
     ) {
         guard self.generation == generation, isRunning else { return }
+        transcriberState = state
+        let reconnectDelay = reconnectPolicy.reconnectDelay(
+            after: state,
+            engine: transcriptionEngine
+        )
         switch state {
         case .idle:
             isModelReady = false
+            if recordingID == nil, activeTranscriptionID == nil {
+                phaseHandler(.preparing(transcriptionEngine))
+            }
         case .connecting:
             isModelReady = false
             if recordingID == nil, activeTranscriptionID == nil {
                 phaseHandler(.preparing(transcriptionEngine))
             }
         case .connected:
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
             isModelReady = true
             if recordingID == nil, activeTranscriptionID == nil {
                 phaseHandler(.ready)
@@ -477,6 +536,55 @@ final class HoldToDictateService {
             isModelReady = false
             phaseHandler(.failed(message))
         }
+        if let reconnectDelay {
+            scheduleTranscriberReconnect(
+                after: reconnectDelay,
+                generation: generation
+            )
+        }
+    }
+
+    private func scheduleTranscriberReconnect(
+        after delay: TimeInterval,
+        generation: UUID
+    ) {
+        guard transcriptionEngine == .openAITranscribe, isRunning else { return }
+        reconnectWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard
+                let self,
+                self.isRunning,
+                self.generation == generation
+            else {
+                return
+            }
+            self.reconnectWorkItem = nil
+            self.restartTranscriber()
+        }
+        reconnectWorkItem = workItem
+        Self.logger.notice(
+            "transcriber_reconnect_scheduled delay_ms=\(Int(delay * 1_000), privacy: .public)"
+        )
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + delay,
+            execute: workItem
+        )
+    }
+
+    private func restartTranscriber() {
+        guard transcriptionEngine == .openAITranscribe, isRunning else { return }
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+
+        let previousTranscriber = transcriber
+        let nextGeneration = UUID()
+        generation = nextGeneration
+        transcriber = nil
+        transcriberState = .connecting
+        isModelReady = false
+        previousTranscriber?.disconnect()
+        Self.logger.notice("transcriber_reconnecting")
+        connectTranscriber(generation: nextGeneration)
     }
 
     private func handle(_ signal: ModifierHoldSignal) {
@@ -493,7 +601,12 @@ final class HoldToDictateService {
     private func startRecording() {
         guard isRunning, recordingID == nil, activeTranscriptionID == nil else { return }
         guard isModelReady else {
-            phaseHandler(.preparing(transcriptionEngine))
+            if transcriptionEngine == .openAITranscribe,
+               transcriberState != .connecting {
+                restartTranscriber()
+            } else {
+                phaseHandler(.preparing(transcriptionEngine))
+            }
             return
         }
         guard canRecord() else {
