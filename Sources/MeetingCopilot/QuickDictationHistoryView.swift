@@ -1,5 +1,152 @@
 import SwiftUI
 
+struct QuickDictationControlPanel: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Global shortcut", systemImage: "command")
+                    .font(.headline)
+                Circle()
+                    .fill(phaseColor)
+                    .frame(width: 8, height: 8)
+                Text(controller.dictationPhase.label)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if controller.isDictating {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Spacer()
+                Text("Hold ⌘ + ⌥")
+                    .font(.callout.monospaced().weight(.semibold))
+                Button(
+                    controller.dictationPermissions.allGranted
+                        ? "Check Access"
+                        : "Grant Access",
+                    action: controller.requestDictationPermissions
+                )
+                Toggle(
+                    "Screen preview",
+                    isOn: Binding(
+                        get: { controller.dictationPreviewEnabled },
+                        set: controller.setDictationPreviewEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+                .fixedSize()
+                .help("Show a floating waveform and dictated-text preview near the bottom of the screen")
+                Toggle(
+                    "Enabled",
+                    isOn: Binding(
+                        get: { controller.dictationEnabled },
+                        set: controller.setDictationEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+                .fixedSize()
+            }
+
+            if controller.dictationEnabled {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(controller.microphoneName, systemImage: "mic.fill")
+                        Label(
+                            controller.refinementEngine.title,
+                            systemImage: controller.refinementEngine.systemImage
+                        )
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 190, alignment: .leading)
+
+                    WaveformView(
+                        samples: controller.dictationTelemetry.waveform,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(height: 32)
+
+                    LevelBar(
+                        label: "RMS",
+                        value: controller.dictationTelemetry.rms,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(width: 135)
+                    LevelBar(
+                        label: "PEAK",
+                        value: controller.dictationTelemetry.peak,
+                        color: controller.isDictating ? .red : .secondary
+                    )
+                    .frame(width: 135)
+                    Text("\(controller.dictationTelemetry.packets) packets")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 70, alignment: .trailing)
+                }
+            }
+
+            guidance
+        }
+        .padding(12)
+        .background(
+            controller.isDictating
+                ? Color.red.opacity(0.10)
+                : Color.secondary.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    controller.isDictating
+                        ? Color.red.opacity(0.75)
+                        : Color.secondary.opacity(0.25),
+                    lineWidth: controller.isDictating ? 2 : 1
+                )
+        }
+    }
+
+    @ViewBuilder
+    private var guidance: some View {
+        if let detail = controller.dictationPhase.detail {
+            Text(detail)
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+        } else if !controller.dictationPermissions.allGranted {
+            Text(
+                "\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen PUnderclass."
+            )
+            .foregroundStyle(.secondary)
+        } else if !controller.lastDictation.isEmpty {
+            Text("Last: \(controller.lastDictation)")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .textSelection(.enabled)
+        } else {
+            Text(
+                "Keep both modifiers held while speaking; release either one to transcribe and paste into the focused app."
+            )
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var phaseColor: Color {
+        switch controller.dictationPhase {
+        case .off:
+            .secondary
+        case .needsPermission, .preparing, .transcribing:
+            .orange
+        case .ready:
+            .green
+        case .recording:
+            .red
+        case .failed:
+            .orange
+        }
+    }
+}
+
 struct QuickDictationHistoryView: View {
     @ObservedObject var controller: MeetingController
     @State private var copiedEntryID: UUID?
@@ -8,13 +155,19 @@ struct QuickDictationHistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+
+            QuickDictationControlPanel(controller: controller)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 14)
 
             if let error = controller.errorMessage {
                 errorBanner(error)
                     .padding(.horizontal, 20)
-                    .padding(.top, 14)
+                    .padding(.bottom, 14)
             }
+
+            historyHeader
+            Divider()
 
             if controller.quickDictationHistory.isEmpty {
                 ContentUnavailableView(
@@ -69,12 +222,26 @@ struct QuickDictationHistoryView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
-                Label("Quick Dictation History", systemImage: "clock.arrow.circlepath")
+                Label("Quick Dictation", systemImage: "mic.badge.plus")
                     .font(.system(size: 24, weight: .semibold))
-                Text(historyCountDescription)
+                Text("Dictate into any app with the global shortcut, then revisit the text here.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+    }
+
+    private var historyHeader: some View {
+        HStack(spacing: 10) {
+            Label("History", systemImage: "clock.arrow.circlepath")
+                .font(.headline)
+            Text(historyCountDescription)
+                .font(.callout)
+                .foregroundStyle(.secondary)
             Spacer()
             Button(role: .destructive) {
                 isConfirmingEraseAll = true
@@ -84,7 +251,7 @@ struct QuickDictationHistoryView: View {
             .disabled(controller.quickDictationHistory.isEmpty)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.vertical, 10)
     }
 
     private func historyRow(_ entry: QuickDictationHistoryEntry) -> some View {

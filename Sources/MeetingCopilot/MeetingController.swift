@@ -477,6 +477,16 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    func meetingMicrophoneHealth(at now: Date = Date()) -> AudioStreamHealth {
+        AudioStreamHealth.evaluate(
+            sourceAvailable: microphoneAvailable,
+            permissionGranted: dictationPermissions.canUseMicrophone,
+            isMonitoring: isListening,
+            telemetry: localTrack.telemetry,
+            now: now
+        )
+    }
+
     func meetingAudioHealth(at now: Date = Date()) -> AudioStreamHealth {
         AudioStreamHealth.evaluate(
             sourceAvailable: selectedProcessID != nil,

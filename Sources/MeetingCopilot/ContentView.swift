@@ -5,33 +5,36 @@ import SwiftUI
 struct ContentView: View {
     private enum AppTab: Hashable {
         case meeting
-        case quickDictations
+        case quickDictation
     }
 
     @ObservedObject var controller: MeetingController
     @State private var contextExpanded = false
     @State private var expenseExpanded = false
+    @State private var sharedSettingsExpanded = false
     @State private var selectedTab: AppTab = .meeting
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            meetingTab
-                .tabItem {
-                    Label("Meeting", systemImage: "waveform")
-                }
-                .tag(AppTab.meeting)
+        VStack(spacing: 0) {
+            sharedHeader
+            Divider()
 
-            QuickDictationHistoryView(controller: controller)
-                .tabItem {
-                    Label("Quick Dictations", systemImage: "clock.arrow.circlepath")
-                }
-                .badge(controller.quickDictationHistory.count)
-                .tag(AppTab.quickDictations)
+            TabView(selection: $selectedTab) {
+                meetingTab
+                    .tabItem {
+                        Label("Meeting", systemImage: "waveform")
+                    }
+                    .tag(AppTab.meeting)
+
+                QuickDictationHistoryView(controller: controller)
+                    .tabItem {
+                        Label("Quick Dictation", systemImage: "mic.badge.plus")
+                    }
+                    .badge(controller.quickDictationHistory.count)
+                    .tag(AppTab.quickDictation)
+            }
         }
         .frame(minWidth: 1_000, minHeight: 760)
-        .onAppear {
-            contextExpanded = controller.apiKeyDraft.isEmpty
-        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -46,9 +49,8 @@ struct ContentView: View {
     private var meetingTab: some View {
         ScrollView {
             VStack(spacing: 12) {
-                header
+                meetingHeader
                 mainControls
-                dictationBar
 
                 if let error = controller.errorMessage {
                     errorBanner(error)
@@ -61,10 +63,8 @@ struct ContentView: View {
                             systemImage: "mic.fill",
                             subtitle: controller.microphoneName,
                             color: .blue,
-                            state: controller.isDictating
-                                ? TrackViewState(telemetry: controller.dictationTelemetry)
-                                : controller.localTrack,
-                            health: controller.microphoneHealth(at: timeline.date)
+                            state: controller.localTrack,
+                            health: controller.meetingMicrophoneHealth(at: timeline.date)
                         )
                         TrackCard(
                             title: "MEETING APP AUDIO",
@@ -85,46 +85,62 @@ struct ContentView: View {
         }
     }
 
-    private var header: some View {
+    private var sharedHeader: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("PUnderclass")
+                    .font(.system(size: 22, weight: .semibold))
+                Text(visibleStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 170, maxWidth: .infinity, alignment: .leading)
+
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                sharedMicrophoneMenu(
+                    health: controller.microphoneHealth(at: timeline.date)
+                )
+            }
+            sharedFinalModelMenu
+            apiEstimateButton
+
+            Button {
+                sharedSettingsExpanded.toggle()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.bordered)
+            .help("Shared transcription settings")
+            .accessibilityLabel("Shared transcription settings")
+            .overlay(alignment: .topTrailing) {
+                if controller.apiKeyDraft.isEmpty {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
+                }
+            }
+            .popover(isPresented: $sharedSettingsExpanded, arrowEdge: .bottom) {
+                SharedTranscriptionSettingsPopover(controller: controller)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(.background)
+    }
+
+    private var meetingHeader: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("PUnderclass")
+                Label("Meeting Capture", systemImage: "person.2.fill")
                     .font(.system(size: 24, weight: .semibold))
-                Text(controller.statusMessage)
+                Text("Capture both sides of a meeting and build a refined transcript.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button {
-                expenseExpanded = true
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "dollarsign.circle")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("API ESTIMATE")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.secondary)
-                        Text(controller.apiExpenses.displayCost)
-                            .font(.callout.monospacedDigit().weight(.semibold))
-                    }
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9)
-                        .stroke(.green.opacity(0.24), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .help("Estimated OpenAI transcription cost since the counter was reset")
-            .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
-                APIExpensePopover(
-                    summary: controller.apiExpenses,
-                    onReset: controller.resetAPIExpenses
-                )
-            }
             Label("Headphones required", systemImage: "headphones")
                 .font(.callout.bold())
                 .foregroundStyle(.secondary)
@@ -148,18 +164,168 @@ struct ContentView: View {
         }
     }
 
+    private func sharedMicrophoneMenu(health: AudioStreamHealth) -> some View {
+        Menu {
+            if controller.inputDevices.isEmpty {
+                Text("No compatible microphones found")
+            } else {
+                ForEach(controller.inputDevices) { device in
+                    Button {
+                        controller.selectInputDevice(device.id)
+                    } label: {
+                        if device.id == controller.selectedInputDeviceID {
+                            Label(device.name, systemImage: "checkmark")
+                        } else {
+                            Text(device.name)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(microphoneHealthColor(health))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("MICROPHONE")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Text(controller.microphoneName)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .frame(width: 220)
+            .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(.blue.opacity(0.20), lineWidth: 1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .help("Shared microphone for Meeting and Quick Dictation")
+    }
+
+    private var sharedFinalModelMenu: some View {
+        Menu {
+            ForEach(TranscriptRefinementEngine.allCases) { engine in
+                Button {
+                    controller.selectRefinementEngine(engine)
+                } label: {
+                    if controller.refinementEngine == engine {
+                        Label(engine.title, systemImage: "checkmark")
+                    } else {
+                        Text(engine.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: controller.refinementEngine.systemImage)
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("FINAL MODEL")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Text(controller.refinementEngine.title)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .frame(width: 205)
+            .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(.green.opacity(0.20), lineWidth: 1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(controller.isListening || controller.isDictationBusy)
+        .help(
+            controller.isListening || controller.isDictationBusy
+                ? "Stop the active workflow before changing the shared final model."
+                : "Shared final model for Meeting and Quick Dictation"
+        )
+    }
+
+    private var apiEstimateButton: some View {
+        Button {
+            expenseExpanded = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "dollarsign.circle")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("API ESTIMATE")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Text(controller.apiExpenses.displayCost)
+                        .font(.callout.monospacedDigit().weight(.semibold))
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(.green.opacity(0.20), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Estimated OpenAI transcription cost since the counter was reset")
+        .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
+            APIExpensePopover(
+                summary: controller.apiExpenses,
+                onReset: controller.resetAPIExpenses
+            )
+        }
+    }
+
+    private func microphoneHealthColor(_ health: AudioStreamHealth) -> Color {
+        switch health {
+        case .healthy:
+            .green
+        case .checking, .dropping, .permissionRequired:
+            .orange
+        case .unavailable, .noData:
+            .red
+        case .ready:
+            .blue
+        }
+    }
+
+    private var visibleStatusMessage: String {
+        switch selectedTab {
+        case .meeting:
+            controller.statusMessage
+        case .quickDictation:
+            "Quick Dictation · \(controller.dictationPhase.label)"
+        }
+    }
+
     private var mainControls: some View {
         HStack(alignment: .top, spacing: 12) {
-            modelPanel
-            audioRoutePanel
+            meetingModelPanel
+            meetingAudioRoutePanel
                 .frame(width: 390)
         }
     }
 
-    private var modelPanel: some View {
+    private var meetingModelPanel: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Label("Transcription models", systemImage: "cpu")
+                Label("Meeting transcription", systemImage: "cpu")
                     .font(.headline)
                 Spacer()
                 Text("Final")
@@ -197,19 +363,32 @@ struct ContentView: View {
                     .font(.caption.bold())
                     .foregroundStyle(.green)
                     .frame(width: 42, alignment: .leading)
-                ForEach(TranscriptRefinementEngine.allCases) { engine in
-                    ModelChoiceButton(
-                        engine: engine,
-                        isSelected: controller.refinementEngine == engine,
-                        isDisabled: controller.isListening || controller.isDictationBusy,
-                        action: { controller.selectRefinementEngine(engine) }
-                    )
+                Image(systemName: controller.refinementEngine.systemImage)
+                    .foregroundStyle(.green)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(controller.refinementEngine.title)
+                        .font(.callout.weight(.semibold))
+                    Text(controller.refinementEngine.modelName)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                Spacer()
+                Text("SHARED")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.green.opacity(0.10), in: Capsule())
+                Button("Configure…") {
+                    sharedSettingsExpanded = true
+                }
+                .controlSize(.small)
             }
-
-            TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                parakeetWarmupHint(at: timeline.date)
-            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(.green.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(10)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
@@ -220,220 +399,52 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder
-    private func parakeetWarmupHint(at date: Date) -> some View {
-        if let hint = controller.parakeetPreparation.hint(at: date) {
-            HStack(spacing: 6) {
-                if let fraction = controller.parakeetPreparation.downloadFraction {
-                    ProgressView(value: fraction)
-                        .frame(width: 54)
-                } else if controller.parakeetPreparation.isInProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if controller.parakeetPreparation.isReady {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                Text(hint)
-                    .lineLimit(1)
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundStyle(
-                controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
+    private var meetingAudioRoutePanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Meeting audio route", systemImage: "waveform")
+                .font(.headline)
+
+            AudioDeviceRow(
+                title: "SYSTEM OUTPUT",
+                name: controller.audioOutputName,
+                systemImage: "speaker.wave.2.fill",
+                isConnected: controller.audioOutputAvailable,
+                devices: controller.outputDevices,
+                selectedDeviceID: controller.selectedOutputDeviceID,
+                onSelect: controller.selectOutputDevice
             )
-            .padding(.leading, 52)
-            .help(hint)
-        }
-    }
 
-    private var audioRoutePanel: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Audio devices", systemImage: "waveform")
-                    .font(.headline)
+            Divider()
 
-                AudioDeviceRow(
-                    title: "MICROPHONE INPUT",
-                    name: controller.microphoneName,
-                    systemImage: "mic.fill",
-                    health: controller.microphoneHealth(at: timeline.date),
-                    devices: controller.inputDevices,
-                    selectedDeviceID: controller.selectedInputDeviceID,
-                    onSelect: controller.selectInputDevice
-                )
-
-                AudioDeviceRow(
-                    title: "SYSTEM OUTPUT",
-                    name: controller.audioOutputName,
-                    systemImage: "speaker.wave.2.fill",
-                    isConnected: controller.audioOutputAvailable,
-                    devices: controller.outputDevices,
-                    selectedDeviceID: controller.selectedOutputDeviceID,
-                    onSelect: controller.selectOutputDevice
-                )
-
-                Divider()
-
-                HStack(spacing: 8) {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .foregroundStyle(.purple)
-                        .frame(width: 20)
-                    Picker("Meeting app", selection: $controller.selectedProcessID) {
-                        Text("Select meeting audio").tag(Optional<UInt32>.none)
-                        ForEach(controller.processes) { process in
-                            Text(process.displayName).tag(Optional(process.id))
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-                    .disabled(controller.isListening)
-
-                    Button {
-                        controller.refreshProcesses()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Refresh meeting audio sources")
-                    .disabled(controller.isListening)
-                }
-            }
-            .padding(10)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(.separator.opacity(0.45), lineWidth: 1)
-            }
-        }
-    }
-
-    private var dictationBar: some View {
-        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Label("Quick Dictation", systemImage: "mic.badge.plus")
-                    .font(.headline)
-                Circle()
-                    .fill(dictationColor)
-                    .frame(width: 8, height: 8)
-                Text(controller.dictationPhase.label)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                if controller.isDictating {
-                    ProgressView()
-                        .controlSize(.small)
+                Image(systemName: "macwindow.on.rectangle")
+                    .foregroundStyle(.purple)
+                    .frame(width: 20)
+                Picker("Meeting app", selection: $controller.selectedProcessID) {
+                    Text("Select meeting audio").tag(Optional<UInt32>.none)
+                    ForEach(controller.processes) { process in
+                        Text(process.displayName).tag(Optional(process.id))
+                    }
                 }
-                Spacer()
-                Text("Hold ⌘ + ⌥")
-                    .font(.callout.monospaced().weight(.semibold))
-                Button(
-                    controller.dictationPermissions.allGranted
-                        ? "Check Access"
-                        : "Grant Access",
-                    action: controller.requestDictationPermissions
-                )
-                Toggle(
-                    "Screen preview",
-                    isOn: Binding(
-                        get: { controller.dictationPreviewEnabled },
-                        set: controller.setDictationPreviewEnabled
-                    )
-                )
-                .toggleStyle(.switch)
-                .fixedSize()
-                .help("Show a floating waveform and dictated-text preview near the bottom of the screen")
-                Toggle(
-                    "Enabled",
-                    isOn: Binding(
-                        get: { controller.dictationEnabled },
-                        set: controller.setDictationEnabled
-                    )
-                )
-                .toggleStyle(.switch)
-                .fixedSize()
-            }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+                .disabled(controller.isListening)
 
-            if controller.dictationEnabled {
-                HStack(spacing: 10) {
-                    Text(controller.microphoneName)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                        .frame(width: 150, alignment: .leading)
-                    WaveformView(
-                        samples: controller.dictationTelemetry.waveform,
-                        color: controller.isDictating ? .red : .secondary
-                    )
-                    .frame(height: 24)
-                    LevelBar(
-                        label: "RMS",
-                        value: controller.dictationTelemetry.rms,
-                        color: controller.isDictating ? .red : .secondary
-                    )
-                    .frame(width: 150)
-                    LevelBar(
-                        label: "PEAK",
-                        value: controller.dictationTelemetry.peak,
-                        color: controller.isDictating ? .red : .secondary
-                    )
-                    .frame(width: 150)
-                    Text("\(controller.dictationTelemetry.packets) packets")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 72, alignment: .trailing)
+                Button {
+                    controller.refreshProcesses()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
-            }
-
-            if let detail = controller.dictationPhase.detail {
-                Text(detail)
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            } else if !controller.dictationPermissions.allGranted {
-                Text("\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen PUnderclass.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if !controller.lastDictation.isEmpty {
-                Text("Last: \(controller.lastDictation)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-            } else {
-                Text("Keep both modifiers held while speaking; release either one to transcribe and paste into the focused app.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.borderless)
+                .help("Refresh meeting audio sources")
+                .disabled(controller.isListening)
             }
         }
         .padding(10)
-        .background(
-            controller.isDictating
-                ? Color.red.opacity(0.10)
-                : Color.secondary.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 10)
-        )
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
-            if controller.isDictating {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(.red.opacity(0.75), lineWidth: 2)
-            }
-        }
-    }
-
-    private var dictationColor: Color {
-        switch controller.dictationPhase {
-        case .off:
-            .secondary
-        case .needsPermission, .preparing, .transcribing:
-            .orange
-        case .ready:
-            .green
-        case .recording:
-            .red
-        case .failed:
-            .orange
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.separator.opacity(0.45), lineWidth: 1)
         }
     }
 
@@ -504,17 +515,6 @@ struct ContentView: View {
 
                 Divider()
 
-                HStack {
-                    SecureField("OpenAI API key", text: $controller.apiKeyDraft)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Save to Keychain", action: controller.saveAPIKey)
-                    if !controller.keyStatus.isEmpty {
-                        Text(controller.keyStatus)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Meeting context")
@@ -541,8 +541,13 @@ struct ContentView: View {
                 }
 
                 HStack {
-                    TextField("Languages, e.g. en, ja", text: $controller.languagesText)
-                        .textFieldStyle(.roundedBorder)
+                    Text("Expected languages and the API key are shared with Quick Dictation.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Shared Settings…") {
+                        sharedSettingsExpanded = true
+                    }
+                    Spacer()
                     Picker("Accuracy / latency", selection: $controller.delay) {
                         ForEach(TranscriptionDelay.allCases) { value in
                             Text(value.rawValue.capitalized).tag(value)
@@ -554,14 +559,11 @@ struct ContentView: View {
                 Text("For specialized discussions, add exact vocabulary before the meeting—for example CUDA, thread block, and warp. Medium is the recommended starting point for balanced accuracy and latency.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text("Prototype security: the long-lived key stays in this Mac’s Keychain. Use an internal short-lived-token broker before deployment.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
             .padding(.top, 10)
         } label: {
             Label(
-                "References, context, accuracy and API",
+                "References and meeting context",
                 systemImage: "slider.horizontal.3"
             )
                 .font(.headline)
@@ -693,6 +695,126 @@ struct ContentView: View {
     private var selectedProcessName: String {
         controller.processes.first(where: { $0.id == controller.selectedProcessID })?.name
             ?? "No meeting app selected"
+    }
+}
+
+private struct SharedTranscriptionSettingsPopover: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Shared Transcription Settings", systemImage: "gearshape")
+                        .font(.title3.weight(.semibold))
+                    Text("These settings apply to both Meeting and Quick Dictation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    AudioDeviceRow(
+                        title: "MICROPHONE INPUT",
+                        name: controller.microphoneName,
+                        systemImage: "mic.fill",
+                        health: controller.microphoneHealth(at: timeline.date),
+                        devices: controller.inputDevices,
+                        selectedDeviceID: controller.selectedInputDeviceID,
+                        onSelect: controller.selectInputDevice
+                    )
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Final transcription model")
+                        .font(.headline)
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(TranscriptRefinementEngine.allCases) { engine in
+                            ModelChoiceButton(
+                                engine: engine,
+                                isSelected: controller.refinementEngine == engine,
+                                isDisabled: controller.isListening
+                                    || controller.isDictationBusy,
+                                action: { controller.selectRefinementEngine(engine) }
+                            )
+                        }
+                    }
+
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        parakeetPreparationHint(at: timeline.date)
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Expected languages")
+                        .font(.headline)
+                    TextField("Languages, e.g. en, ja", text: $controller.languagesText)
+                        .textFieldStyle(.roundedBorder)
+                    Text(
+                        "Quick Dictation uses this immediately. Meeting uses it when a session starts or when meeting context is applied."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("OpenAI API key")
+                        .font(.headline)
+                    HStack {
+                        SecureField("API key", text: $controller.apiKeyDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(controller.saveAPIKey)
+                        Button("Save to Keychain", action: controller.saveAPIKey)
+                    }
+                    if !controller.keyStatus.isEmpty {
+                        Text(controller.keyStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(
+                        "The long-lived key stays in this Mac’s Keychain. Use an internal short-lived-token broker before deployment."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 590, height: 500)
+    }
+
+    @ViewBuilder
+    private func parakeetPreparationHint(at date: Date) -> some View {
+        if let hint = controller.parakeetPreparation.hint(at: date) {
+            HStack(spacing: 6) {
+                if let fraction = controller.parakeetPreparation.downloadFraction {
+                    ProgressView(value: fraction)
+                        .frame(width: 54)
+                } else if controller.parakeetPreparation.isInProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if controller.parakeetPreparation.isReady {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                Text(hint)
+                    .lineLimit(2)
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(
+                controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
+            )
+            .help(hint)
+        }
     }
 }
 
@@ -1197,7 +1319,7 @@ struct WaveformView: View {
     }
 }
 
-private struct LevelBar: View {
+struct LevelBar: View {
     let label: String
     let value: Float
     let color: Color

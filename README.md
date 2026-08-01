@@ -43,9 +43,9 @@ not for retaining local privacy consent. Override the selected certificate with
 `PUNDERCLASS_SIGNING_IDENTITY`; without a Developer ID certificate the
 script falls back to ad-hoc signing and warns that consent may not persist.
 
-Paste an API key into the app and press **Save to Keychain**. Select the
-meeting application (it may appear under a helper-process name), then start
-listening.
+Open the shared transcription settings from the gear button, paste an API key,
+and press **Save to Keychain**. Select the meeting application (it may appear
+under a helper-process name), then start listening.
 
 ## Live Assistant companion prototype
 
@@ -67,11 +67,11 @@ pairing boundary, and implementation slices are in
 
 ## Reference material
 
-Expand **References, context, accuracy and API** and choose one reference
-folder. The Swift app restores and ingests that folder at launch, watches it
-recursively for changes, and debounces change bursts into a fresh deterministic
-revision. It currently reads PDF, RTF, Markdown, plain text, CSV/TSV,
-JSON/JSONL, YAML, XML, and HTML files. Unsupported files are counted;
+Expand **References and meeting context** on the Meeting tab and choose one
+reference folder. The Swift app restores and ingests that folder at launch,
+watches it recursively for changes, and debounces change bursts into a fresh
+deterministic revision. It currently reads PDF, RTF, Markdown, plain text,
+CSV/TSV, JSON/JSONL, YAML, XML, and HTML files. Unsupported files are counted;
 unreadable or truncated files are reported instead of silently disappearing.
 
 Reference contents are owned by the Mac host and are never copied to the thin
@@ -107,7 +107,8 @@ The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
 paused while meeting capture is using the microphone.
 
-The main window's **Quick Dictations** tab keeps completed dictation text in
+The main window's **Quick Dictation** tab owns the shortcut, permission,
+preview, live microphone, and history controls. Completed text appears there in
 newest-first order. Each entry can be copied back to the clipboard or deleted,
 and **Erase All** clears the complete history after confirmation. This text is
 stored locally in the current user's Application Support folder until it is
@@ -128,8 +129,10 @@ The proof of concept includes:
   capture restart when devices are connected, removed, or reconfigured.
 - 24 kHz mono PCM16 conversion and bounded 20 ms audio chunks.
 - Two independent `gpt-live-transcribe` WebSocket sessions.
-- An always-visible model dashboard showing the live model, exact final-model
-  names, what each pass does, and button-style final-model selection.
+- A shared window bar for microphone, final-model, and API-cost controls, plus a
+  Meeting dashboard that shows the live model and the selected shared final
+  pass. Detailed model selection and readiness remain available from the shared
+  settings popover.
 - A selectable final-transcript engine:
   - **Local Parakeet** embeds FluidAudio and NVIDIA Parakeet TDT 0.6B v3 using
     Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
