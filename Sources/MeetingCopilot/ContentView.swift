@@ -282,6 +282,16 @@ struct ContentView: View {
                     action: controller.requestDictationPermissions
                 )
                 Toggle(
+                    "Screen preview",
+                    isOn: Binding(
+                        get: { controller.dictationPreviewEnabled },
+                        set: controller.setDictationPreviewEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+                .fixedSize()
+                .help("Show a floating waveform and dictated-text preview near the bottom of the screen")
+                Toggle(
                     "Enabled",
                     isOn: Binding(
                         get: { controller.dictationEnabled },
@@ -810,9 +820,54 @@ private struct TrackCard: View {
     }
 }
 
-private struct WaveformView: View {
+enum WaveformNormalization {
+    case absolute
+    case adaptive
+}
+
+enum WaveformDisplayNormalizer {
+    static func adaptiveSamples(
+        _ samples: [Float],
+        targetRMS: Float = 0.30,
+        maximumGain: Float = 24,
+        noiseFloor: Float = 0.000_2
+    ) -> [Float] {
+        guard !samples.isEmpty else { return [] }
+        let recent = samples.suffix(180).filter(\.isFinite)
+        guard !recent.isEmpty else {
+            return Array(repeating: 0, count: samples.count)
+        }
+
+        let meanSquare = recent.reduce(Float(0)) { sum, sample in
+            sum + sample * sample
+        } / Float(recent.count)
+        let rms = sqrt(meanSquare)
+        guard rms >= noiseFloor else {
+            return Array(repeating: 0, count: samples.count)
+        }
+
+        let gain = min(maximumGain, max(1, targetRMS / rms))
+        return samples.map { sample in
+            guard sample.isFinite else { return 0 }
+            return max(-1, min(1, sample * gain))
+        }
+    }
+}
+
+struct WaveformView: View {
     let samples: [Float]
     let color: Color
+    let normalization: WaveformNormalization
+
+    init(
+        samples: [Float],
+        color: Color,
+        normalization: WaveformNormalization = .absolute
+    ) {
+        self.samples = samples
+        self.color = color
+        self.normalization = normalization
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -822,10 +877,11 @@ private struct WaveformView: View {
             baseline.addLine(to: CGPoint(x: size.width, y: middle))
             context.stroke(baseline, with: .color(.secondary.opacity(0.2)), lineWidth: 1)
 
-            guard samples.count > 1 else { return }
+            let displaySamples = normalizedSamples
+            guard displaySamples.count > 1 else { return }
             var path = Path()
-            for (index, sample) in samples.enumerated() {
-                let x = CGFloat(index) / CGFloat(samples.count - 1) * size.width
+            for (index, sample) in displaySamples.enumerated() {
+                let x = CGFloat(index) / CGFloat(displaySamples.count - 1) * size.width
                 let clamped = max(-1, min(1, CGFloat(sample)))
                 let y = middle - clamped * middle * 0.9
                 if index == 0 {
@@ -837,6 +893,15 @@ private struct WaveformView: View {
             context.stroke(path, with: .color(color), lineWidth: 1.5)
         }
         .background(.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var normalizedSamples: [Float] {
+        switch normalization {
+        case .absolute:
+            samples
+        case .adaptive:
+            WaveformDisplayNormalizer.adaptiveSamples(samples)
+        }
     }
 }
 

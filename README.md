@@ -59,6 +59,15 @@ keeps dictation audio on this Mac; GPT-Transcribe sends the captured dictation
 audio to OpenAI. Pressing another keyboard key while the chord is down cancels
 the recording, so normal Command-Option shortcuts do not become dictations.
 
+By default, Quick Dictation shows a small, non-activating preview near the
+bottom of the current screen. It displays the live microphone waveform while
+recording and updates a live text hypothesis from the selected **FINAL** model
+as speech arrives.
+The waveform uses adaptive visual gain so quiet microphones still provide clear
+feedback. After release, the preview remains visible while the higher-quality
+final transcription is prepared and pasted. Turn **Screen preview** off in the
+Quick Dictation controls to hide it without disabling dictation.
+
 The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
 paused while meeting capture is using the microphone.

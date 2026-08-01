@@ -215,6 +215,7 @@ final class HoldToDictateService {
     typealias PermissionHandler = (DictationPermissionState) -> Void
     typealias RecordingHandler = (Bool) -> Void
     typealias TelemetryHandler = (TrackTelemetry) -> Void
+    typealias PartialHandler = (String) -> Void
     typealias ResultHandler = (String) -> Void
 
     private static let logger = Logger(
@@ -223,10 +224,12 @@ final class HoldToDictateService {
     )
     private let canRecord: () -> Bool
     private let expectedLanguages: () -> [String]
+    private let shouldProduceLivePreview: () -> Bool
     private let phaseHandler: PhaseHandler
     private let permissionHandler: PermissionHandler
     private let recordingHandler: RecordingHandler
     private let telemetryHandler: TelemetryHandler
+    private let partialHandler: PartialHandler
     private let resultHandler: ResultHandler
     private let transcribesAfterRecording: Bool
     private let transcriptionEngine: TranscriptRefinementEngine
@@ -241,6 +244,9 @@ final class HoldToDictateService {
     private var recordingID: UUID?
     private var transcriber: TranscriptRefining?
     private var activeTranscriptionID: String?
+    private var activeLivePreviewID: String?
+    private var livePreviewWorkItem: DispatchWorkItem?
+    private var lastLivePreviewByteCount = 0
     private var generation = UUID()
     private var isModelReady = false
     private var wantsEnabled = false
@@ -249,10 +255,12 @@ final class HoldToDictateService {
     init(
         canRecord: @escaping () -> Bool,
         expectedLanguages: @escaping () -> [String],
+        shouldProduceLivePreview: @escaping () -> Bool = { true },
         onPhase: @escaping PhaseHandler,
         onPermissions: @escaping PermissionHandler,
         onRecording: @escaping RecordingHandler,
         onTelemetry: @escaping TelemetryHandler,
+        onPartial: @escaping PartialHandler = { _ in },
         onResult: @escaping ResultHandler,
         transcriptionEngine: TranscriptRefinementEngine = .localParakeet,
         apiKey: String = "",
@@ -260,10 +268,12 @@ final class HoldToDictateService {
     ) {
         self.canRecord = canRecord
         self.expectedLanguages = expectedLanguages
+        self.shouldProduceLivePreview = shouldProduceLivePreview
         phaseHandler = onPhase
         permissionHandler = onPermissions
         recordingHandler = onRecording
         telemetryHandler = onTelemetry
+        partialHandler = onPartial
         resultHandler = onResult
         self.transcriptionEngine = transcriptionEngine
         self.apiKey = apiKey
@@ -319,16 +329,35 @@ final class HoldToDictateService {
             || recordingID != nil
             || transcriber != nil
             || activeTranscriptionID != nil
+            || activeLivePreviewID != nil
+            || livePreviewWorkItem != nil
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
         monitor.stop()
+        stopLivePreview()
         cancelRecording(nextPhase: .off)
         transcriber?.disconnect()
         transcriber = nil
         activeTranscriptionID = nil
         isModelReady = false
         isRunning = false
+    }
+
+    func setLivePreviewEnabled(_ enabled: Bool) {
+        guard transcribesAfterRecording else { return }
+        guard enabled else {
+            stopLivePreview()
+            return
+        }
+        guard
+            let recordingID,
+            activeLivePreviewID == nil,
+            livePreviewWorkItem == nil
+        else {
+            return
+        }
+        scheduleLivePreview(recordingID: recordingID)
     }
 
     static func currentPermissions() -> DictationPermissionState {
@@ -470,6 +499,10 @@ final class HoldToDictateService {
         microphoneCapture = capture
         recordingHandler(true)
         phaseHandler(.recording)
+        partialHandler("")
+        if transcribesAfterRecording, shouldProduceLivePreview() {
+            scheduleLivePreview(recordingID: currentRecordingID)
+        }
         Self.logger.notice("recording_started")
 
         startMicrophoneCapture(
@@ -519,6 +552,7 @@ final class HoldToDictateService {
         self.recordingID = nil
         capture?.stop()
         pipeline?.finish()
+        stopLivePreview()
         recordingHandler(false)
 
         let audio = buffer?.take() ?? Data()
@@ -572,9 +606,19 @@ final class HoldToDictateService {
         text: String,
         generation: UUID
     ) {
+        guard self.generation == generation, isRunning else { return }
+        if activeLivePreviewID == transcriptID {
+            activeLivePreviewID = nil
+            guard let recordingID else { return }
+            let partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !partial.isEmpty {
+                partialHandler(partial)
+            }
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+
         guard
-            self.generation == generation,
-            isRunning,
             recordingID == nil,
             activeTranscriptionID == transcriptID
         else {
@@ -608,8 +652,19 @@ final class HoldToDictateService {
         message: String,
         generation: UUID
     ) {
+        guard self.generation == generation, isRunning else { return }
+        if activeLivePreviewID == transcriptID {
+            activeLivePreviewID = nil
+            Self.logger.error(
+                "live_preview_failed error=\(message, privacy: .public)"
+            )
+            if let recordingID {
+                scheduleLivePreview(recordingID: recordingID)
+            }
+            return
+        }
+
         guard
-            self.generation == generation,
             activeTranscriptionID == transcriptID
         else {
             return
@@ -622,6 +677,7 @@ final class HoldToDictateService {
     }
 
     private func cancelRecording(nextPhase: DictationPhase) {
+        stopLivePreview()
         microphoneCapture?.stop()
         pipeline?.finish()
         microphoneCapture = nil
@@ -630,6 +686,78 @@ final class HoldToDictateService {
         recordingID = nil
         recordingHandler(false)
         phaseHandler(nextPhase)
+    }
+
+    /// The selected transcribers consume committed clips, so the overlay
+    /// periodically submits a bounded snapshot of the growing recording through
+    /// that same selected model to produce genuine live hypotheses.
+    private func scheduleLivePreview(recordingID: UUID) {
+        livePreviewWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.produceLivePreview(recordingID: recordingID)
+        }
+        livePreviewWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(650),
+            execute: workItem
+        )
+    }
+
+    private func produceLivePreview(recordingID: UUID) {
+        livePreviewWorkItem = nil
+        guard self.recordingID == recordingID else { return }
+        guard shouldProduceLivePreview() else {
+            stopLivePreview()
+            return
+        }
+        guard activeLivePreviewID == nil else {
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+
+        let bufferedAudio = audioBuffer?.snapshot() ?? Data()
+        guard QuickDictationLivePreviewPolicy.shouldTranscribe(
+            audioByteCount: bufferedAudio.count,
+            lastTranscribedByteCount: lastLivePreviewByteCount
+        ) else {
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+        guard PCM16SignalGate.containsAudibleSignal(bufferedAudio) else {
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+
+        lastLivePreviewByteCount = bufferedAudio.count
+        let audio = QuickDictationLivePreviewPolicy.previewAudio(from: bufferedAudio)
+        let languages = expectedLanguages()
+        guard let transcriber else {
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+        let transcriptID = "dictation-preview-\(UUID().uuidString)"
+        activeLivePreviewID = transcriptID
+        transcriber.refine(
+            RealtimeRefinementRequest(
+                transcriptID: transcriptID,
+                speaker: .you,
+                pcm16Audio: audio,
+                context: TranscriptionContext(
+                    prompt: "",
+                    keywords: [],
+                    languages: languages,
+                    delay: .minimal
+                ),
+                recentTranscript: ""
+            )
+        )
+    }
+
+    private func stopLivePreview() {
+        livePreviewWorkItem?.cancel()
+        livePreviewWorkItem = nil
+        activeLivePreviewID = nil
+        lastLivePreviewByteCount = 0
     }
 
     deinit {
@@ -656,6 +784,27 @@ enum PCM16SignalGate {
     }
 }
 
+enum QuickDictationLivePreviewPolicy {
+    private static let bytesPerSecond = 24_000 * MemoryLayout<Int16>.size
+    static let minimumAudioBytes = Int(Double(bytesPerSecond) * 0.6)
+    static let minimumAdditionalAudioBytes = Int(Double(bytesPerSecond) * 0.4)
+    // The overlay only displays the newest text, and bounding this snapshot
+    // keeps long dictations from doing progressively more preview work.
+    static let maximumAudioBytes = bytesPerSecond * 15
+
+    static func shouldTranscribe(
+        audioByteCount: Int,
+        lastTranscribedByteCount: Int
+    ) -> Bool {
+        audioByteCount >= minimumAudioBytes
+            && audioByteCount - lastTranscribedByteCount >= minimumAdditionalAudioBytes
+    }
+
+    static func previewAudio(from bufferedAudio: Data) -> Data {
+        Data(bufferedAudio.suffix(maximumAudioBytes))
+    }
+}
+
 private final class LockedAudioBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
@@ -672,6 +821,12 @@ private final class LockedAudioBuffer: @unchecked Sendable {
             data.removeAll(keepingCapacity: false)
             lock.unlock()
         }
+        return data
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
         return data
     }
 }

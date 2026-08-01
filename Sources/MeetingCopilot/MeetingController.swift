@@ -35,6 +35,8 @@ final class MeetingController: ObservableObject {
     @Published var dictationTelemetry = TrackTelemetry()
     @Published var lastDictation = ""
     @Published private(set) var parakeetPreparation = ParakeetPreparationState()
+    @Published var dictationPartialTranscript = ""
+    @Published var dictationPreviewEnabled = true
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -52,14 +54,21 @@ final class MeetingController: ObservableObject {
     private var microphoneCaptureGeneration: UUID?
     private var dictationService: HoldToDictateService?
     private var parakeetWarmupTask: Task<Void, Never>?
+    private let dictationOverlay = QuickDictationOverlayController()
 
     private static let dictationEnabledDefaultsKey =
         "MeetingCopilot.HoldToDictateEnabled"
+    private static let dictationPreviewEnabledDefaultsKey =
+        "MeetingCopilot.QuickDictationPreviewEnabled"
 
     init() {
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
+        dictationPreviewEnabled = UserDefaults.standard.object(
+            forKey: Self.dictationPreviewEnabledDefaultsKey
+        ) as? Bool ?? true
+        dictationOverlay.setEnabled(dictationPreviewEnabled)
         refreshAudioDevices()
         refreshProcesses()
 
@@ -403,6 +412,23 @@ final class MeetingController: ObservableObject {
             dictationService = nil
             dictationPhase = .off
             isDictating = false
+            dictationPartialTranscript = ""
+            dictationOverlay.handle(phase: .off)
+        }
+    }
+
+    func setDictationPreviewEnabled(_ enabled: Bool) {
+        dictationPreviewEnabled = enabled
+        UserDefaults.standard.set(
+            enabled,
+            forKey: Self.dictationPreviewEnabledDefaultsKey
+        )
+        dictationOverlay.setEnabled(enabled)
+        dictationService?.setLivePreviewEnabled(enabled)
+        if enabled {
+            dictationOverlay.handle(phase: dictationPhase)
+            dictationOverlay.update(telemetry: dictationTelemetry)
+            dictationOverlay.update(partialTranscript: dictationPartialTranscript)
         }
     }
 
@@ -701,8 +727,12 @@ final class MeetingController: ObservableObject {
                 expectedLanguages: { [weak self] in
                     self?.dictationLanguages() ?? ["en"]
                 },
+                shouldProduceLivePreview: { [weak self] in
+                    self?.dictationPreviewEnabled == true
+                },
                 onPhase: { [weak self] phase in
                     self?.dictationPhase = phase
+                    self?.dictationOverlay.handle(phase: phase)
                 },
                 onPermissions: { [weak self] permissions in
                     self?.dictationPermissions = permissions
@@ -711,6 +741,7 @@ final class MeetingController: ObservableObject {
                     guard let self else { return }
                     self.isDictating = recording
                     if recording {
+                        self.dictationPartialTranscript = ""
                         self.dictationTelemetry = TrackTelemetry(
                             monitoringStartedAt: Date(),
                             sourceFormat: "Starting \(self.microphoneName)…"
@@ -719,9 +750,16 @@ final class MeetingController: ObservableObject {
                 },
                 onTelemetry: { [weak self] telemetry in
                     self?.dictationTelemetry = telemetry
+                    self?.dictationOverlay.update(telemetry: telemetry)
+                },
+                onPartial: { [weak self] text in
+                    self?.dictationPartialTranscript = text
+                    self?.dictationOverlay.update(partialTranscript: text)
                 },
                 onResult: { [weak self] text in
                     self?.lastDictation = text
+                    self?.dictationPartialTranscript = text
+                    self?.dictationOverlay.show(result: text)
                 },
                 transcriptionEngine: refinementEngine,
                 apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1007,6 +1045,7 @@ final class MeetingController: ObservableObject {
 
     deinit {
         parakeetWarmupTask?.cancel()
+        dictationOverlay.setEnabled(false)
         dictationService?.disable()
         inputDeviceMonitor?.stop()
         outputDeviceMonitor?.stop()

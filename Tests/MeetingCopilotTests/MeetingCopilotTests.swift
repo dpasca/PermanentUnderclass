@@ -538,6 +538,68 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(cloud is RealtimeRefinementClient)
     }
 
+    func testLiveDictationPreviewWaitsForEnoughNewAudio() {
+        let minimum = QuickDictationLivePreviewPolicy.minimumAudioBytes
+        let increment = QuickDictationLivePreviewPolicy.minimumAdditionalAudioBytes
+
+        XCTAssertFalse(
+            QuickDictationLivePreviewPolicy.shouldTranscribe(
+                audioByteCount: minimum - 1,
+                lastTranscribedByteCount: 0
+            )
+        )
+        XCTAssertTrue(
+            QuickDictationLivePreviewPolicy.shouldTranscribe(
+                audioByteCount: minimum,
+                lastTranscribedByteCount: 0
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationLivePreviewPolicy.shouldTranscribe(
+                audioByteCount: minimum + increment - 1,
+                lastTranscribedByteCount: minimum
+            )
+        )
+        XCTAssertTrue(
+            QuickDictationLivePreviewPolicy.shouldTranscribe(
+                audioByteCount: minimum + increment,
+                lastTranscribedByteCount: minimum
+            )
+        )
+
+        let longRecording = Data(
+            repeating: 1,
+            count: QuickDictationLivePreviewPolicy.maximumAudioBytes + 9_600
+        )
+        XCTAssertEqual(
+            QuickDictationLivePreviewPolicy.previewAudio(from: longRecording).count,
+            QuickDictationLivePreviewPolicy.maximumAudioBytes
+        )
+    }
+
+    func testAdaptiveWaveformMakesQuietSpeechVisible() {
+        let quietSamples = (0..<180).map { index in
+            Float(index.isMultiple(of: 2) ? 0.01 : -0.01)
+        }
+        let scaled = WaveformDisplayNormalizer.adaptiveSamples(quietSamples)
+
+        XCTAssertEqual(scaled.count, quietSamples.count)
+        XCTAssertGreaterThan(
+            scaled.map(abs).max() ?? 0,
+            quietSamples.map(abs).max() ?? 0
+        )
+        XCTAssertLessThanOrEqual(scaled.map(abs).max() ?? 0, 1)
+    }
+
+    func testAdaptiveWaveformKeepsSilenceFlat() {
+        let silence = Array(repeating: Float(0), count: 180)
+
+        XCTAssertEqual(
+            WaveformDisplayNormalizer.adaptiveSamples(silence),
+            silence
+        )
+    }
+
     func testParakeetWarmupHintReportsProgressAndElapsedTime() {
         let startedAt = Date(timeIntervalSince1970: 1_000)
         let checking = ParakeetPreparationState(
@@ -587,5 +649,41 @@ final class MeetingCopilotTests: XCTestCase {
             cloud.detail,
             "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
         )
+    }
+
+    func testQuickDictationPreviewTracksCaptureAndTranscription() {
+        var state = QuickDictationPreviewState()
+
+        XCTAssertEqual(state.content, .hidden)
+        state.handle(phase: .recording)
+        XCTAssertEqual(state.content, .listening)
+        state.handle(phase: .transcribing)
+        XCTAssertEqual(state.content, .transcribing)
+
+        state.show(result: "A useful preview")
+        XCTAssertEqual(state.content, .result("A useful preview"))
+        state.handle(phase: .ready)
+        XCTAssertEqual(state.content, .result("A useful preview"))
+    }
+
+    func testQuickDictationPreviewHidesCancelledCapture() {
+        var state = QuickDictationPreviewState()
+
+        state.handle(phase: .recording)
+        state.handle(phase: .ready)
+
+        XCTAssertEqual(state.content, .hidden)
+        XCTAssertFalse(state.isVisible)
+    }
+
+    func testQuickDictationPreviewOnlyShowsFailuresForActiveDictation() {
+        var state = QuickDictationPreviewState()
+
+        state.handle(phase: .failed("Model unavailable"))
+        XCTAssertEqual(state.content, .hidden)
+
+        state.handle(phase: .recording)
+        state.handle(phase: .failed("Microphone disconnected"))
+        XCTAssertEqual(state.content, .failure("Microphone disconnected"))
     }
 }
