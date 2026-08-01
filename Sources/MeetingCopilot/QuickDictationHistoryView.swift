@@ -28,16 +28,6 @@ struct QuickDictationControlPanel: View {
                     action: controller.requestDictationPermissions
                 )
                 Toggle(
-                    "Screen preview",
-                    isOn: Binding(
-                        get: { controller.dictationPreviewEnabled },
-                        set: controller.setDictationPreviewEnabled
-                    )
-                )
-                .toggleStyle(.switch)
-                .fixedSize()
-                .help("Show a floating waveform and dictated-text preview near the bottom of the screen")
-                Toggle(
                     "Enabled",
                     isOn: Binding(
                         get: { controller.dictationEnabled },
@@ -48,15 +38,17 @@ struct QuickDictationControlPanel: View {
                 .fixedSize()
             }
 
+            QuickDictationPreviewControl(controller: controller)
+
             HStack(alignment: .center, spacing: 8) {
                 TranscriptionStageCard(
-                    stage: "WHILE HELD · PREVIEW",
+                    stage: "OPTIONAL STAGE · WHILE HELD",
                     modelName: controller.refinementEngine.modelName,
                     role: controller.dictationPreviewEnabled
                         ? "Periodic snapshots · overlay text"
                         : "Disabled with Screen preview",
                     detail: "",
-                    badge: controller.dictationPreviewEnabled ? "OPTIONAL · ON" : "OPTIONAL · OFF",
+                    badge: controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF",
                     systemImage: "text.bubble",
                     color: .orange,
                     isEnabled: controller.dictationPreviewEnabled

@@ -102,8 +102,9 @@ to update the preview text. Quick Dictation does not use the Meeting-only
 `gpt-live-transcribe` model. After release, the selected model transcribes the
 complete recording once for the pasted and saved result.
 The waveform uses adaptive visual gain so quiet microphones still provide clear
-feedback. Turn **Screen preview** off in the Quick Dictation controls to disable
-the optional snapshot stage and hide the overlay without disabling dictation.
+feedback. The pipeline's **Screen preview (optional stage)** switch directly
+controls the snapshot stage and overlay. Turning it off does not disable the
+required final transcription that runs when the shortcut is released.
 
 The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is

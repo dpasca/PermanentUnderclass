@@ -39,13 +39,13 @@ struct TranscriptionStageCard: View {
             }
 
             Text(role)
-                .font(.caption.weight(.medium))
+                .font(.callout.weight(.medium))
                 .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
 
             if !detail.isEmpty {
                 Text(detail)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -88,6 +88,53 @@ struct TranscriptionPipelineConnector: View {
     }
 }
 
+struct QuickDictationPreviewControl: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "text.bubble")
+                .foregroundStyle(.orange)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Screen preview (optional stage)")
+                    .font(.callout.weight(.semibold))
+                Text(
+                    "While held, periodically runs \(controller.refinementEngine.title) to update the floating waveform and text. Final transcription still runs when this is off."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("Enable preview stage", isOn: previewEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(Color.orange.opacity(0.22), lineWidth: 1)
+        }
+        .help(
+            "Controls only the while-held preview. The selected model still transcribes the full recording when the shortcut is released."
+        )
+    }
+
+    private var previewEnabled: Binding<Bool> {
+        Binding(
+            get: { controller.dictationPreviewEnabled },
+            set: controller.setDictationPreviewEnabled
+        )
+    }
+}
+
 struct SelectableTranscriptionModelPicker: View {
     @ObservedObject var controller: MeetingController
 
@@ -98,7 +145,7 @@ struct SelectableTranscriptionModelPicker: View {
             Text(
                 "This one selection drives Meeting’s second pass and both Quick Dictation stages. The Meeting live model is fixed separately."
             )
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(.secondary)
 
             HStack(alignment: .top, spacing: 8) {
@@ -139,7 +186,7 @@ struct SelectableTranscriptionModelPicker: View {
                     .lineLimit(2)
                 Spacer()
             }
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(
                 controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
             )
@@ -158,7 +205,7 @@ struct TranscriptionPipelinePopover: View {
                     Label("Active Transcription Pipeline", systemImage: "point.3.connected.trianglepath.dotted")
                         .font(.title3.weight(.semibold))
                     Text("Each workflow uses the models differently. Only the green model is selectable.")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
 
@@ -196,13 +243,14 @@ struct TranscriptionPipelinePopover: View {
                     "Quick Dictation",
                     detail: "The selected model is reused; Meeting’s live model is not involved."
                 )
+                QuickDictationPreviewControl(controller: controller)
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
-                        stage: "WHILE HELD · PREVIEW",
+                        stage: "OPTIONAL STAGE · WHILE HELD",
                         modelName: controller.refinementEngine.modelName,
                         role: "\(controller.refinementEngine.title) · bounded snapshots",
                         detail: "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
-                        badge: controller.dictationPreviewEnabled ? "OPTIONAL · ON" : "OPTIONAL · OFF",
+                        badge: controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF",
                         systemImage: "text.bubble",
                         color: .orange,
                         isEnabled: controller.dictationPreviewEnabled
@@ -232,7 +280,7 @@ struct TranscriptionPipelinePopover: View {
             Text(title)
                 .font(.headline)
             Text(detail)
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
     }

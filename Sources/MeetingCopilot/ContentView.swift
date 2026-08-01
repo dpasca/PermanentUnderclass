@@ -866,13 +866,13 @@ struct ModelChoiceButton: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                 Text(engine.purpose)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .multilineTextAlignment(.leading)
             }
-            .padding(7)
-            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+            .padding(9)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
             .background(
                 isSelected ? Color.green.opacity(0.10) : Color.primary.opacity(0.035),
                 in: RoundedRectangle(cornerRadius: 9)
