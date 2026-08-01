@@ -35,6 +35,7 @@ enum InterviewWingmanError: LocalizedError, Equatable {
 
 private struct InterviewWingmanOutput: Decodable {
     let shouldShow: Bool
+    let grounding: CompanionSuggestionGrounding
     let question: String
     let lead: String
     let talkingPoints: [CompanionTalkingPoint]
@@ -51,7 +52,7 @@ struct InterviewWingmanClient: Sendable {
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
 
     static let behaviorInstructions = """
-    You are Interview Wingman, a low-latency assistant watching a live interview transcript. Decide whether the newest interviewer turn creates a useful moment for concise, immediate guidance. If it does, draft a spoken answer grounded only in the supplied reference documents. Preserve ownership boundaries, numbers, and uncertainty. Cite every reference document used by its exact path. If the references do not support a useful answer, set shouldShow to false and return empty strings and arrays for the remaining content fields. Never invent achievements, metrics, employers, dates, or responsibilities. Keep the lead short, use at most three talking points, and make the answer natural to say aloud.
+    You are Interview Wingman, a low-latency assistant watching a live interview transcript. Decide whether the newest completed turn from either speaker creates a useful moment for concise, immediate guidance. A turn from You may ask for help, surface uncertainty, or introduce a topic that would benefit from support; ordinary answer narration does not automatically require an interruption. A turn from Other may ask a direct question or create another useful coaching moment. Prefer the supplied local reference documents when they support the response. When they do, set grounding to localReferences and cite every document used by its exact path. When local references do not support the topic but a useful response can be given using the live discussion as context and general model knowledge, still provide it, set grounding to generalKnowledge, and return an empty citations array. Never invent personal achievements, metrics, employers, dates, or responsibilities, and never present general knowledge as locally verified. Set shouldShow to false only when neither locally grounded nor general guidance would be useful. Keep the lead short, use at most three talking points, and make the answer natural to say aloud.
     """
 
     private let session: URLSession
@@ -62,7 +63,7 @@ struct InterviewWingmanClient: Sendable {
 
     func generate(
         apiKey: String,
-        references: ReferenceLibrarySnapshot,
+        references: ReferenceLibrarySnapshot?,
         recentTranscript: String,
         currentPartial: String,
         basedOnSequence: Int
@@ -99,7 +100,7 @@ struct InterviewWingmanClient: Sendable {
         )
         return try Self.parseResponse(
             data,
-            allowedReferencePaths: Set(references.documents.map(\.relativePath)),
+            allowedReferencePaths: Set(references?.documents.map(\.relativePath) ?? []),
             basedOnSequence: basedOnSequence,
             generationMilliseconds: max(0, milliseconds)
         )
@@ -191,12 +192,13 @@ struct InterviewWingmanClient: Sendable {
             return InterviewWingmanGeneration(suggestion: nil, usage: usage)
         }
 
-        let citations = output.citations.filter {
+        let allowedCitations = output.citations.filter {
             allowedReferencePaths.contains($0.path)
         }
-        guard !citations.isEmpty else {
+        guard output.grounding != .localReferences || !allowedCitations.isEmpty else {
             return InterviewWingmanGeneration(suggestion: nil, usage: usage)
         }
+        let citations = output.grounding == .localReferences ? allowedCitations : []
         let suggestion = CompanionAssistantSuggestion(
             id: UUID().uuidString.lowercased(),
             basedOnSequence: basedOnSequence,
@@ -208,6 +210,7 @@ struct InterviewWingmanClient: Sendable {
             watchoutBody: output.watchoutBody,
             followup: output.followup,
             citations: citations,
+            grounding: output.grounding,
             confidence: output.confidence,
             generatedAt: Date(),
             generationMilliseconds: generationMilliseconds
@@ -250,6 +253,10 @@ struct InterviewWingmanClient: Sendable {
         "additionalProperties": false,
         "properties": [
             "shouldShow": ["type": "boolean"],
+            "grounding": [
+                "type": "string",
+                "enum": ["localReferences", "generalKnowledge"]
+            ],
             "question": ["type": "string"],
             "lead": ["type": "string"],
             "talkingPoints": [
@@ -298,6 +305,7 @@ struct InterviewWingmanClient: Sendable {
         ],
         "required": [
             "shouldShow",
+            "grounding",
             "question",
             "lead",
             "talkingPoints",

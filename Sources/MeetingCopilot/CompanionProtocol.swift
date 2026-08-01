@@ -99,7 +99,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var isListening = false
     var status = "Ready"
     var behaviorName = "Interview wingman"
-    var behaviorDetail = "Anticipate questions and answer with reference-backed proof"
+    var behaviorDetail = "Check both speakers; label local versus general support"
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
@@ -170,6 +170,11 @@ enum CompanionSuggestionConfidence: String, Codable, Equatable, Sendable {
     case high
 }
 
+enum CompanionSuggestionGrounding: String, Codable, Equatable, Sendable {
+    case localReferences
+    case generalKnowledge
+}
+
 struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let basedOnSequence: Int
@@ -181,6 +186,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let watchoutBody: String
     let followup: String
     let citations: [CompanionCitation]
+    let grounding: CompanionSuggestionGrounding
     let confidence: CompanionSuggestionConfidence
     let generatedAt: Date
     let generationMilliseconds: Int
@@ -194,11 +200,21 @@ enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
     case unavailable
 }
 
+enum CompanionInferenceOutcome: String, Codable, Equatable, Sendable {
+    case suggestion
+    case noSuggestion
+    case failed
+}
+
 struct CompanionAssistantState: Codable, Equatable, Sendable {
     var phase: CompanionAssistantPhase = .idle
     var suggestion: CompanionAssistantSuggestion?
     var lastError: String?
     var pinnedSuggestionID: String?
+    var evaluatingSequence: Int?
+    var lastEvaluatedSequence: Int?
+    var lastEvaluationAt: Date?
+    var lastEvaluationOutcome: CompanionInferenceOutcome?
 }
 
 struct CompanionSnapshot: Codable, Equatable, Sendable {
@@ -382,6 +398,7 @@ actor CompanionEventHub {
     func assistantWorking(basedOnSequence: Int) -> CompanionEvent {
         state.assistant.phase = .working
         state.assistant.lastError = nil
+        state.assistant.evaluatingSequence = basedOnSequence
         return publish(
             name: "assistant.working",
             payload: ["basedOnSequence": basedOnSequence]
@@ -393,13 +410,21 @@ actor CompanionEventHub {
         state.assistant.phase = .ready
         state.assistant.suggestion = suggestion
         state.assistant.lastError = nil
+        state.assistant.evaluatingSequence = nil
+        state.assistant.lastEvaluatedSequence = suggestion.basedOnSequence
+        state.assistant.lastEvaluationAt = suggestion.generatedAt
+        state.assistant.lastEvaluationOutcome = .suggestion
         return publish(name: "assistant.suggestion", payload: suggestion)
     }
 
     @discardableResult
-    func assistantFinishedWithoutSuggestion() -> CompanionEvent {
+    func assistantFinishedWithoutSuggestion(basedOnSequence: Int) -> CompanionEvent {
         state.assistant.phase = .idle
         state.assistant.lastError = nil
+        state.assistant.evaluatingSequence = nil
+        state.assistant.lastEvaluatedSequence = basedOnSequence
+        state.assistant.lastEvaluationAt = Date()
+        state.assistant.lastEvaluationOutcome = .noSuggestion
         if state.assistant.pinnedSuggestionID == nil {
             state.assistant.suggestion = nil
         }
@@ -410,6 +435,12 @@ actor CompanionEventHub {
     func assistantFailed(_ message: String, unavailable: Bool = false) -> CompanionEvent {
         state.assistant.phase = unavailable ? .unavailable : .failed
         state.assistant.lastError = message
+        if !unavailable, let sequence = state.assistant.evaluatingSequence {
+            state.assistant.lastEvaluatedSequence = sequence
+            state.assistant.lastEvaluationAt = Date()
+            state.assistant.lastEvaluationOutcome = .failed
+        }
+        state.assistant.evaluatingSequence = nil
         return publish(
             name: "assistant.failed",
             payload: [

@@ -301,6 +301,22 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testAssistantPromptAllowsClearlyLabeledGeneralKnowledgeWithoutReferences() throws {
+        let prefix = try AssistantPromptBuilder.cachedPrefix(
+            behaviorInstructions: "Help with useful live guidance.",
+            references: nil
+        )
+
+        XCTAssertTrue(prefix.contains("no-local-reference-material"))
+        XCTAssertTrue(prefix.contains("REFERENCE DOCUMENTS JSON\n[]"))
+        XCTAssertTrue(prefix.contains("grounding to generalKnowledge"))
+        XCTAssertTrue(
+            prefix.contains(
+                "Never imply that the discussion or general knowledge came from local material"
+            )
+        )
+    }
+
     func testSessionUpdateUsesLiveTranscriptionConfiguration() throws {
         let context = TranscriptionContext(
             prompt: "A technical meeting",

@@ -109,6 +109,23 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.suggestionsPaused)
     }
 
+    func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.assistantWorking(basedOnSequence: 41)
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.phase, .working)
+        XCTAssertEqual(snapshot.assistant.evaluatingSequence, 41)
+
+        _ = await hub.assistantFinishedWithoutSuggestion(basedOnSequence: 41)
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.phase, .idle)
+        XCTAssertNil(snapshot.assistant.evaluatingSequence)
+        XCTAssertEqual(snapshot.assistant.lastEvaluatedSequence, 41)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .noSuggestion)
+        XCTAssertNotNil(snapshot.assistant.lastEvaluationAt)
+    }
+
     func testExpenseSummaryTracksAssistantCacheAndReasoningUsage() {
         var summary = APIExpenseSummary()
         summary.record(
@@ -131,6 +148,11 @@ final class CompanionTests: XCTestCase {
     }
 
     func testWingmanRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
+        XCTAssertTrue(
+            InterviewWingmanClient.behaviorInstructions.contains(
+                "newest completed turn from either speaker"
+            )
+        )
         let plan = AssistantPromptPlan(
             cachedPrefix: "stable behavior and references",
             volatileSuffix: "Other: What did you build?",
@@ -164,11 +186,18 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(format["strict"] as? Bool, true)
         let schema = try XCTUnwrap(format["schema"] as? [String: Any])
         XCTAssertEqual(schema["additionalProperties"] as? Bool, false)
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let grounding = try XCTUnwrap(properties["grounding"] as? [String: Any])
+        XCTAssertEqual(
+            grounding["enum"] as? [String],
+            ["localReferences", "generalKnowledge"]
+        )
     }
 
     func testWingmanResponseParsesUsageAndRejectsUnknownCitationPaths() throws {
         let output: [String: Any] = [
             "shouldShow": true,
+            "grounding": "localReferences",
             "question": "What did you improve?",
             "lead": "Use the checkout example",
             "talkingPoints": [
@@ -217,6 +246,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(generation.usage.cachedInputTokens, 1_200)
         XCTAssertEqual(generation.usage.reasoningTokens, 32)
         XCTAssertEqual(generation.suggestion?.basedOnSequence, 19)
+        XCTAssertEqual(generation.suggestion?.grounding, .localReferences)
         XCTAssertEqual(generation.suggestion?.talkingPoints.count, 3)
         XCTAssertEqual(
             generation.suggestion?.citations,
@@ -230,6 +260,30 @@ final class CompanionTests: XCTestCase {
             generationMilliseconds: 320
         )
         XCTAssertNil(ungrounded.suggestion)
+
+        var generalOutput = output
+        generalOutput["grounding"] = "generalKnowledge"
+        generalOutput["citations"] = []
+        let generalOutputData = try JSONSerialization.data(withJSONObject: generalOutput)
+        let generalOutputText = try XCTUnwrap(
+            String(data: generalOutputData, encoding: .utf8)
+        )
+        var generalResponse = response
+        generalResponse["output"] = [[
+            "type": "message",
+            "content": [["type": "output_text", "text": generalOutputText]]
+        ]]
+        let generalData = try JSONSerialization.data(withJSONObject: generalResponse)
+        let fallback = try InterviewWingmanClient.parseResponse(
+            generalData,
+            allowedReferencePaths: [],
+            basedOnSequence: 20,
+            generationMilliseconds: 280
+        )
+
+        XCTAssertEqual(fallback.suggestion?.basedOnSequence, 20)
+        XCTAssertEqual(fallback.suggestion?.grounding, .generalKnowledge)
+        XCTAssertEqual(fallback.suggestion?.citations, [])
     }
 
     func testSnapshotAndCommandRoutesUseTheRealProtocolModels() async throws {

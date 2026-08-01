@@ -58,12 +58,16 @@ local references, OpenAI request, usage tracking, event ordering, and replay;
 the browser receives only transcript text, reference status, citations, and
 presentation-ready guidance.
 
-The first real behavior is **Interview Wingman**. Each finalized interviewer
-turn can trigger a structured `gpt-5.6-luna` Responses API decision. The stable
-behavior/reference prefix uses an explicit prompt-cache breakpoint and cache
-key, while recent transcript stays in the volatile suffix. Assistant token and
-cache usage is counted separately; it is not folded into the dollar estimate
-until a model rate is configured.
+The first real behavior is **Interview Wingman**. Each finalized turn from
+either speaker can trigger a structured `gpt-5.6-luna` Responses API decision.
+Indexed local files are preferred when they support the answer. If they do not,
+the model may still suggest an answer from the live discussion and general
+model knowledge; the display prefixes it with **NO LOCAL SUPPORTING MATERIAL**
+and tells the user to verify it.
+The stable behavior/reference prefix uses an explicit prompt-cache breakpoint
+and cache key, while recent transcript stays in the volatile suffix. Assistant
+token and cache usage is counted separately; it is not folded into the dollar
+estimate until a model rate is configured.
 
 To view the same client without starting the native host, run the standalone
 preview:
