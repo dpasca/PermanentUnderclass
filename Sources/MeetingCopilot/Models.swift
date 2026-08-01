@@ -67,7 +67,7 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .localParakeet:
-            "Parakeet TDT v3 runs directly inside Meeting Copilot through Core ML."
+            "Parakeet TDT v3 runs directly inside PUnderclass through Core ML."
         case .openAITranscribe:
             "Each bounded turn is transcribed again by the high-accuracy GPT-Transcribe model."
         }

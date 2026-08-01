@@ -3,18 +3,18 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 configuration="${1:-debug}"
-signing_identity="${MEETING_COPILOT_SIGNING_IDENTITY:-}"
+signing_identity="${PUNDERCLASS_SIGNING_IDENTITY:-}"
 
 cd "$project_dir"
 swift build -c "$configuration"
 
 binary_dir="$(swift build -c "$configuration" --show-bin-path)"
-app_dir="$project_dir/.build/MeetingCopilot.app"
+app_dir="$project_dir/.build/PUnderclass.app"
 contents_dir="$app_dir/Contents"
 
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 /usr/bin/install -m 0755 \
-    "$binary_dir/MeetingCopilot" "$contents_dir/MacOS/MeetingCopilot"
+    "$binary_dir/punderclass" "$contents_dir/MacOS/punderclass"
 /usr/bin/install -m 0644 \
     "$project_dir/AppBundle/Info.plist" "$contents_dir/Info.plist"
 /usr/bin/install -m 0644 \
@@ -41,6 +41,6 @@ if [[ -z "$signing_identity" ]]; then
 fi
 
 codesign --force --sign "$signing_identity" "$app_dir"
-print -u2 "Signed Meeting Copilot with: $signing_identity"
+print -u2 "Signed PUnderclass with: $signing_identity"
 
 echo "$app_dir"

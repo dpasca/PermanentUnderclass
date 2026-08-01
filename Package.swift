@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "MeetingCopilot",
+    name: "PUnderclass",
     platforms: [
         .macOS("14.2")
     ],
     products: [
-        .executable(name: "MeetingCopilot", targets: ["MeetingCopilot"])
+        .executable(name: "punderclass", targets: ["MeetingCopilot"])
     ],
     dependencies: [
         .package(

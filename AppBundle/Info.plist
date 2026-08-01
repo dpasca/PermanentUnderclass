@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Meeting Copilot</string>
+    <string>PUnderclass</string>
     <key>CFBundleExecutable</key>
-    <string>MeetingCopilot</string>
+    <string>punderclass</string>
     <key>CFBundleIdentifier</key>
     <string>com.permanentunderclass.meetingcopilot</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>MeetingCopilot</string>
+    <string>PUnderclass</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -25,8 +25,8 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Meeting Copilot uses the microphone for meeting transcription and hold-to-dictate.</string>
+    <string>PUnderclass uses the microphone for meeting transcription and hold-to-dictate.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>Meeting Copilot captures the selected meeting app’s audio to transcribe the other participant.</string>
+    <string>PUnderclass captures the selected meeting app’s audio to transcribe the other participant.</string>
 </dict>
 </plist>

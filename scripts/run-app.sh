@@ -2,8 +2,8 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-app_path="$project_dir/.build/MeetingCopilot.app"
-app_executable="$app_path/Contents/MacOS/MeetingCopilot"
+app_path="$project_dir/.build/PUnderclass.app"
+app_executable="$app_path/Contents/MacOS/punderclass"
 
 # `open` reuses an existing GUI process even after its executable has been
 # rebuilt on disk. Quit first so this command never leaves the developer
@@ -19,7 +19,7 @@ if pgrep -f "${app_executable}$" >/dev/null 2>&1; then
         sleep 0.1
     done
     if pgrep -f "${app_executable}$" >/dev/null 2>&1; then
-        print -u2 "error: the existing Meeting Copilot process did not quit"
+        print -u2 "error: the existing PUnderclass process did not quit"
         exit 1
     fi
 fi

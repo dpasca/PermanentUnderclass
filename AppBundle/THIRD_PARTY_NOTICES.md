@@ -2,7 +2,7 @@
 
 ## FluidAudio
 
-Meeting Copilot uses FluidAudio, Copyright FluidInference and contributors,
+PUnderclass uses FluidAudio, Copyright FluidInference and contributors,
 under the Apache License 2.0.
 
 Source: https://github.com/FluidInference/FluidAudio

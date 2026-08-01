@@ -7,7 +7,7 @@ struct MeetingCopilotApp: App {
     @StateObject private var applicationModel = MeetingCopilotApplicationModel()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("PUnderclass") {
             if let controller = applicationModel.controller {
                 ContentView(controller: controller)
             } else {

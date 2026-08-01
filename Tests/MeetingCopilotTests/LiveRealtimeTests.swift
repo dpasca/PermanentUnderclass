@@ -19,7 +19,7 @@ final class LiveRealtimeTests: XCTestCase {
         speechProcess.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         speechProcess.arguments = [
             "-o", audioURL.path,
-            "Meeting Copilot realtime transcription test."
+            "PUnderclass realtime transcription test."
         ]
         try speechProcess.run()
         speechProcess.waitUntilExit()
@@ -61,7 +61,7 @@ final class LiveRealtimeTests: XCTestCase {
 
         let context = TranscriptionContext(
             prompt: "A synthetic integration test.",
-            keywords: ["Meeting Copilot"],
+            keywords: ["PUnderclass"],
             languages: ["en"],
             delay: .low
         )

@@ -64,7 +64,7 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Meeting Copilot")
+                Text("PUnderclass")
                     .font(.system(size: 24, weight: .semibold))
                 Text(controller.statusMessage)
                     .font(.subheadline)
@@ -294,7 +294,7 @@ struct ContentView: View {
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
             } else if !controller.dictationPermissions.allGranted {
-                Text("\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen Meeting Copilot.")
+                Text("\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen PUnderclass.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else if !controller.lastDictation.isEmpty {

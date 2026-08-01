@@ -1,4 +1,4 @@
-# Meeting Copilot
+# PUnderclass
 
 A minimal native macOS proof of concept that captures two independent audio
 tracks and transcribes them in real time:
@@ -10,7 +10,7 @@ Each track is sent to its own OpenAI Realtime transcription session, so speaker
 labels come from the audio route rather than diarization guesses. Completed
 turns are finalized by `gpt-transcribe` by default. An embedded local Parakeet
 model remains available as an offline fallback and evaluation baseline. The
-local engine runs directly inside Meeting Copilot and does not use the
+local engine runs directly inside PUnderclass and does not use the
 MacParakeet application, process, settings, microphone handling, or database.
 
 ## Requirements
@@ -29,7 +29,7 @@ MacParakeet application, process, settings, microphone handling, or database.
 ```
 
 On first use, macOS asks for microphone and system-audio recording permission.
-If either permission was previously denied, enable **Meeting Copilot** under
+If either permission was previously denied, enable **PUnderclass** under
 System Settings → Privacy & Security → Microphone and Screen & System Audio
 Recording, then relaunch the app.
 
@@ -40,7 +40,7 @@ certificate-signed build may ask once more because it intentionally replaces
 the earlier ad-hoc identity; subsequent rebuilds retain the same identity.
 Notarization is needed for distributing a downloaded app through Gatekeeper,
 not for retaining local privacy consent. Override the selected certificate with
-`MEETING_COPILOT_SIGNING_IDENTITY`; without a Developer ID certificate the
+`PUNDERCLASS_SIGNING_IDENTITY`; without a Developer ID certificate the
 script falls back to ad-hoc signing and warns that consent may not persist.
 
 Paste an API key into the app and press **Save to Keychain**. Select the
@@ -51,7 +51,7 @@ listening.
 
 Enable **Quick Dictation**, then grant Accessibility and Microphone access when
 prompted. Accessibility allows both global shortcut monitoring and automatic
-paste. macOS may require Meeting Copilot to be quit and reopened after this
+paste. macOS may require PUnderclass to be quit and reopened after this
 permission changes. Hold the exact modifier-only chord **Command + Option**
 while speaking and release either modifier to transcribe locally with Parakeet
 and paste into the currently focused application. Pressing another keyboard key
@@ -129,4 +129,5 @@ swift test
 ./scripts/build-app.sh release
 ```
 
-The bundled app is written to `.build/MeetingCopilot.app`.
+The bundled app is written to `.build/PUnderclass.app`, with its executable at
+`.build/PUnderclass.app/Contents/MacOS/punderclass`.

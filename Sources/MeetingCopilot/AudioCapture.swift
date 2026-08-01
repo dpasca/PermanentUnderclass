@@ -309,7 +309,7 @@ final class ProcessTapCapture {
         let tapDescription = CATapDescription(
             monoMixdownOfProcesses: [processObjectID]
         )
-        tapDescription.name = "Meeting Copilot remote participant"
+        tapDescription.name = "PUnderclass remote participant"
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
 
@@ -333,7 +333,7 @@ final class ProcessTapCapture {
             format = audioFormat
 
             let aggregateDescription: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "Meeting Copilot Capture",
+                kAudioAggregateDeviceNameKey: "PUnderclass Capture",
                 kAudioAggregateDeviceUIDKey: UUID().uuidString,
                 kAudioAggregateDeviceIsPrivateKey: true,
                 kAudioAggregateDeviceTapAutoStartKey: true,
