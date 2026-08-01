@@ -220,7 +220,7 @@ struct TranscriptionPipelinePopover: View {
                         stage: "STAGE 1 · LIVE",
                         modelName: RealtimeTranscriptionClient.model,
                         role: "Streaming partial and completed text",
-                        detail: "Fixed OpenAI cloud model. Two parallel sessions cover microphone and meeting-app audio while the meeting is active.",
+                        detail: "Fixed OpenAI cloud model. Two parallel sessions cover microphone and the selected system-audio source while the meeting is active.",
                         badge: "FIXED · CLOUD",
                         systemImage: "bolt.horizontal.fill",
                         color: .blue

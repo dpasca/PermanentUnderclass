@@ -4,7 +4,7 @@ A minimal native macOS proof of concept that captures two independent audio
 tracks and transcribes them in real time:
 
 - **You** — the Mac's default microphone.
-- **Other** — audio emitted by one selected meeting application.
+- **Other** — all system audio by default, or one selected meeting application.
 
 Each track is sent to its own OpenAI Realtime transcription session, so speaker
 labels come from the audio route rather than diarization guesses. Completed
@@ -44,8 +44,9 @@ not for retaining local privacy consent. Override the selected certificate with
 script falls back to ad-hoc signing and warns that consent may not persist.
 
 Open the shared transcription settings from the gear button, paste an API key,
-and press **Save to Keychain**. Select the meeting application (it may appear
-under a helper-process name), then start listening.
+and press **Save to Keychain**, then start listening. Meeting capture uses all
+system audio by default. To limit capture to one app, choose it from **Audio to
+transcribe**; it may appear under a helper-process name.
 
 ## Live Assistant companion
 
@@ -137,7 +138,8 @@ preparation.
 
 The proof of concept includes:
 
-- Core Audio process-tap capture without a virtual audio driver.
+- Core Audio global or app-specific process-tap capture without a virtual audio
+  driver. All system audio is the default source.
 - Default-microphone capture.
 - Live monitoring of the macOS default input, with automatic microphone
   capture restart when devices are connected, removed, or reconfigured.

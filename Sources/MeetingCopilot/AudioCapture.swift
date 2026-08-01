@@ -303,13 +303,23 @@ final class ProcessTapCapture {
     private var format: AVAudioFormat?
     private var started = false
 
-    func start(processObjectID: AudioObjectID, onBuffer: @escaping BufferHandler) throws {
+    /// A nil process captures the global system mix; an ID narrows the tap to
+    /// that process.
+    func start(processObjectID: AudioObjectID?, onBuffer: @escaping BufferHandler) throws {
         guard !started else { return }
 
-        let tapDescription = CATapDescription(
-            monoMixdownOfProcesses: [processObjectID]
-        )
-        tapDescription.name = "PUnderclass remote participant"
+        let tapDescription: CATapDescription
+        if let processObjectID {
+            tapDescription = CATapDescription(
+                monoMixdownOfProcesses: [processObjectID]
+            )
+            tapDescription.name = "PUnderclass meeting app audio"
+        } else {
+            tapDescription = CATapDescription(
+                monoGlobalTapButExcludeProcesses: []
+            )
+            tapDescription.name = "PUnderclass system audio"
+        }
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
 

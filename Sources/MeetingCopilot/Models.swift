@@ -515,7 +515,6 @@ struct TranscriptionContext: Equatable {
 
 enum MeetingCopilotError: LocalizedError {
     case noAPIKey
-    case noProcessSelected
     case invalidKeyword(String)
     case coreAudio(operation: String, status: OSStatus)
     case audio(String)
@@ -524,8 +523,6 @@ enum MeetingCopilotError: LocalizedError {
         switch self {
         case .noAPIKey:
             "Enter an OpenAI API key first."
-        case .noProcessSelected:
-            "Select the meeting application whose output should be transcribed."
         case let .invalidKeyword(keyword):
             "The terminology hint “\(keyword)” contains a forbidden character or line break."
         case let .coreAudio(operation, status):

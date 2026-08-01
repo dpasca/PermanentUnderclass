@@ -136,20 +136,20 @@ final class MeetingController: ObservableObject {
             }
             let refreshed = try AudioProcessCatalog.load()
             processes = refreshed
-            if
+
+            // nil deliberately represents the default: capture all system audio.
+            guard selectedProcessID != nil else { return }
+            guard
                 let previous,
                 let resolved = AudioProcessSelectionResolver.resolve(
                     previous: previous,
                     candidates: refreshed
                 )
-            {
-                selectedProcessID = resolved.id
-            } else {
-                selectedProcessID = refreshed.first(where: \.isProducingOutput)?.id
+            else {
+                selectedProcessID = nil
+                return
             }
-            if processes.isEmpty {
-                statusMessage = "Open the meeting application, then refresh the list."
-            }
+            selectedProcessID = resolved.id
         } catch {
             present(error)
         }
@@ -219,13 +219,20 @@ final class MeetingController: ObservableObject {
             }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw MeetingCopilotError.noAPIKey }
-            guard
-                let selectedProcessID,
-                let previousSelection = processes.first(where: { $0.id == selectedProcessID })
-            else {
-                throw MeetingCopilotError.noProcessSelected
+            let selectedProcess: AudioProcessInfo?
+            if let selectedProcessID {
+                guard let previousSelection = processes.first(where: {
+                    $0.id == selectedProcessID
+                }) else {
+                    self.selectedProcessID = nil
+                    throw MeetingCopilotError.audio(
+                        "The selected app is no longer available. All system audio is now selected; start again."
+                    )
+                }
+                selectedProcess = try refreshSelection(previous: previousSelection)
+            } else {
+                selectedProcess = nil
             }
-            let selectedProcess = try refreshSelection(previous: previousSelection)
             let context = try transcriptionContext()
             uniqueRefinementClients().forEach { $0.disconnect() }
             refinementClients.removeAll()
@@ -346,10 +353,11 @@ final class MeetingController: ObservableObject {
 
             let processCapture = ProcessTapCapture()
             do {
-                try processCapture.start(processObjectID: selectedProcess.id) { buffer in
+                try processCapture.start(processObjectID: selectedProcess?.id) { buffer in
                     remotePipeline.submit(buffer)
                 }
             } catch {
+                guard let selectedProcess else { throw error }
                 let retriedSelection = try refreshSelection(previous: selectedProcess)
                 guard retriedSelection.id != selectedProcess.id else {
                     throw error
@@ -500,8 +508,11 @@ final class MeetingController: ObservableObject {
     }
 
     func meetingAudioHealth(at now: Date = Date()) -> AudioStreamHealth {
-        AudioStreamHealth.evaluate(
-            sourceAvailable: selectedProcessID != nil,
+        let sourceAvailable = selectedProcessID.map { selectedID in
+            processes.contains(where: { $0.id == selectedID })
+        } ?? audioOutputAvailable
+        return AudioStreamHealth.evaluate(
+            sourceAvailable: sourceAvailable,
             isMonitoring: isListening,
             telemetry: remoteTrack.telemetry,
             now: now
@@ -1285,9 +1296,9 @@ final class MeetingController: ObservableObject {
             previous: previous,
             candidates: refreshed
         ) else {
-            selectedProcessID = refreshed.first(where: \.isProducingOutput)?.id
+            selectedProcessID = nil
             throw MeetingCopilotError.audio(
-                "\(previous.name) stopped or restarted and its new audio process could not be matched. The process list was refreshed; select it again."
+                "\(previous.name) stopped or restarted and its new audio process could not be matched. All system audio is now selected; start again."
             )
         }
         selectedProcessID = resolved.id

@@ -68,9 +68,11 @@ struct ContentView: View {
                             health: controller.meetingMicrophoneHealth(at: timeline.date)
                         )
                         TrackCard(
-                            title: "MEETING APP AUDIO",
-                            systemImage: "macwindow.on.rectangle",
-                            subtitle: selectedProcessName,
+                            title: "MEETING AUDIO",
+                            systemImage: controller.selectedProcessID == nil
+                                ? "speaker.wave.2.fill"
+                                : "macwindow.on.rectangle",
+                            subtitle: selectedMeetingAudioName,
                             color: .purple,
                             state: controller.remoteTrack,
                             health: controller.meetingAudioHealth(at: timeline.date)
@@ -378,11 +380,15 @@ struct ContentView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Image(systemName: "macwindow.on.rectangle")
+                Image(
+                    systemName: controller.selectedProcessID == nil
+                        ? "speaker.wave.2.fill"
+                        : "macwindow.on.rectangle"
+                )
                     .foregroundStyle(.purple)
                     .frame(width: 20)
-                Picker("Meeting app", selection: $controller.selectedProcessID) {
-                    Text("Select meeting audio").tag(Optional<UInt32>.none)
+                Picker("Audio to transcribe", selection: $controller.selectedProcessID) {
+                    Text("All system audio (default)").tag(Optional<UInt32>.none)
                     ForEach(controller.processes) { process in
                         Text(process.displayName).tag(Optional(process.id))
                     }
@@ -390,6 +396,7 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
                 .disabled(controller.isListening)
+                .help("Capture all system audio, or limit transcription to one app")
 
                 Button {
                     controller.refreshProcesses()
@@ -397,7 +404,7 @@ struct ContentView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh meeting audio sources")
+                .help("Refresh app-specific audio sources")
                 .disabled(controller.isListening)
             }
         }
@@ -664,9 +671,12 @@ struct ContentView: View {
         return String(count)
     }
 
-    private var selectedProcessName: String {
-        controller.processes.first(where: { $0.id == controller.selectedProcessID })?.name
-            ?? "No meeting app selected"
+    private var selectedMeetingAudioName: String {
+        guard let selectedProcessID = controller.selectedProcessID else {
+            return "All system audio"
+        }
+        return controller.processes.first(where: { $0.id == selectedProcessID })?.name
+            ?? "Selected app unavailable"
     }
 }
 

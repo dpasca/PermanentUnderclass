@@ -55,7 +55,7 @@ do not improve this single-producer/local-client case.
 ## Topology and responsibilities
 
 ```text
-Meeting app audio ─┐
+System/app audio ──┐
 Microphone ────────┼─> PUnderclass macOS host
 Reference folder ─┘      ├─ capture + transcription
                          ├─ local document ingestion + change monitoring

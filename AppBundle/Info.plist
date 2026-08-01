@@ -27,6 +27,6 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>PUnderclass uses the microphone for meeting transcription and hold-to-dictate.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>PUnderclass captures the selected meeting app’s audio to transcribe the other participant.</string>
+    <string>PUnderclass captures system audio, or one selected app’s audio, to transcribe the other participant.</string>
 </dict>
 </plist>
