@@ -46,6 +46,7 @@ const mockScenarios = [
 
 const state = {
   mode: "connecting",
+  connectionKind: "connecting",
   snapshot: null,
   stream: null,
   cursor: null,
@@ -90,12 +91,176 @@ function formatTime(dateValue) {
 }
 
 function setConnectionStatus(kind, label, eyebrow = null) {
+  state.connectionKind = kind;
   const chip = $("#connectionButton");
   chip.classList.remove("is-connected", "is-reconnecting");
   if (kind === "connected") chip.classList.add("is-connected");
   if (kind === "reconnecting") chip.classList.add("is-reconnecting");
   $("#connectionEyebrow").textContent = eyebrow || (kind === "connected" ? "CAUGHT UP" : "RECONNECTING");
   $("#connectionLabel").textContent = label;
+  renderInferenceStatus();
+}
+
+function setInferenceStatus(kind, eyebrow, title, detail, checkCount = null) {
+  const panel = $("#inferenceStatus");
+  if (!panel) return;
+  panel.className = `inference-status is-${kind}`;
+  $("#inferenceEyebrow").textContent = eyebrow;
+  $("#inferenceTitle").textContent = title;
+  $("#inferenceDetail").textContent = detail;
+  const count = $("#inferenceCount");
+  count.hidden = checkCount === null;
+  if (checkCount !== null) {
+    count.textContent = `${checkCount.toLocaleString()} model check${checkCount === 1 ? "" : "s"}`;
+  }
+}
+
+function renderInferenceStatus() {
+  const snapshot = state.snapshot;
+  const session = snapshot?.session;
+  const assistant = snapshot?.assistant;
+  const reference = snapshot?.reference;
+  const checkCount = snapshot?.usage?.assistantGenerations ?? 0;
+  const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
+
+  if (state.mode === "mock") {
+    setInferenceStatus(
+      "off",
+      "PREVIEW ONLY · INFERENCE OFF",
+      "No inference is happening",
+      "These cards are canned examples. Start the Mac app for live transcript analysis."
+    );
+    return;
+  }
+
+  if (state.mode !== "live" || !snapshot) {
+    setInferenceStatus(
+      "connecting",
+      "VERIFYING INFERENCE",
+      "Checking the Mac host…",
+      "Guidance will not be labeled live until the host state is verified."
+    );
+    return;
+  }
+
+  if (state.connectionKind !== "connected") {
+    setInferenceStatus(
+      "delayed",
+      "HOST STATUS DELAYED",
+      "This display is reconnecting",
+      "The Mac may keep analyzing, but this page cannot verify new inference until it catches up.",
+      checkCount
+    );
+    return;
+  }
+
+  if (session?.suggestionsPaused) {
+    setInferenceStatus(
+      "off",
+      "INFERENCE PAUSED",
+      "No inference is happening",
+      "Transcript capture continues, but completed turns are not sent to the assistant.",
+      checkCount
+    );
+    return;
+  }
+
+  if (!session?.isListening) {
+    setInferenceStatus(
+      "off",
+      "CAPTURE STOPPED · INFERENCE OFF",
+      "No inference is happening",
+      "Start meeting capture in the Mac app to analyze completed turns.",
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.phase === "unavailable") {
+    setInferenceStatus(
+      "blocked",
+      "INFERENCE UNAVAILABLE",
+      "No inference is happening",
+      assistant.lastError || "Assistant setup is incomplete on the Mac.",
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.phase === "failed") {
+    setInferenceStatus(
+      "failed",
+      "INFERENCE FAILED",
+      "The latest model check failed",
+      assistant.lastError || "Transcript capture continues while the assistant needs attention.",
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.phase === "working") {
+    setInferenceStatus(
+      hasLocalReferences ? "working" : "general",
+      hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
+      hasLocalReferences ? "Analyzing the latest completed turn" : "Analyzing without local supporting material",
+      hasLocalReferences
+        ? "A locally grounded model decision is in progress. Turns from both speakers are eligible."
+        : "The result will be clearly labeled and should be verified before relying on it.",
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.phase === "ready" && assistant.suggestion) {
+    const usesGeneralKnowledge = assistant.suggestion.grounding === "generalKnowledge"
+      || !(assistant.suggestion.citations || []).length;
+    setInferenceStatus(
+      usesGeneralKnowledge ? "general" : "active",
+      usesGeneralKnowledge
+        ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
+        : "INFERENCE ACTIVE · LOCALLY GROUNDED",
+      usesGeneralKnowledge
+        ? "Guidance ready without local support"
+        : "The latest model check produced locally grounded guidance",
+      usesGeneralKnowledge
+        ? "The suggestion is prefixed as unverified general model knowledge."
+        : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · both speakers remain eligible.`,
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.lastEvaluationOutcome === "noSuggestion") {
+    const checkedAt = assistant.lastEvaluationAt
+      ? ` at ${formatTime(assistant.lastEvaluationAt)}`
+      : "";
+    setInferenceStatus(
+      hasLocalReferences ? "active" : "general",
+      "INFERENCE ACTIVE · LATEST TURN CHECKED",
+      "The model ran and chose not to interrupt",
+      `Latest completed turn checked${checkedAt}. ${hasLocalReferences ? "Local material was available." : "General-knowledge fallback was available."}`,
+      checkCount
+    );
+    return;
+  }
+
+  if (hasLocalReferences) {
+    setInferenceStatus(
+      "armed",
+      "INFERENCE ARMED · LOCAL REFERENCES READY",
+      "Waiting for a completed turn",
+      "Your speech and the other speaker are both checked after each finalized turn.",
+      checkCount
+    );
+  } else {
+    setInferenceStatus(
+      "general",
+      "INFERENCE ARMED · GENERAL KNOWLEDGE",
+      "No local supporting material",
+      "The assistant will still suggest an answer and prefix it as general model knowledge.",
+      checkCount
+    );
+  }
 }
 
 function showRecovery(title, detail, recovered = false) {
@@ -125,10 +290,11 @@ function renderSession(session) {
   $("#assistantToggle").checked = !session.suggestionsPaused;
   $("#assistantState").textContent = session.suggestionsPaused
     ? "Transcript only"
-    : (session.isListening ? "Watching the conversation" : "Ready for the next session");
+    : (session.isListening ? "Checking every completed turn" : "Inference stops with capture");
   const liveMeta = $(".transcript-meta span:first-child");
   liveMeta.innerHTML = `<i></i> ${session.isListening ? "Live" : "Stopped"}`;
   renderAssistant(state.snapshot?.assistant, session.suggestionsPaused);
+  renderInferenceStatus();
 }
 
 function renderReference(reference) {
@@ -142,7 +308,18 @@ function renderReference(reference) {
     ? "Indexing local changes…"
     : reference.phase === "ready"
       ? "Changes are ingested automatically"
-      : reference.configured ? "Reference folder needs attention" : "Choose a folder in the Mac app";
+      : reference.configured
+        ? "Local grounding unavailable · general fallback stays on"
+        : "Optional · general fallback stays on";
+  const readyIndicator = $(".source-ready");
+  const isReady = reference.phase === "ready" && reference.documentCount > 0;
+  readyIndicator.classList.toggle("is-ready", isReady);
+  readyIndicator.classList.toggle("is-scanning", reference.phase === "scanning");
+  readyIndicator.setAttribute(
+    "aria-label",
+    isReady ? "Ready" : reference.phase === "scanning" ? "Indexing" : "Not ready"
+  );
+  renderInferenceStatus();
 }
 
 function renderUsage(usage) {
@@ -159,6 +336,7 @@ function renderUsage(usage) {
     : "";
   $("#assistantUsageDetail").textContent = `${usage.assistantGenerations} generations · ${usage.assistantInputTokens.toLocaleString()} input / ${usage.assistantOutputTokens.toLocaleString()} output / ${usage.assistantReasoningTokens.toLocaleString()} reasoning tokens${cache}`;
   $("#assistantUsageCost").textContent = "tracked";
+  renderInferenceStatus();
 }
 
 function createTurn(turn, partial = false) {
@@ -252,10 +430,12 @@ function setGuidanceVisibility(visible) {
 }
 
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
+  renderInferenceStatus();
   const empty = $("#pausedState");
   if (paused) {
     setGuidanceVisibility(false);
     empty.hidden = false;
+    $("#emptyStateSymbol").textContent = "Ⅱ";
     $("#emptyStateTitle").textContent = "Live suggestions paused";
     $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume suggestions whenever you want help.";
     return;
@@ -264,15 +444,16 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   if (assistant?.phase === "working") {
     setGuidanceVisibility(false);
     $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = "Reading the latest interviewer turn…";
+    $("#questionText").textContent = "Analyzing the latest completed turn…";
     empty.hidden = true;
-    $("#assistantState").textContent = "Generating grounded guidance";
+    $("#assistantState").textContent = "Generating guidance";
     return;
   }
 
   if (assistant?.phase === "failed" || assistant?.phase === "unavailable") {
     setGuidanceVisibility(false);
     empty.hidden = false;
+    $("#emptyStateSymbol").textContent = "!";
     $("#emptyStateTitle").textContent = assistant.phase === "unavailable" ? "Assistant setup needed" : "Assistant needs attention";
     $("#emptyStateDetail").textContent = assistant.lastError || "The transcript continues while the assistant recovers.";
     return;
@@ -282,8 +463,25 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   if (!suggestion) {
     setGuidanceVisibility(false);
     empty.hidden = false;
-    $("#emptyStateTitle").textContent = "Listening for a useful moment";
-    $("#emptyStateDetail").textContent = "Transcript and references stay on the Mac; a grounded suggestion will appear when useful.";
+    const session = state.snapshot?.session;
+    const reference = state.snapshot?.reference;
+    const checkedWithoutGuidance = assistant?.lastEvaluationOutcome === "noSuggestion";
+    if (!session?.isListening) {
+      $("#emptyStateSymbol").textContent = "■";
+      $("#emptyStateTitle").textContent = "Meeting capture is stopped";
+      $("#emptyStateDetail").textContent = "Start listening in the Mac app to enable live inference.";
+    } else {
+      const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
+      $("#emptyStateSymbol").textContent = checkedWithoutGuidance ? "✓" : "AI";
+      $("#emptyStateTitle").textContent = checkedWithoutGuidance
+        ? "Latest turn checked"
+        : "Waiting for a completed turn";
+      $("#emptyStateDetail").textContent = checkedWithoutGuidance
+        ? "The model ran and found no useful interruption. Both speakers remain eligible."
+        : hasLocalReferences
+          ? "Your speech and the other speaker will both receive a locally grounded model check."
+          : "No local supporting material is loaded. General-knowledge suggestions will be clearly labeled.";
+    }
     return;
   }
 
@@ -298,12 +496,18 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   replaceTalkingPoints(suggestion.talkingPoints || []);
   replaceProof(suggestion.proof || []);
   const citationCount = (suggestion.citations || []).length;
-  $("#groundingLabel").lastChild.textContent = ` Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
+  const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
+  $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
+  $("#groundingNotice").hidden = !usesGeneralKnowledge;
+  $("#proofHeading").textContent = usesGeneralKnowledge ? "FACTS TO VERIFY" : "PROOF TO USE";
+  $("#groundingLabel").lastChild.textContent = usesGeneralKnowledge
+    ? " General model knowledge · not locally supported"
+    : ` Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
   $("#generationTime").textContent = `generated in ${suggestion.generationMilliseconds.toLocaleString()} ms`;
   const citation = suggestion.citations?.[0];
   state.currentCitationPath = citation?.path || "";
-  $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "No source path returned";
-  $("#sourceCitation").disabled = !citation;
+  $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
+  $("#sourceCitation").hidden = !citation;
   $("#pinButton").classList.toggle("is-active", assistant.pinnedSuggestionID === suggestion.id);
   $("#shorterButton").textContent = "Make shorter";
   $("#shorterButton").disabled = false;
@@ -380,17 +584,23 @@ function applyEnvelope(envelope) {
     case "assistant.working":
       state.snapshot.assistant.phase = "working";
       state.snapshot.assistant.lastError = null;
+      state.snapshot.assistant.evaluatingSequence = payload.basedOnSequence;
       renderAssistant(state.snapshot.assistant);
       break;
     case "assistant.suggestion":
       state.snapshot.assistant.phase = "ready";
       state.snapshot.assistant.suggestion = payload;
       state.snapshot.assistant.lastError = null;
+      state.snapshot.assistant.evaluatingSequence = null;
+      state.snapshot.assistant.lastEvaluatedSequence = payload.basedOnSequence;
+      state.snapshot.assistant.lastEvaluationAt = payload.generatedAt;
+      state.snapshot.assistant.lastEvaluationOutcome = "suggestion";
       renderAssistant(state.snapshot.assistant);
       break;
     case "assistant.failed":
       state.snapshot.assistant.phase = payload.phase || "failed";
       state.snapshot.assistant.lastError = payload.message;
+      state.snapshot.assistant.evaluatingSequence = null;
       renderAssistant(state.snapshot.assistant);
       break;
     case "assistant.state":
@@ -511,6 +721,10 @@ function renderMockScenario(index) {
   $("#followupText").textContent = scenario.followup;
   replaceTalkingPoints(scenario.points.map(([title, body]) => ({ title, body })));
   replaceProof(scenario.proof.map(([value, label]) => ({ value, label })));
+  $("#answerCard").classList.remove("uses-general-knowledge");
+  $("#groundingNotice").hidden = true;
+  $("#proofHeading").textContent = "PROOF TO USE";
+  $("#sourceCitation").hidden = false;
   setGuidanceVisibility(true);
   $("#pausedState").hidden = true;
 }
@@ -630,10 +844,16 @@ function bindControls() {
   });
 
   $("#copyButton").addEventListener("click", async () => {
-    const answer = [
+    const answerParts = [
       $("#answerLead").textContent,
       ...Array.from($("#talkingPoints").querySelectorAll("p")).map((item) => item.textContent)
-    ].join("\n\n");
+    ];
+    if ($("#answerCard").classList.contains("uses-general-knowledge")) {
+      answerParts.unshift(
+        "NO LOCAL SUPPORTING MATERIAL — Uses the live discussion and general model knowledge; verify before relying on it."
+      );
+    }
+    const answer = answerParts.join("\n\n");
     try {
       await navigator.clipboard.writeText(answer);
       showToast("Copied answer");

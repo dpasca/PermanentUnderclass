@@ -9,7 +9,8 @@ preview, run from the repository root:
 ```
 
 The standalone server automatically falls back to mock data and makes no model
-request.
+request. The page labels that state prominently so simulated guidance cannot be
+mistaken for live inference.
 
 This is deliberately a thin display. The behavior and reference-folder status
 are read-only projections from the Mac host. The Mac ingests documents, calls
@@ -25,6 +26,14 @@ Useful interactions:
 - The connection chip shows stream health and protocol details.
 - The session estimate opens a cost breakdown.
 - Suggestions can be paused, pinned, copied, or shortened.
+- The inference panel distinguishes preview-only, blocked, paused, armed,
+  working, checked-without-guidance, ready, and failed states.
+- Every finalized `You` or `Other` turn is eligible for the host model's
+  structured usefulness decision; the browser itself never decides via text
+  matching.
+- File-backed suggestions show their citations. Suggestions based on the live
+  discussion and general model knowledge remain available when local files do
+  not support the topic, with a **NO LOCAL SUPPORTING MATERIAL** prefix.
 
 The transport and recovery decision is documented in
 [`Docs/live-assistant-architecture.md`](../../Docs/live-assistant-architecture.md).

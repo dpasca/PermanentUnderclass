@@ -1,6 +1,7 @@
 import AppKit
 import CoreAudio
 import Foundation
+import OSLog
 
 final class MeetingController: ObservableObject {
     @Published var apiKeyDraft = ""
@@ -72,6 +73,10 @@ final class MeetingController: ObservableObject {
         "MeetingCopilot.QuickDictationPreviewEnabled"
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
+    private static let liveAssistantLogger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "LiveAssistant"
+    )
 
     init(
         quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport()
@@ -702,9 +707,10 @@ final class MeetingController: ObservableObject {
                     return $0.startedAt < $1.startedAt
                 }
                 self.publishCompanionFinal(turn)
-                if speaker == .other {
-                    self.scheduleInterviewWingman()
-                }
+                Self.liveAssistantLogger.notice(
+                    "assistant_check_scheduled trigger_speaker=\(speaker.rawValue, privacy: .public)"
+                )
+                self.scheduleInterviewWingman()
                 guard
                     !pcm16Audio.isEmpty,
                     let refinementClient = self.refinementClients[speaker],
@@ -1117,32 +1123,43 @@ final class MeetingController: ObservableObject {
                 try await Task.sleep(for: .milliseconds(350))
                 guard !Task.isCancelled else { return }
                 await pendingCompanionUpdates?.value
-                guard !(await hub.suggestionsPaused()) else { return }
+                guard !(await hub.suggestionsPaused()) else {
+                    Self.liveAssistantLogger.notice(
+                        "assistant_check_skipped reason=suggestions_paused"
+                    )
+                    return
+                }
 
                 guard !apiKey.isEmpty else {
+                    Self.liveAssistantLogger.error(
+                        "assistant_check_skipped reason=api_key_missing"
+                    )
                     await hub.assistantFailed(
                         "Save an OpenAI API key on the Mac to enable Interview Wingman.",
                         unavailable: true
                     )
                     return
                 }
-                guard
-                    let references,
-                    !references.documents.isEmpty
-                else {
-                    await hub.assistantFailed(
-                        "Choose a non-empty reference folder on the Mac to enable grounded suggestions.",
-                        unavailable: true
+                if references?.documents.isEmpty != false {
+                    Self.liveAssistantLogger.notice(
+                        "assistant_inference_grounding mode=general_knowledge reason=no_local_support"
                     )
-                    return
                 }
 
                 let currentRevision = await MainActor.run {
                     controller.value?.referenceLibraryState.snapshot?.revision
                 }
-                guard currentRevision == references.revision else { return }
+                guard currentRevision == references?.revision else {
+                    Self.liveAssistantLogger.notice(
+                        "assistant_check_skipped reason=reference_revision_changed"
+                    )
+                    return
+                }
 
                 let basedOnSequence = await hub.currentWatermark()
+                Self.liveAssistantLogger.notice(
+                    "assistant_inference_started sequence=\(basedOnSequence, privacy: .public)"
+                )
                 await hub.assistantWorking(
                     basedOnSequence: basedOnSequence
                 )
@@ -1157,28 +1174,39 @@ final class MeetingController: ObservableObject {
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
                 }
+                Self.liveAssistantLogger.notice(
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
+                )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
                     controller.value?.referenceLibraryState.snapshot?.revision
-                        == references.revision
+                        == references?.revision
                 }
                 guard isCurrentRevision else {
-                    await hub.assistantFinishedWithoutSuggestion()
+                    await hub.assistantFinishedWithoutSuggestion(
+                        basedOnSequence: basedOnSequence
+                    )
                     return
                 }
                 guard !(await hub.suggestionsPaused()) else {
-                    await hub.assistantFinishedWithoutSuggestion()
+                    await hub.assistantFinishedWithoutSuggestion(
+                        basedOnSequence: basedOnSequence
+                    )
                     return
                 }
                 if let suggestion = generation.suggestion {
                     await hub.assistantSuggested(suggestion)
                 } else {
-                    await hub.assistantFinishedWithoutSuggestion()
+                    await hub.assistantFinishedWithoutSuggestion(
+                        basedOnSequence: basedOnSequence
+                    )
                 }
             } catch is CancellationError {
+                Self.liveAssistantLogger.debug("assistant_check_cancelled")
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                Self.liveAssistantLogger.error("assistant_inference_failed")
                 await hub.assistantFailed(error.localizedDescription)
             }
         }

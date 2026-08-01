@@ -109,6 +109,9 @@ Initial event set:
 - `transcript.revised`: replace text after the final transcription pass.
 - `assistant.working`: generation started for a transcript watermark.
 - `assistant.suggestion`: complete replaceable card with citation labels and expiry.
+- `assistant.state`: idle state after a completed model check, including whether
+  the latest eligible turn produced no suggestion. This prevents silence from
+  being confused with a disconnected assistant.
 - `usage.updated`: cumulative reported usage and estimated USD by model.
 - `reference.status`: folder display name, document count, revision, and
   readiness; never document contents.
@@ -127,6 +130,7 @@ An `assistant.suggestion` payload is already a view model, for example:
   "watchout": "Be precise about what you personally owned.",
   "followup": "How did you prevent stale inventory?",
   "citations": [{"label": "Checkout latency", "path": "Projects/Checkout.md"}],
+  "grounding": "localReferences",
   "expiresAt": "2026-08-01T01:25:12.318Z"
 }
 ```
@@ -134,6 +138,25 @@ An `assistant.suggestion` payload is already a view model, for example:
 The host chooses the facts and wording. The display may lay out, copy, pin, or
 dismiss this object, but it does not receive retrieved chunks and does not run a
 second interpretation step.
+
+Every finalized turn from `You` or `Other` schedules the same structured model
+decision. Speaker identity is supplied as transcript context; there is no
+keyword or pattern gate in front of the model. A completed decision that returns
+no suggestion is retained as assistant state so the display can distinguish
+"checked, no interruption" from "no inference happened."
+
+The structured decision labels every displayed suggestion as either
+`localReferences` or `generalKnowledge`. Local grounding requires at least one
+validated citation path from the current indexed snapshot. If no indexed file
+supports a useful answer, the model may use the live discussion as context and
+general model knowledge with an empty citation list. The display prefixes that
+card with **NO LOCAL SUPPORTING MATERIAL** and keeps the warning when copying
+the answer.
+
+The host also writes privacy-safe lifecycle markers under the
+`com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
+They record scheduling, starts, skips, completion outcome, cancellation, and
+failure without recording transcript content or credentials.
 
 Event names and payload keys are language-level identifiers, not user-facing
 copy. Unknown event names must be ignored so a v1 client can coexist with a

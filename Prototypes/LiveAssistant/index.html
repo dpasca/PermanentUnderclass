@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0d1314">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23172021'/%3E%3Cpath d='M9 20v-7m7 9V8m7 12v-5' stroke='%23c9f970' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <title>PUnderclass Live Assistant — interactive prototype</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <div class="prototype-ribbon" id="modeRibbon">Connecting to PUnderclass host…</div>
@@ -62,14 +62,14 @@
             </span>
             <span>
               <strong id="behaviorName">Interview wingman</strong>
-              <small id="behaviorDetail">Anticipate questions, answer with proof</small>
+              <small id="behaviorDetail">Check both speakers; label local vs. general support</small>
             </span>
             <span class="host-lock" aria-hidden="true">MAC</span>
           </div>
           <label class="switch-row">
             <span>
               <strong>Live suggestions</strong>
-              <small id="assistantState">Watching the conversation</small>
+              <small id="assistantState">Checking every completed turn</small>
             </span>
             <input id="assistantToggle" type="checkbox" checked>
             <span class="switch" aria-hidden="true"></span>
@@ -85,7 +85,7 @@
             <div class="source-row host-source">
               <span class="file-icon folder">DIR</span>
               <span><strong id="referenceFolderName">Interview references</strong><small id="referenceFolderDetail">3 documents · rev 2a0f91c8</small></span>
-              <span class="source-ready" aria-label="Ready"></span>
+              <span class="source-ready is-ready" aria-label="Ready"></span>
             </div>
           </div>
           <div class="folder-sync"><span class="sync-ring" aria-hidden="true"></span><span><strong id="referenceWatchTitle">Watched by Davide’s Mac</strong><small id="referenceWatchDetail">Changes are ingested automatically</small></span></div>
@@ -125,10 +125,20 @@
           </div>
         </div>
 
+        <section class="inference-status is-connecting" id="inferenceStatus" role="status" aria-live="polite">
+          <span class="inference-lamp" aria-hidden="true"><i></i></span>
+          <span class="inference-copy">
+            <small id="inferenceEyebrow">INFERENCE STATUS</small>
+            <strong id="inferenceTitle">Checking the Mac host…</strong>
+            <span id="inferenceDetail">Waiting for a verified assistant state.</span>
+          </span>
+          <span class="inference-count" id="inferenceCount" hidden>0 checks</span>
+        </section>
+
         <div class="listening-strip" id="listeningStrip">
           <span class="wave-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
           <span>
-            <small>THEY’RE ASKING ABOUT</small>
+            <small>GUIDANCE FOR THIS MOMENT</small>
             <strong id="questionText">“Tell me about a time you improved the performance of a critical system.”</strong>
           </span>
           <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
@@ -151,6 +161,10 @@
               </button>
             </div>
           </header>
+          <div class="grounding-notice" id="groundingNotice" role="note" hidden>
+            <span aria-hidden="true">!</span>
+            <span><strong>NO LOCAL SUPPORTING MATERIAL</strong><small>This suggestion uses the live discussion and general model knowledge. Verify it before relying on it.</small></span>
+          </div>
           <ol class="talking-points" id="talkingPoints">
             <li><span>01</span><p><strong>Set the stakes.</strong> Checkout p95 had climbed to <mark>1.8 seconds</mark> during peak traffic and was starting to affect conversion.</p></li>
             <li><span>02</span><p><strong>Name your move.</strong> I traced the path across services, found an N+1 inventory lookup, and proposed a request-scoped batcher with a short-lived cache.</p></li>
@@ -165,7 +179,7 @@
 
         <div class="evidence-grid" id="evidenceGrid">
           <article class="evidence-card">
-            <header><span class="eyebrow">PROOF TO USE</span><span class="card-number">03</span></header>
+            <header><span class="eyebrow" id="proofHeading">PROOF TO USE</span><span class="card-number">03</span></header>
             <ul id="proofList">
               <li><strong>41%</strong><span>p95 latency reduction</span></li>
               <li><strong>18k</strong><span>peak requests / minute</span></li>
@@ -192,9 +206,9 @@
         </article>
 
         <div class="paused-state" id="pausedState" hidden>
-          <span class="pause-symbol">Ⅱ</span>
-          <h2 id="emptyStateTitle">Live suggestions paused</h2>
-          <p id="emptyStateDetail">The transcript is still arriving. Turn suggestions back on whenever you want help.</p>
+          <span class="pause-symbol" id="emptyStateSymbol">AI</span>
+          <h2 id="emptyStateTitle">Waiting for a completed turn</h2>
+          <p id="emptyStateDetail">Both speakers are eligible for a model check.</p>
         </div>
       </section>
 
@@ -285,6 +299,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden>Copied answer</div>
 
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
