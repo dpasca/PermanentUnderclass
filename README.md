@@ -89,19 +89,21 @@ prompted. Accessibility allows both global shortcut monitoring and automatic
 paste. macOS may require PUnderclass to be quit and reopened after this
 permission changes. Hold the exact modifier-only chord **Command + Option**
 while speaking and release either modifier to transcribe with the currently
-selected **FINAL** model and paste into the focused application. Local Parakeet
-keeps dictation audio on this Mac; GPT-Transcribe sends the captured dictation
-audio to OpenAI. Pressing another keyboard key while the chord is down cancels
-the recording, so normal Command-Option shortcuts do not become dictations.
+selected final-pass and Quick Dictation model, then paste into the focused
+application. Local Parakeet keeps dictation audio on this Mac; GPT-Transcribe
+sends the captured dictation audio to OpenAI. Pressing another keyboard key
+while the chord is down cancels the recording, so normal Command-Option
+shortcuts do not become dictations.
 
 By default, Quick Dictation shows a small, non-activating preview near the
 bottom of the current screen. It displays the live microphone waveform while
-recording and updates a live text hypothesis from the selected **FINAL** model
-as speech arrives.
+recording and periodically sends bounded snapshots to the same selected model
+to update the preview text. Quick Dictation does not use the Meeting-only
+`gpt-live-transcribe` model. After release, the selected model transcribes the
+complete recording once for the pasted and saved result.
 The waveform uses adaptive visual gain so quiet microphones still provide clear
-feedback. After release, the preview remains visible while the higher-quality
-final transcription is prepared and pasted. Turn **Screen preview** off in the
-Quick Dictation controls to hide it without disabling dictation.
+feedback. Turn **Screen preview** off in the Quick Dictation controls to disable
+the optional snapshot stage and hide the overlay without disabling dictation.
 
 The focused application's clipboard is used briefly for the paste and restored
 afterward if it was not changed by another application. Quick Dictation is
@@ -115,9 +117,10 @@ stored locally in the current user's Application Support folder until it is
 erased; dictation audio is never retained in the history.
 
 PUnderclass speculatively prepares Local Parakeet in the background at launch,
-even when GPT-Transcribe is selected. A model-panel hint shows the current
-download/load phase and elapsed time. This warmup does not gate the selected
-cloud transcriber, and all local callers share the same in-flight preparation.
+even when GPT-Transcribe is selected. The model pipeline and shared settings
+show the current download/load phase and elapsed time. This warmup does not gate
+the selected cloud transcriber, and all local callers share the same in-flight
+preparation.
 
 ## Current scope
 
@@ -129,11 +132,11 @@ The proof of concept includes:
   capture restart when devices are connected, removed, or reconfigured.
 - 24 kHz mono PCM16 conversion and bounded 20 ms audio chunks.
 - Two independent `gpt-live-transcribe` WebSocket sessions.
-- A shared window bar for microphone, final-model, and API-cost controls, plus a
-  Meeting dashboard that shows the live model and the selected shared final
-  pass. Detailed model selection and readiness remain available from the shared
-  settings popover.
-- A selectable final-transcript engine:
+- A shared window bar that names every active model by role: the fixed Meeting
+  live model and the selected final-pass/Quick Dictation model. Its pipeline
+  popover explains every stage, execution location, transition, and optional
+  preview pass; each workflow repeats its own compact stage sequence.
+- A selectable final-pass and Quick Dictation engine:
   - **Local Parakeet** embeds FluidAudio and NVIDIA Parakeet TDT 0.6B v3 using
     Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
     Neural Engine preparation while retaining the same model and recognition

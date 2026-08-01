@@ -11,6 +11,7 @@ struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @State private var contextExpanded = false
     @State private var expenseExpanded = false
+    @State private var modelPipelineExpanded = false
     @State private var sharedSettingsExpanded = false
     @State private var selectedTab: AppTab = .meeting
 
@@ -102,7 +103,7 @@ struct ContentView: View {
                     health: controller.microphoneHealth(at: timeline.date)
                 )
             }
-            sharedFinalModelMenu
+            modelPipelineButton
             apiEstimateButton
 
             Button {
@@ -211,52 +212,46 @@ struct ContentView: View {
         .help("Shared microphone for Meeting and Quick Dictation")
     }
 
-    private var sharedFinalModelMenu: some View {
-        Menu {
-            ForEach(TranscriptRefinementEngine.allCases) { engine in
-                Button {
-                    controller.selectRefinementEngine(engine)
-                } label: {
-                    if controller.refinementEngine == engine {
-                        Label(engine.title, systemImage: "checkmark")
-                    } else {
-                        Text(engine.title)
-                    }
-                }
-            }
+    private var modelPipelineButton: some View {
+        Button {
+            modelPipelineExpanded.toggle()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: controller.refinementEngine.systemImage)
+                Image(systemName: "cpu")
                     .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("FINAL MODEL")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("ACTIVE MODELS")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
-                    Text(controller.refinementEngine.title)
-                        .font(.callout.weight(.semibold))
+                    Text("MEETING LIVE · \(RealtimeTranscriptionClient.model)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.blue)
+                        .lineLimit(1)
+                    Text("FINAL + DICTATION · \(controller.refinementEngine.title)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 2)
-                Image(systemName: "chevron.down")
+                Image(systemName: "chevron.right")
                     .font(.caption2.bold())
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .frame(width: 205)
+            .padding(.vertical, 5)
+            .frame(width: 265)
             .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
             .overlay {
                 RoundedRectangle(cornerRadius: 9)
                     .stroke(.green.opacity(0.20), lineWidth: 1)
             }
         }
-        .menuStyle(.borderlessButton)
-        .disabled(controller.isListening || controller.isDictationBusy)
-        .help(
-            controller.isListening || controller.isDictationBusy
-                ? "Stop the active workflow before changing the shared final model."
-                : "Shared final model for Meeting and Quick Dictation"
-        )
+        .buttonStyle(.plain)
+        .help("Show every transcription model, stage, and responsibility")
+        .accessibilityLabel("Active transcription models and pipeline")
+        .popover(isPresented: $modelPipelineExpanded, arrowEdge: .bottom) {
+            TranscriptionPipelinePopover(controller: controller)
+        }
     }
 
     private var apiEstimateButton: some View {
@@ -325,70 +320,36 @@ struct ContentView: View {
     private var meetingModelPanel: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Label("Meeting transcription", systemImage: "cpu")
+                Label("Meeting model pipeline", systemImage: "cpu")
                     .font(.headline)
                 Spacer()
-                Text("Final")
+                Text("Final connection")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 SocketBadge(state: controller.refinementState, color: .green)
             }
 
-            HStack(alignment: .center, spacing: 10) {
-                Text("LIVE")
-                    .font(.caption.bold())
-                    .foregroundStyle(.blue)
-                    .frame(width: 42, alignment: .leading)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(RealtimeTranscriptionClient.model)
-                        .font(.callout.monospaced().weight(.semibold))
-                    Text("Fast streaming text for both audio sources")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("ALWAYS ON")
-                    .font(.caption.bold())
-                    .foregroundStyle(.blue)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.blue.opacity(0.11), in: Capsule())
+            HStack(alignment: .center, spacing: 8) {
+                TranscriptionStageCard(
+                    stage: "STAGE 1 · LIVE",
+                    modelName: RealtimeTranscriptionClient.model,
+                    role: "Streaming text · both audio tracks",
+                    detail: "",
+                    badge: "FIXED",
+                    systemImage: "bolt.horizontal.fill",
+                    color: .blue
+                )
+                TranscriptionPipelineConnector(label: "TURN\nENDS")
+                TranscriptionStageCard(
+                    stage: "STAGE 2 · FINAL",
+                    modelName: controller.refinementEngine.modelName,
+                    role: "\(controller.refinementEngine.title) · completed turns",
+                    detail: "",
+                    badge: "SELECTED",
+                    systemImage: controller.refinementEngine.systemImage,
+                    color: .green
+                )
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-
-            HStack(alignment: .center, spacing: 7) {
-                Text("FINAL")
-                    .font(.caption.bold())
-                    .foregroundStyle(.green)
-                    .frame(width: 42, alignment: .leading)
-                Image(systemName: controller.refinementEngine.systemImage)
-                    .foregroundStyle(.green)
-                    .frame(width: 20)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(controller.refinementEngine.title)
-                        .font(.callout.weight(.semibold))
-                    Text(controller.refinementEngine.modelName)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Text("SHARED")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.green)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(.green.opacity(0.10), in: Capsule())
-                Button("Configure…") {
-                    sharedSettingsExpanded = true
-                }
-                .controlSize(.small)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
-            .background(.green.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(10)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
@@ -728,25 +689,7 @@ private struct SharedTranscriptionSettingsPopover: View {
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Final transcription model")
-                        .font(.headline)
-                    HStack(alignment: .top, spacing: 8) {
-                        ForEach(TranscriptRefinementEngine.allCases) { engine in
-                            ModelChoiceButton(
-                                engine: engine,
-                                isSelected: controller.refinementEngine == engine,
-                                isDisabled: controller.isListening
-                                    || controller.isDictationBusy,
-                                action: { controller.selectRefinementEngine(engine) }
-                            )
-                        }
-                    }
-
-                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                        parakeetPreparationHint(at: timeline.date)
-                    }
-                }
+                SelectableTranscriptionModelPicker(controller: controller)
 
                 Divider()
 
@@ -788,34 +731,6 @@ private struct SharedTranscriptionSettingsPopover: View {
         .frame(width: 590, height: 500)
     }
 
-    @ViewBuilder
-    private func parakeetPreparationHint(at date: Date) -> some View {
-        if let hint = controller.parakeetPreparation.hint(at: date) {
-            HStack(spacing: 6) {
-                if let fraction = controller.parakeetPreparation.downloadFraction {
-                    ProgressView(value: fraction)
-                        .frame(width: 54)
-                } else if controller.parakeetPreparation.isInProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if controller.parakeetPreparation.isReady {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                Text(hint)
-                    .lineLimit(2)
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundStyle(
-                controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
-            )
-            .help(hint)
-        }
-    }
 }
 
 private struct APIExpensePopover: View {
@@ -929,7 +844,7 @@ private struct APIExpensePopover: View {
     }
 }
 
-private struct ModelChoiceButton: View {
+struct ModelChoiceButton: View {
     let engine: TranscriptRefinementEngine
     let isSelected: Bool
     let isDisabled: Bool
@@ -973,9 +888,13 @@ private struct ModelChoiceButton: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .opacity(isDisabled && !isSelected ? 0.55 : 1)
-        .accessibilityLabel("Final transcript: \(engine.title), \(engine.modelName)")
+        .accessibilityLabel("Final pass and Quick Dictation: \(engine.title), \(engine.modelName)")
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(isDisabled ? "Stop listening before changing the final model." : engine.purpose)
+        .help(
+            isDisabled
+                ? "Stop the active workflow before changing this model."
+                : engine.purpose
+        )
     }
 }
 

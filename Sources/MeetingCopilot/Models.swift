@@ -58,9 +58,9 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
     var purpose: String {
         switch self {
         case .localParakeet:
-            "Finalizes each turn privately on this Mac."
+            "Finalizes meeting turns and runs Quick Dictation privately on this Mac."
         case .openAITranscribe:
-            "Finalizes each turn in the cloud from captured audio."
+            "Finalizes meeting turns and runs Quick Dictation in the cloud."
         }
     }
 

@@ -48,19 +48,38 @@ struct QuickDictationControlPanel: View {
                 .fixedSize()
             }
 
+            HStack(alignment: .center, spacing: 8) {
+                TranscriptionStageCard(
+                    stage: "WHILE HELD · PREVIEW",
+                    modelName: controller.refinementEngine.modelName,
+                    role: controller.dictationPreviewEnabled
+                        ? "Periodic snapshots · overlay text"
+                        : "Disabled with Screen preview",
+                    detail: "",
+                    badge: controller.dictationPreviewEnabled ? "OPTIONAL · ON" : "OPTIONAL · OFF",
+                    systemImage: "text.bubble",
+                    color: .orange,
+                    isEnabled: controller.dictationPreviewEnabled
+                )
+                TranscriptionPipelineConnector(label: "SAME\nMODEL")
+                TranscriptionStageCard(
+                    stage: "ON RELEASE · FINAL",
+                    modelName: controller.refinementEngine.modelName,
+                    role: "Full recording · paste + history",
+                    detail: "",
+                    badge: "REQUIRED",
+                    systemImage: controller.refinementEngine.systemImage,
+                    color: .green
+                )
+            }
+
             if controller.dictationEnabled {
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(controller.microphoneName, systemImage: "mic.fill")
-                        Label(
-                            controller.refinementEngine.title,
-                            systemImage: controller.refinementEngine.systemImage
-                        )
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 190, alignment: .leading)
+                    Label(controller.microphoneName, systemImage: "mic.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(width: 190, alignment: .leading)
 
                     WaveformView(
                         samples: controller.dictationTelemetry.waveform,
