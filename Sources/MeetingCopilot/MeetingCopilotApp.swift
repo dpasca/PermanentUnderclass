@@ -18,9 +18,7 @@ struct MeetingCopilotApp: App {
     }
 }
 
-/// Owns services for the lifetime of the process rather than the lifetime of
-/// one SwiftUI window. Quick Dictation therefore keeps working when its debug
-/// window is closed and the app is effectively headless.
+/// Owns services for the lifetime of the app's single window.
 final class MeetingCopilotApplicationModel: ObservableObject {
     let controller: MeetingController?
 
@@ -45,5 +43,11 @@ final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
             meetingCaptureSelfTest = runner
             runner.start()
         }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(
+        _ sender: NSApplication
+    ) -> Bool {
+        true
     }
 }

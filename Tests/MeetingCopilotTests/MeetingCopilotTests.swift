@@ -1,9 +1,18 @@
+import AppKit
 import AVFAudio
 import CoreGraphics
 import XCTest
 @testable import MeetingCopilot
 
 final class MeetingCopilotTests: XCTestCase {
+    func testAppTerminatesAfterItsLastWindowCloses() {
+        let delegate = MeetingCopilotAppDelegate()
+
+        XCTAssertTrue(
+            delegate.applicationShouldTerminateAfterLastWindowClosed(.shared)
+        )
+    }
+
     func testSpeakerLabelsAreDeterministic() {
         XCTAssertEqual(SpeakerTag.you.rawValue, "You")
         XCTAssertEqual(SpeakerTag.other.rawValue, "Other")
