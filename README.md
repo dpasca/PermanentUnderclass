@@ -164,6 +164,9 @@ complete recording once for the pasted and saved result.
 That final transcription runs in the background, so another Quick Dictation can
 start immediately. Completed recordings remain queued in capture order so their
 text is pasted in the same order it was spoken.
+While recording overlaps an earlier final pass, the overlay keeps the live
+waveform in its own card and shows the background transcription in a second card
+above it. The app's synthesized paste event does not cancel the active recording.
 The waveform uses adaptive visual gain so quiet microphones still provide clear
 feedback. The pipeline's **Screen preview (optional stage)** switch directly
 controls the snapshot stage and overlay. Turning it off does not disable the

@@ -59,6 +59,7 @@ final class ModifierHoldMonitor {
     ) -> Void
 
     static let diagnosticEventTag: Int64 = 0x4D_43_44_54
+    static let pasteEventTag: Int64 = 0x4D_43_50_53
     private static let logger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
         category: "QuickDictationHotkey"
@@ -73,6 +74,13 @@ final class ModifierHoldMonitor {
 
     init(signalHandler: @escaping SignalHandler) {
         self.signalHandler = signalHandler
+    }
+
+    static func shouldCancelForKeyDown(
+        eventTag: Int64,
+        isDiagnosticHold: Bool
+    ) -> Bool {
+        !isDiagnosticHold && eventTag != pasteEventTag
     }
 
     func start() throws {
@@ -159,7 +167,11 @@ final class ModifierHoldMonitor {
                 isDiagnosticHold = false
             }
         case .keyDown:
-            signal = isDiagnosticHold ? nil : state.cancelForKeyDown()
+            let eventTag = event.getIntegerValueField(.eventSourceUserData)
+            signal = Self.shouldCancelForKeyDown(
+                eventTag: eventTag,
+                isDiagnosticHold: isDiagnosticHold
+            ) ? state.cancelForKeyDown() : nil
             if signal == .cancelled {
                 isDiagnosticHold = false
             }
@@ -1443,6 +1455,14 @@ final class PasteInjector {
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
+        keyDown.setIntegerValueField(
+            .eventSourceUserData,
+            value: ModifierHoldMonitor.pasteEventTag
+        )
+        keyUp.setIntegerValueField(
+            .eventSourceUserData,
+            value: ModifierHoldMonitor.pasteEventTag
+        )
 
         let pasteboard = NSPasteboard.general
         let previousItems = copyItems(pasteboard.pasteboardItems ?? [])

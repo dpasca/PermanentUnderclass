@@ -777,6 +777,31 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertNil(state.cancelForKeyDown())
     }
 
+    func testAutomaticPasteDoesNotCancelParallelDictation() {
+        var state = ModifierHoldState()
+        XCTAssertEqual(
+            state.update(flags: [.maskCommand, .maskAlternate]),
+            .pressed
+        )
+
+        let shouldCancel = ModifierHoldMonitor.shouldCancelForKeyDown(
+            eventTag: ModifierHoldMonitor.pasteEventTag,
+            isDiagnosticHold: false
+        )
+        if shouldCancel {
+            _ = state.cancelForKeyDown()
+        }
+
+        XCTAssertFalse(shouldCancel)
+        XCTAssertTrue(state.isHeld)
+        XCTAssertTrue(
+            ModifierHoldMonitor.shouldCancelForKeyDown(
+                eventTag: 0,
+                isDiagnosticHold: false
+            )
+        )
+    }
+
     func testQuickDictationDoesNotSendSilenceToParakeet() {
         let silence = Data(repeating: 0, count: 9_600)
         XCTAssertFalse(PCM16SignalGate.containsAudibleSignal(silence))
@@ -1109,6 +1134,26 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertEqual(state.content, .result("A useful preview"))
         state.handle(phase: .ready)
         XCTAssertEqual(state.content, .result("A useful preview"))
+    }
+
+    func testQuickDictationPreviewSeparatesListeningFromBackgroundResult() {
+        var state = QuickDictationPreviewState()
+
+        state.handle(phase: .transcribing)
+        state.handle(phase: .recording)
+        XCTAssertEqual(state.content, .listening)
+        XCTAssertEqual(state.backgroundContent, .transcribing)
+
+        state.show(result: "The previous dictation")
+        XCTAssertEqual(state.content, .listening)
+        XCTAssertEqual(
+            state.backgroundContent,
+            .result("The previous dictation")
+        )
+
+        state.hideBackground()
+        XCTAssertEqual(state.content, .listening)
+        XCTAssertNil(state.backgroundContent)
     }
 
     func testQuickDictationPreviewHidesCancelledCapture() {

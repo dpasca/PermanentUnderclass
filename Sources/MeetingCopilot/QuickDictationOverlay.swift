@@ -9,44 +9,68 @@ enum QuickDictationPreviewContent: Equatable {
     case failure(String)
 }
 
+enum QuickDictationBackgroundContent: Equatable {
+    case transcribing
+    case result(String)
+}
+
 struct QuickDictationPreviewState: Equatable {
     private(set) var content: QuickDictationPreviewContent = .hidden
+    private(set) var backgroundContent: QuickDictationBackgroundContent?
 
     var isVisible: Bool {
         content != .hidden
     }
 
     mutating func handle(phase: DictationPhase) {
+        let previousContent = content
         switch phase {
         case .recording:
             content = .listening
+            if previousContent == .transcribing {
+                backgroundContent = .transcribing
+            }
         case .transcribing:
             content = .transcribing
+            backgroundContent = nil
         case let .failed(message):
             if isVisible {
                 content = .failure(message)
+                backgroundContent = nil
             }
         case .ready:
+            backgroundContent = nil
             if case .result = content {
                 return
             }
             content = .hidden
         case .off, .needsPermission, .preparing:
             content = .hidden
+            backgroundContent = nil
         }
     }
 
     mutating func show(result: String) {
+        if content == .listening {
+            backgroundContent = .result(result)
+            return
+        }
         content = .result(result)
+    }
+
+    mutating func hideBackground() {
+        backgroundContent = nil
     }
 
     mutating func hide() {
         content = .hidden
+        backgroundContent = nil
     }
 }
 
 private final class QuickDictationOverlayModel: ObservableObject {
     @Published var content: QuickDictationPreviewContent = .hidden
+    @Published var backgroundContent: QuickDictationBackgroundContent?
     @Published var waveform: [Float] = Array(repeating: 0, count: 180)
     @Published var partialTranscript = ""
 }
@@ -55,6 +79,21 @@ private struct QuickDictationOverlayView: View {
     @ObservedObject var model: QuickDictationOverlayModel
 
     var body: some View {
+        VStack(spacing: 8) {
+            Spacer(minLength: 0)
+            if let backgroundContent = model.backgroundContent {
+                backgroundCard(backgroundContent)
+            }
+            primaryCard
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Quick Dictation preview")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var primaryCard: some View {
         HStack(spacing: 12) {
             Image(systemName: symbolName)
                 .font(.system(size: 17, weight: .semibold))
@@ -90,11 +129,93 @@ private struct QuickDictationOverlayView: View {
                 .stroke(.white.opacity(0.12), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Quick Dictation preview")
-        .accessibilityValue(accessibilityValue)
+    }
+
+    private func backgroundCard(
+        _ content: QuickDictationBackgroundContent
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: backgroundSymbolName(content))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(backgroundAccentColor(content))
+                .frame(width: 30, height: 30)
+                .background(
+                    backgroundAccentColor(content).opacity(0.14),
+                    in: Circle()
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backgroundTitle(content))
+                    .font(.system(size: 12, weight: .semibold))
+                backgroundBody(content)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .opacity(0.72)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
+    }
+
+    @ViewBuilder
+    private func backgroundBody(
+        _ content: QuickDictationBackgroundContent
+    ) -> some View {
+        switch content {
+        case .transcribing:
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Finishing in the background…")
+                    .foregroundStyle(.secondary)
+            }
+        case let .result(text):
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.head)
+        }
+    }
+
+    private func backgroundTitle(
+        _ content: QuickDictationBackgroundContent
+    ) -> String {
+        switch content {
+        case .transcribing:
+            "Previous dictation · Transcribing…"
+        case .result:
+            "Previous dictation completed"
+        }
+    }
+
+    private func backgroundSymbolName(
+        _ content: QuickDictationBackgroundContent
+    ) -> String {
+        switch content {
+        case .transcribing:
+            "text.bubble.fill"
+        case .result:
+            "checkmark"
+        }
+    }
+
+    private func backgroundAccentColor(
+        _ content: QuickDictationBackgroundContent
+    ) -> Color {
+        switch content {
+        case .transcribing:
+            .orange
+        case .result:
+            .green
+        }
     }
 
     @ViewBuilder
@@ -220,12 +341,13 @@ final class QuickDictationOverlayController {
     private let model = QuickDictationOverlayModel()
     private var state = QuickDictationPreviewState()
     private var dismissWorkItem: DispatchWorkItem?
+    private var backgroundDismissWorkItem: DispatchWorkItem?
     private var isEnabled = true
     private var visibilityGeneration = UUID()
 
     private lazy var panel: NSPanel = {
         let panel = QuickDictationOverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 210),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -258,8 +380,11 @@ final class QuickDictationOverlayController {
         guard !enabled else { return }
         dismissWorkItem?.cancel()
         dismissWorkItem = nil
+        backgroundDismissWorkItem?.cancel()
+        backgroundDismissWorkItem = nil
         state.hide()
         model.content = .hidden
+        model.backgroundContent = nil
         panel.orderOut(nil)
     }
 
@@ -268,13 +393,18 @@ final class QuickDictationOverlayController {
         let previousContent = state.content
         state.handle(phase: phase)
         model.content = state.content
+        model.backgroundContent = state.backgroundContent
 
         switch state.content {
         case .hidden:
+            cancelBackgroundDismissal()
             hide()
         case .listening:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
+            if state.backgroundContent == .transcribing {
+                cancelBackgroundDismissal()
+            }
             if previousContent != .listening {
                 model.waveform = Array(repeating: 0, count: 180)
                 model.partialTranscript = ""
@@ -283,10 +413,12 @@ final class QuickDictationOverlayController {
         case .transcribing:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
+            cancelBackgroundDismissal()
             present()
         case .result:
             present()
         case .failure:
+            cancelBackgroundDismissal()
             present()
             dismiss(after: 4)
         }
@@ -310,8 +442,15 @@ final class QuickDictationOverlayController {
 
     func show(result: String) {
         guard isEnabled else { return }
+        let isBackgroundResult = state.content == .listening
         state.show(result: result)
         model.content = state.content
+        model.backgroundContent = state.backgroundContent
+        if isBackgroundResult {
+            present()
+            dismissBackground(after: 1.6)
+            return
+        }
         model.partialTranscript = result
         present()
         dismiss(after: 1.6)
@@ -365,10 +504,28 @@ final class QuickDictationOverlayController {
             guard let self else { return }
             self.state.hide()
             self.model.content = .hidden
+            self.model.backgroundContent = nil
             self.hide()
         }
         dismissWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func dismissBackground(after delay: TimeInterval) {
+        backgroundDismissWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.backgroundDismissWorkItem = nil
+            self.state.hideBackground()
+            self.model.backgroundContent = nil
+        }
+        backgroundDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func cancelBackgroundDismissal() {
+        backgroundDismissWorkItem?.cancel()
+        backgroundDismissWorkItem = nil
     }
 
     private func positionPanel() {
@@ -380,7 +537,7 @@ final class QuickDictationOverlayController {
 
         let visibleFrame = screen.visibleFrame
         let width = min(500, max(360, visibleFrame.width - 48))
-        let size = NSSize(width: width, height: 120)
+        let size = NSSize(width: width, height: 210)
         let origin = NSPoint(
             x: visibleFrame.midX - width / 2,
             y: visibleFrame.minY + 24
@@ -390,6 +547,7 @@ final class QuickDictationOverlayController {
 
     deinit {
         dismissWorkItem?.cancel()
+        backgroundDismissWorkItem?.cancel()
         panel.orderOut(nil)
     }
 }

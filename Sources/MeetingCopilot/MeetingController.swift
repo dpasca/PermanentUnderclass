@@ -1362,7 +1362,10 @@ final class MeetingController: ObservableObject {
                 onResult: { [weak self] text in
                     guard let self else { return }
                     self.recordQuickDictation(text)
-                    guard !self.isDictating else { return }
+                    if self.isDictating {
+                        self.dictationOverlay.show(result: text)
+                        return
+                    }
                     self.dictationPartialTranscript = text
                     self.dictationOverlay.show(result: text)
                 },
