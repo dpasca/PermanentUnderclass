@@ -139,11 +139,14 @@ The host chooses the facts and wording. The display may lay out, copy, pin, or
 dismiss this object, but it does not receive retrieved chunks and does not run a
 second interpretation step.
 
-Every finalized turn from `You` or `Other` schedules the same structured model
-decision. Speaker identity is supplied as transcript context; there is no
-keyword or pattern gate in front of the model. A completed decision that returns
-no suggestion is retained as assistant state so the display can distinguish
-"checked, no interruption" from "no inference happened."
+An 800 ms audio pause from `You` or `Other` schedules the same structured model
+decision from the current partial transcript before the 3 second final-turn
+boundary. A finalized turn schedules immediately as the reliable fallback.
+Exact partial/final duplicates for one turn are coalesced. Speaker identity is
+supplied as transcript context; there is no keyword or pattern gate in front of
+the model. A completed decision that returns no suggestion is retained as
+assistant state so the display can distinguish "checked, no interruption" from
+"no inference happened."
 
 The structured decision labels every displayed suggestion as either
 `localReferences` or `generalKnowledge`. Local grounding requires at least one
@@ -155,8 +158,9 @@ the answer.
 
 The host also writes privacy-safe lifecycle markers under the
 `com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
-They record scheduling, starts, skips, completion outcome, cancellation, and
-failure without recording transcript content or credentials.
+They record scheduling, starts, skips, completion outcome, cancellation,
+trigger kind, trigger-to-start time, model time, and transcript-to-result time
+without recording transcript content or credentials.
 
 Event names and payload keys are language-level identifiers, not user-facing
 copy. Unknown event names must be ignored so a v1 client can coexist with a
@@ -319,8 +323,10 @@ or keyword gate should decide whether the meeting "looks like" an interview.
 Start the measured prototype with `gpt-5.6-luna` through the Responses API. It
 is the efficient, high-volume member of the current GPT-5.6 family and fits the
 frequent short-generation shape better than using the flagship model for every
-transcript change. Use `reasoning.effort: low`, require the compact suggestion
-schema, and compare `none` against `low` on representative interview moments.
+transcript change. The latency harness currently uses `reasoning.effort: none`
+and a 700-token output ceiling with the compact suggestion schema. Compare that
+configuration against `low` on the same fixed interview moments before trading
+latency for more reasoning.
 
 Treat this as an eval hypothesis, not a permanent routing rule. Measure
 time-to-first-useful-card, grounded-fact accuracy, stale-card rate, output
@@ -359,11 +365,14 @@ the source of truth.
 2. **Completed loopback vertical slice:** Hummingbird service, event hub,
    snapshot, real transcript/reference/usage events, structured Interview
    Wingman behavior, idempotent commands, and reconnect/replay tests.
-3. **Reliability:** durable replay across host restarts, app-sleep tests, fault
+3. **Completed synthetic latency slice:** two audible macOS voices, a fixed
+   six-turn transcript timeline, stable-partial and final events, real model
+   inference, exact partial/final coalescing, and visible end-to-end timings.
+4. **Reliability:** durable replay across host restarts, app-sleep tests, fault
    injection, and an optional SQLite journal decision. The loopback slice
    already bounds replay and disconnects slow consumers so they recover from a
    fresh snapshot.
-4. **LAN:** explicit sharing toggle, Bonjour, pairing/revocation, transport
+5. **LAN:** explicit sharing toggle, Bonjour, pairing/revocation, transport
    encryption, and mobile/tablet validation.
 
 ## Acceptance tests for the loopback slice
@@ -378,3 +387,7 @@ the source of truth.
 - Stop all clients; capture and transcript finalization continue unaffected.
 - Switch finalization to Parakeet; the cloud-finalization cost stops increasing
   while live-transcription cost continues.
+- Run the fixed synthetic interview; each stable partial can start inference
+  before its simulated final boundary, the unchanged final does not create a
+  duplicate generation, and the display reports model and transcript-to-card
+  milliseconds.

@@ -52,6 +52,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 meetingHeader
                 mainControls
+                syntheticInterviewPanel
 
                 if let error = controller.errorMessage {
                     errorBanner(error)
@@ -164,6 +165,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(controller.isListening ? .red : .accentColor)
+            .disabled(controller.syntheticInterviewState.isRunning)
         }
     }
 
@@ -308,6 +310,71 @@ struct ContentView: View {
             controller.statusMessage
         case .quickDictation:
             "Quick Dictation · \(controller.dictationPhase.label)"
+        }
+    }
+
+    private var syntheticInterviewPanel: some View {
+        let state = controller.syntheticInterviewState
+
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "waveform")
+                .font(.title2)
+                .foregroundStyle(.indigo)
+                .frame(width: 34)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(state.title)
+                        .font(.callout.weight(.semibold))
+                    Text("REPEATABLE LATENCY TEST")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.indigo)
+                }
+                Text(state.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if state.isRunning {
+                    ProgressView(value: state.progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 360)
+                } else {
+                    Text("macOS voices are audible; known partial/final transcripts bypass ASR so assistant timing is isolated and deterministic.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("AUDIO PAUSE 800 ms · FINAL 3.0 s")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button("Open Assistant", action: controller.openCompanionDisplay)
+                    if state.isRunning {
+                        Button("Stop Replay", action: controller.stopSyntheticInterview)
+                            .tint(.red)
+                    } else {
+                        Button {
+                            controller.openCompanionDisplay()
+                            controller.startSyntheticInterview()
+                        } label: {
+                            Label("Run Interview", systemImage: "play.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.indigo)
+                        .disabled(controller.isListening || controller.isDictationBusy)
+                    }
+                }
+            }
+        }
+        .padding(11)
+        .background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.indigo.opacity(0.25), lineWidth: 1)
         }
     }
 

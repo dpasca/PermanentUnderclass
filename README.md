@@ -58,8 +58,12 @@ local references, OpenAI request, usage tracking, event ordering, and replay;
 the browser receives only transcript text, reference status, citations, and
 presentation-ready guidance.
 
-The first real behavior is **Interview Wingman**. Each finalized turn from
-either speaker can trigger a structured `gpt-5.6-luna` Responses API decision.
+The first real behavior is **Interview Wingman**. An 800 ms audio pause can
+trigger a structured `gpt-5.6-luna` Responses API decision from the current
+partial transcript before the 3 second final-turn boundary. Finalized turns
+remain a fallback, and an exact partial/final duplicate is coalesced rather
+than billed twice. The same model-based decision handles both speakers; there
+is no keyword or regex gate.
 Indexed local files are preferred when they support the answer. If they do not,
 the model may still suggest an answer from the live discussion and general
 model knowledge; the display prefixes it with **NO LOCAL SUPPORTING MATERIAL**
@@ -81,6 +85,33 @@ The live host exposes an atomic snapshot, a replayable composite SSE cursor,
 and idempotent pause/pin/dismiss commands. The protocol, retry contract,
 pairing boundary, and follow-up durability work are in
 `Docs/live-assistant-architecture.md`.
+
+## Synthetic interview replay
+
+The Meeting tab includes a **Repeatable latency test**. Press **Run Interview**
+to open the Live Assistant and hear a fixed six-turn interview spoken by two
+macOS voices. The host streams the scenario's known words as partial transcript
+events, waits through the same simulated 3 second final-turn boundary, and runs
+the real Interview Wingman request with the configured API key and references.
+The companion displays both model time and end-to-end `transcript → card` time.
+
+This mode deliberately bypasses microphone capture and speech recognition. It
+isolates assistant cadence and model latency so the same conversation can be
+compared after every prompt, model, or scheduling change. Live capture and the
+existing optional network ASR tests continue to cover the audio/transcription
+path separately.
+
+For a one-command visible and audible run:
+
+```sh
+./scripts/run-app.sh --synthetic-interview
+```
+
+The built-in voices require no external account and keep repeated runs free.
+An ElevenLabs clone can later replace the candidate speech renderer without
+changing the deterministic transcript timeline; that requires the ElevenLabs
+voice ID and an API key, and should cache generated audio so test replays do not
+incur repeated synthesis calls.
 
 ## Reference material
 
@@ -173,6 +204,10 @@ The proof of concept includes:
   second end-of-turn pause, and explicit turn commits. Partial text continues
   streaming during the finalization pause. A **Finish My Turn** button supplies
   a manual boundary for controlled comparisons.
+- Interview Wingman checks a partial after an 800 ms audio pause, immediately
+  checks a new finalized turn, and coalesces an unchanged partial/final pair.
+  Privacy-safe lifecycle logs include trigger-to-start, model, and total
+  transcript-to-result timings.
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt

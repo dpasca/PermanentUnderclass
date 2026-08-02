@@ -42,6 +42,7 @@ final class MeetingController: ObservableObject {
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
     @Published private(set) var companionGatewayStatus = "Starting companion display…"
+    @Published private(set) var syntheticInterviewState = SyntheticInterviewState()
 
     private var microphoneCapture: MicrophoneCapture?
     private var processCapture: ProcessTapCapture?
@@ -64,6 +65,11 @@ final class MeetingController: ObservableObject {
     private let interviewWingmanClient = InterviewWingmanClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTask: Task<Void, Never>?
+    private var assistantGenerationRequestID: UUID?
+    private var assistantGenerationIdentity: AssistantEvaluationIdentity?
+    private let syntheticSpeechPlayer = SyntheticSpeechPlayer()
+    private var syntheticInterviewTask: Task<Void, Never>?
+    private var syntheticInterviewRunID: UUID?
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
 
@@ -130,6 +136,12 @@ final class MeetingController: ObservableObject {
             dictationEnabled = true
             DispatchQueue.main.async { [weak self] in
                 self?.startDictationService(requestAccess: false)
+            }
+        }
+
+        if CommandLine.arguments.contains(SyntheticInterviewScenario.launchArgument) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.startSyntheticInterview()
             }
         }
     }
@@ -217,6 +229,11 @@ final class MeetingController: ObservableObject {
     func startMeeting() {
         errorMessage = nil
         do {
+            guard !syntheticInterviewState.isRunning else {
+                throw MeetingCopilotError.audio(
+                    "Stop the synthetic interview before starting live capture."
+                )
+            }
             guard !isDictating else {
                 throw MeetingCopilotError.audio(
                     "Release the Quick Dictation shortcut before starting meeting capture."
@@ -633,6 +650,261 @@ final class MeetingController: ObservableObject {
         NSWorkspace.shared.open(CompanionGateway.url)
     }
 
+    @MainActor
+    func startSyntheticInterview() {
+        guard !syntheticInterviewState.isRunning else { return }
+        guard !isListening else {
+            present(
+                MeetingCopilotError.audio(
+                    "Stop live capture before starting the synthetic interview."
+                )
+            )
+            return
+        }
+        guard !isDictationBusy else {
+            present(
+                MeetingCopilotError.audio(
+                    "Finish Quick Dictation before starting the synthetic interview."
+                )
+            )
+            return
+        }
+
+        let scenario = SyntheticInterviewScenario.latencyProbe
+        let runID = UUID()
+        syntheticInterviewRunID = runID
+        syntheticInterviewState = SyntheticInterviewState(
+            isRunning: true,
+            title: "Starting synthetic interview",
+            detail: "Opening the fixed six-turn latency scenario…",
+            currentTurn: 0,
+            totalTurns: scenario.turns.count
+        )
+        statusMessage = "Synthetic interview running"
+        publishCompanionSession()
+
+        syntheticInterviewTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.runSyntheticInterview(
+                    scenario,
+                    runID: runID
+                )
+            } catch is CancellationError {
+                self.finishSyntheticInterview(
+                    runID: runID,
+                    title: "Synthetic interview stopped",
+                    detail: "The replay was stopped before all turns completed."
+                )
+            } catch {
+                self.finishSyntheticInterview(
+                    runID: runID,
+                    title: "Synthetic interview failed",
+                    detail: error.localizedDescription
+                )
+                self.present(error)
+            }
+        }
+    }
+
+    @MainActor
+    func stopSyntheticInterview() {
+        guard syntheticInterviewState.isRunning else { return }
+        syntheticInterviewTask?.cancel()
+        syntheticSpeechPlayer.stop()
+    }
+
+    @MainActor
+    private func runSyntheticInterview(
+        _ scenario: SyntheticInterviewScenario,
+        runID: UUID
+    ) async throws {
+        for (index, turn) in scenario.turns.enumerated() {
+            try Task.checkCancellation()
+            guard syntheticInterviewRunID == runID else {
+                throw CancellationError()
+            }
+
+            let turnNumber = index + 1
+            let turnID = "synthetic-\(runID.uuidString.lowercased())-\(turn.id)"
+            let startedAt = Date()
+            syntheticInterviewState = SyntheticInterviewState(
+                isRunning: true,
+                title: "\(turn.speaker.rawValue) is speaking",
+                detail: "Turn \(turnNumber) of \(scenario.turns.count) · transcript words stream with the audible voice.",
+                currentTurn: turnNumber,
+                totalTurns: scenario.turns.count
+            )
+            setSyntheticTrackItemID(turnID, speaker: turn.speaker)
+
+            try await syntheticSpeechPlayer.speak(
+                turn.text,
+                speaker: turn.speaker
+            ) { [weak self] partialText in
+                self?.receiveSyntheticPartial(
+                    id: turnID,
+                    speaker: turn.speaker,
+                    text: partialText
+                )
+            }
+            receiveSyntheticPartial(
+                id: turnID,
+                speaker: turn.speaker,
+                text: turn.text
+            )
+
+            let endedAt = Date()
+            syntheticInterviewState.title = "Partial-pause inference window"
+            syntheticInterviewState.detail =
+                "The audio is quiet now. The assistant starts at the 800 ms pause marker, before the simulated 3-second final-turn boundary."
+            let partialPauseSeconds = Double(
+                AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
+            ) / 1_000
+            try await Self.sleep(seconds: partialPauseSeconds)
+            scheduleInterviewWingman(
+                trigger: .partialTranscript,
+                turnID: turnID,
+                sourceText: turn.text,
+                speaker: turn.speaker,
+                observedAt: endedAt
+            )
+            try await Self.sleep(
+                seconds: max(
+                    0,
+                    scenario.finalizationDelay - partialPauseSeconds
+                )
+            )
+
+            finishSyntheticTurn(
+                id: turnID,
+                speaker: turn.speaker,
+                text: turn.text,
+                startedAt: startedAt,
+                endedAt: endedAt
+            )
+
+            let remainingPause = max(
+                0,
+                turn.pauseAfterSpeech - scenario.finalizationDelay
+            )
+            if remainingPause > 0 {
+                syntheticInterviewState.title = "Interview pause"
+                syntheticInterviewState.detail =
+                    "Watch the Live Assistant timing before the next speaker begins."
+                try await Self.sleep(seconds: remainingPause)
+            }
+        }
+
+        finishSyntheticInterview(
+            runID: runID,
+            title: "Synthetic interview complete",
+            detail: "All six audible turns and their deterministic transcript events were replayed."
+        )
+    }
+
+    @MainActor
+    private func receiveSyntheticPartial(
+        id: String,
+        speaker: SpeakerTag,
+        text: String
+    ) {
+        guard syntheticInterviewState.isRunning else { return }
+        if speaker == .you {
+            localTrack.partialTranscript = text
+        } else {
+            remoteTrack.partialTranscript = text
+        }
+        publishCompanionPartial(id: id, speaker: speaker, text: text)
+    }
+
+    @MainActor
+    private func finishSyntheticTurn(
+        id: String,
+        speaker: SpeakerTag,
+        text: String,
+        startedAt: Date,
+        endedAt: Date
+    ) {
+        if speaker == .you {
+            localTrack.partialTranscript = ""
+        } else {
+            remoteTrack.partialTranscript = ""
+        }
+        publishCompanionPartial(id: id, speaker: speaker, text: "")
+
+        let turn = TranscriptTurn(
+            id: id,
+            speaker: speaker,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            liveText: text,
+            text: text,
+            refinement: .liveOnly("Synthetic ground-truth transcript; ASR was intentionally bypassed.")
+        )
+        transcript.removeAll { $0.id == id }
+        transcript.append(turn)
+        transcript.sort {
+            if $0.startedAt == $1.startedAt { return $0.id < $1.id }
+            return $0.startedAt < $1.startedAt
+        }
+        publishCompanionFinal(turn)
+        scheduleInterviewWingman(
+            trigger: .finalizedTurn,
+            turnID: id,
+            sourceText: text,
+            speaker: speaker
+        )
+    }
+
+    @MainActor
+    private func setSyntheticTrackItemID(
+        _ id: String,
+        speaker: SpeakerTag
+    ) {
+        if speaker == .you {
+            localTrack.lastItemID = id
+        } else {
+            remoteTrack.lastItemID = id
+        }
+    }
+
+    @MainActor
+    private func finishSyntheticInterview(
+        runID: UUID,
+        title: String,
+        detail: String
+    ) {
+        guard syntheticInterviewRunID == runID else { return }
+        syntheticInterviewRunID = nil
+        syntheticInterviewTask = nil
+        if localTrack.lastItemID.hasPrefix("synthetic-") {
+            publishCompanionPartial(
+                id: localTrack.lastItemID,
+                speaker: .you,
+                text: ""
+            )
+        }
+        if remoteTrack.lastItemID.hasPrefix("synthetic-") {
+            publishCompanionPartial(
+                id: remoteTrack.lastItemID,
+                speaker: .other,
+                text: ""
+            )
+        }
+        localTrack.partialTranscript = ""
+        remoteTrack.partialTranscript = ""
+        syntheticInterviewState.isRunning = false
+        syntheticInterviewState.title = title
+        syntheticInterviewState.detail = detail
+        statusMessage = title
+        publishCompanionSession()
+    }
+
+    private static func sleep(seconds: TimeInterval) async throws {
+        let milliseconds = max(0, Int(seconds * 1_000))
+        try await Task.sleep(for: .milliseconds(milliseconds))
+    }
+
     func copyTranscript() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(transcriptText(), forType: .string)
@@ -718,10 +990,12 @@ final class MeetingController: ObservableObject {
                     return $0.startedAt < $1.startedAt
                 }
                 self.publishCompanionFinal(turn)
-                Self.liveAssistantLogger.notice(
-                    "assistant_check_scheduled trigger_speaker=\(speaker.rawValue, privacy: .public)"
+                self.scheduleInterviewWingman(
+                    trigger: .finalizedTurn,
+                    turnID: transcriptID,
+                    sourceText: text,
+                    speaker: speaker
                 )
-                self.scheduleInterviewWingman()
                 guard
                     !pcm16Audio.isEmpty,
                     let refinementClient = self.refinementClients[speaker],
@@ -742,6 +1016,26 @@ final class MeetingController: ObservableObject {
                         context: activeContext,
                         recentTranscript: recentTranscript
                     )
+                )
+            },
+            onSpeechPause: { [weak self] speechEndedAt in
+                guard let self, self.activeSessionID == sessionID else { return }
+                let itemID: String
+                let text: String
+                if speaker == .you {
+                    itemID = self.localTrack.lastItemID
+                    text = self.localTrack.partialTranscript
+                } else {
+                    itemID = self.remoteTrack.lastItemID
+                    text = self.remoteTrack.partialTranscript
+                }
+                guard !itemID.isEmpty else { return }
+                self.scheduleInterviewWingman(
+                    trigger: .partialTranscript,
+                    turnID: "\(speaker.rawValue)-\(itemID)",
+                    sourceText: text,
+                    speaker: speaker,
+                    observedAt: speechEndedAt
                 )
             },
             onUsage: { [weak self] usage in
@@ -1011,10 +1305,17 @@ final class MeetingController: ObservableObject {
     }
 
     private func publishCompanionSession() {
-        let listening = isListening
+        let listening = isListening || syntheticInterviewState.isRunning
         let status = statusMessage
+        let source: CompanionSessionSource = syntheticInterviewState.isRunning
+            ? .syntheticInterview
+            : .liveCapture
         enqueueCompanionUpdate { hub in
-            await hub.updateSession(isListening: listening, status: status)
+            await hub.updateSession(
+                isListening: listening,
+                status: status,
+                source: source
+            )
         }
     }
 
@@ -1111,8 +1412,33 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func scheduleInterviewWingman() {
+    private func scheduleInterviewWingman(
+        trigger: CompanionAssistantTrigger,
+        turnID: String,
+        sourceText: String,
+        speaker: SpeakerTag,
+        observedAt: Date = Date()
+    ) {
+        let normalizedText = sourceText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalizedText.isEmpty else { return }
+
+        let identity = AssistantEvaluationIdentity(
+            turnID: turnID,
+            text: normalizedText
+        )
+        guard assistantGenerationIdentity != identity else {
+            Self.liveAssistantLogger.debug(
+                "assistant_check_coalesced trigger=\(trigger.rawValue, privacy: .public) turn_id=\(turnID, privacy: .public)"
+            )
+            return
+        }
+
         assistantGenerationTask?.cancel()
+        let requestID = UUID()
+        assistantGenerationRequestID = requestID
+        assistantGenerationIdentity = identity
         let apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let references = referenceLibraryState.snapshot
         let recentTranscript = transcript.suffix(16)
@@ -1129,10 +1455,24 @@ final class MeetingController: ObservableObject {
         let hub = companionGateway.hub
         let client = interviewWingmanClient
         let controller = WeakMeetingController(self)
+        let delayMilliseconds = AssistantEvaluationPolicy.delayMilliseconds(
+            for: trigger
+        )
+        let speechPauseMilliseconds = trigger == .partialTranscript
+            ? AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
+            : 0
+
+        Self.liveAssistantLogger.notice(
+            "assistant_check_scheduled trigger=\(trigger.rawValue, privacy: .public) trigger_speaker=\(speaker.rawValue, privacy: .public) speech_pause_ms=\(speechPauseMilliseconds, privacy: .public) schedule_delay_ms=\(delayMilliseconds, privacy: .public)"
+        )
 
         assistantGenerationTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(350))
+                if delayMilliseconds > 0 {
+                    try await Task.sleep(
+                        for: .milliseconds(delayMilliseconds)
+                    )
+                }
                 guard !Task.isCancelled else { return }
                 await pendingCompanionUpdates?.value
                 guard !(await hub.suggestionsPaused()) else {
@@ -1169,11 +1509,19 @@ final class MeetingController: ObservableObject {
                 }
 
                 let basedOnSequence = await hub.currentWatermark()
+                let evaluationStartedAt = Date()
+                let triggerToStartMilliseconds = Self.milliseconds(
+                    from: observedAt,
+                    to: evaluationStartedAt
+                )
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_started sequence=\(basedOnSequence, privacy: .public)"
+                    "assistant_inference_started sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) trigger_to_start_ms=\(triggerToStartMilliseconds, privacy: .public)"
                 )
                 await hub.assistantWorking(
-                    basedOnSequence: basedOnSequence
+                    basedOnSequence: basedOnSequence,
+                    trigger: trigger,
+                    triggeredAt: observedAt,
+                    startedAt: evaluationStartedAt
                 )
 
                 let generation = try await client.generate(
@@ -1186,8 +1534,13 @@ final class MeetingController: ObservableObject {
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
                 }
+                let completedAt = Date()
+                let totalLatencyMilliseconds = Self.milliseconds(
+                    from: observedAt,
+                    to: completedAt
+                )
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) model_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
@@ -1196,32 +1549,59 @@ final class MeetingController: ObservableObject {
                 }
                 guard isCurrentRevision else {
                     await hub.assistantFinishedWithoutSuggestion(
-                        basedOnSequence: basedOnSequence
+                        basedOnSequence: basedOnSequence,
+                        trigger: trigger,
+                        triggeredAt: observedAt,
+                        completedAt: completedAt
                     )
                     return
                 }
                 guard !(await hub.suggestionsPaused()) else {
                     await hub.assistantFinishedWithoutSuggestion(
-                        basedOnSequence: basedOnSequence
+                        basedOnSequence: basedOnSequence,
+                        trigger: trigger,
+                        triggeredAt: observedAt,
+                        completedAt: completedAt
                     )
                     return
                 }
-                if let suggestion = generation.suggestion {
+                if var suggestion = generation.suggestion {
+                    suggestion.trigger = trigger
+                    suggestion.triggeredAt = observedAt
+                    suggestion.totalLatencyMilliseconds =
+                        totalLatencyMilliseconds
                     await hub.assistantSuggested(suggestion)
                 } else {
                     await hub.assistantFinishedWithoutSuggestion(
-                        basedOnSequence: basedOnSequence
+                        basedOnSequence: basedOnSequence,
+                        trigger: trigger,
+                        triggeredAt: observedAt,
+                        completedAt: completedAt
                     )
                 }
             } catch is CancellationError {
-                Self.liveAssistantLogger.debug("assistant_check_cancelled")
+                Self.liveAssistantLogger.debug(
+                    "assistant_check_cancelled trigger=\(trigger.rawValue, privacy: .public)"
+                )
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    controller.value?.allowAssistantRetry(requestID: requestID)
+                }
                 Self.liveAssistantLogger.error("assistant_inference_failed")
                 await hub.assistantFailed(error.localizedDescription)
             }
         }
+    }
+
+    private func allowAssistantRetry(requestID: UUID) {
+        guard assistantGenerationRequestID == requestID else { return }
+        assistantGenerationIdentity = nil
+    }
+
+    private static func milliseconds(from startedAt: Date, to endedAt: Date) -> Int {
+        max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000))
     }
 
     private func recordAssistantUsage(_ usage: AssistantGenerationUsage) {

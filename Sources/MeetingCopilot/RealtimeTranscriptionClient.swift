@@ -99,6 +99,7 @@ final class RealtimeTranscriptionClient: NSObject {
         _ pcm16Audio: Data
     ) -> Void
     typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
+    typealias SpeechPauseHandler = (_ speechEndedAt: Date) -> Void
 
     private struct OutboundMessage {
         let text: String
@@ -118,6 +119,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private let partialHandler: PartialHandler
     private let finalHandler: FinalHandler
     private let usageHandler: UsageHandler
+    private let speechPauseHandler: SpeechPauseHandler
     private let socketQueue: DispatchQueue
 
     private var session: URLSession?
@@ -129,6 +131,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private var preRoll: [Data] = []
     private var consecutiveVoicedChunks = 0
     private var silentChunks = 0
+    private var hasPublishedSpeechPause = false
     private var noiseFloor: Float = 0.001
     private var activeTurnStartedAt: Date?
     private var lastVoicedAt: Date?
@@ -139,6 +142,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private let maximumQueuedAudioChunks = 250
     private let preRollChunkCount = 15
     private let speechOnsetChunkCount = 2
+    static let assistantPauseSilenceChunkCount = 40
     // Keep thoughtful or accented speech together across ordinary pauses.
     // Partial text still streams while this 3 s finalization window is open.
     private let speechEndSilenceChunkCount = 150
@@ -156,6 +160,7 @@ final class RealtimeTranscriptionClient: NSObject {
         onState: @escaping StateHandler,
         onPartial: @escaping PartialHandler,
         onFinal: @escaping FinalHandler,
+        onSpeechPause: @escaping SpeechPauseHandler = { _ in },
         onUsage: @escaping UsageHandler = { _ in }
     ) {
         self.apiKey = apiKey
@@ -163,6 +168,7 @@ final class RealtimeTranscriptionClient: NSObject {
         stateHandler = onState
         partialHandler = onPartial
         finalHandler = onFinal
+        speechPauseHandler = onSpeechPause
         usageHandler = onUsage
         socketQueue = DispatchQueue(label: "MeetingCopilot.Realtime.\(label)")
         super.init()
@@ -253,10 +259,18 @@ final class RealtimeTranscriptionClient: NSObject {
             activeTurnAudio.append(data)
             if isVoiced {
                 silentChunks = 0
+                hasPublishedSpeechPause = false
                 lastVoicedAt = receivedAt
                 activeTurnLastVoicedByteCount = activeTurnAudio.count
             } else {
                 silentChunks += 1
+                if
+                    silentChunks == Self.assistantPauseSilenceChunkCount,
+                    !hasPublishedSpeechPause
+                {
+                    hasPublishedSpeechPause = true
+                    publishSpeechPause(lastVoicedAt ?? receivedAt)
+                }
                 if silentChunks >= speechEndSilenceChunkCount {
                     commitActiveTurn(at: lastVoicedAt ?? receivedAt)
                 }
@@ -284,6 +298,7 @@ final class RealtimeTranscriptionClient: NSObject {
         )
         lastVoicedAt = receivedAt
         silentChunks = 0
+        hasPublishedSpeechPause = false
         activeTurnAudio.removeAll(keepingCapacity: true)
         for bufferedChunk in preRoll {
             enqueueAudio(bufferedChunk)
@@ -329,6 +344,7 @@ final class RealtimeTranscriptionClient: NSObject {
         lastVoicedAt = nil
         consecutiveVoicedChunks = 0
         silentChunks = 0
+        hasPublishedSpeechPause = false
         activeTurnAudio.removeAll(keepingCapacity: true)
         activeTurnLastVoicedByteCount = 0
         preRoll.removeAll(keepingCapacity: true)
@@ -480,6 +496,12 @@ final class RealtimeTranscriptionClient: NSObject {
     private func publishUsage(_ usage: OpenAITranscriptionUsageRecord) {
         DispatchQueue.main.async { [usageHandler] in
             usageHandler(usage)
+        }
+    }
+
+    private func publishSpeechPause(_ speechEndedAt: Date) {
+        DispatchQueue.main.async { [speechPauseHandler] in
+            speechPauseHandler(speechEndedAt)
         }
     }
 

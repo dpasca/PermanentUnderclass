@@ -111,19 +111,68 @@ final class CompanionTests: XCTestCase {
 
     func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
         let hub = CompanionEventHub(streamID: "test-stream")
+        let triggeredAt = Date(timeIntervalSince1970: 100)
+        let startedAt = triggeredAt.addingTimeInterval(0.45)
+        let completedAt = triggeredAt.addingTimeInterval(1.7)
 
-        _ = await hub.assistantWorking(basedOnSequence: 41)
+        _ = await hub.assistantWorking(
+            basedOnSequence: 41,
+            trigger: .partialTranscript,
+            triggeredAt: triggeredAt,
+            startedAt: startedAt
+        )
         var snapshot = await hub.snapshot()
         XCTAssertEqual(snapshot.assistant.phase, .working)
         XCTAssertEqual(snapshot.assistant.evaluatingSequence, 41)
+        XCTAssertEqual(snapshot.assistant.evaluatingTrigger, .partialTranscript)
+        XCTAssertEqual(snapshot.assistant.evaluationTriggeredAt, triggeredAt)
+        XCTAssertEqual(snapshot.assistant.evaluationStartedAt, startedAt)
 
-        _ = await hub.assistantFinishedWithoutSuggestion(basedOnSequence: 41)
+        _ = await hub.assistantFinishedWithoutSuggestion(
+            basedOnSequence: 41,
+            completedAt: completedAt
+        )
         snapshot = await hub.snapshot()
         XCTAssertEqual(snapshot.assistant.phase, .idle)
         XCTAssertNil(snapshot.assistant.evaluatingSequence)
         XCTAssertEqual(snapshot.assistant.lastEvaluatedSequence, 41)
         XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .noSuggestion)
-        XCTAssertNotNil(snapshot.assistant.lastEvaluationAt)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationAt, completedAt)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationTrigger, .partialTranscript)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationLatencyMilliseconds, 1_700)
+    }
+
+    func testAssistantEvaluationPolicyStartsStablePartialsBeforeFinalTurns() {
+        XCTAssertEqual(
+            AssistantEvaluationPolicy.delayMilliseconds(for: .partialTranscript),
+            0
+        )
+        XCTAssertEqual(
+            AssistantEvaluationPolicy.delayMilliseconds(for: .finalizedTurn),
+            0
+        )
+        XCTAssertLessThan(
+            AssistantEvaluationPolicy.partialSpeechPauseMilliseconds,
+            3_000
+        )
+        XCTAssertEqual(
+            RealtimeTranscriptionClient.assistantPauseSilenceChunkCount * 20,
+            AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
+        )
+    }
+
+    func testSyntheticInterviewIsFixedAudibleTwoSpeakerLatencyScenario() {
+        let scenario = SyntheticInterviewScenario.latencyProbe
+
+        XCTAssertEqual(scenario.finalizationDelay, 3)
+        XCTAssertEqual(scenario.turns.count, 6)
+        XCTAssertEqual(scenario.turns.first?.speaker, .other)
+        XCTAssertTrue(scenario.turns.contains { $0.speaker == .you })
+        XCTAssertTrue(scenario.turns.contains { $0.speaker == .other })
+        XCTAssertGreaterThan(
+            scenario.turns.map(\.pauseAfterSpeech).max() ?? 0,
+            scenario.finalizationDelay
+        )
     }
 
     func testExpenseSummaryTracksAssistantCacheAndReasoningUsage() {
@@ -150,7 +199,7 @@ final class CompanionTests: XCTestCase {
     func testWingmanRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
         XCTAssertTrue(
             InterviewWingmanClient.behaviorInstructions.contains(
-                "newest completed turn from either speaker"
+                "stable partial captured during a speech pause"
             )
         )
         let plan = AssistantPromptPlan(
@@ -164,7 +213,10 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
         XCTAssertEqual(root["store"] as? Bool, false)
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 700)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
+        let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
+        XCTAssertEqual(reasoning["effort"], "none")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]
