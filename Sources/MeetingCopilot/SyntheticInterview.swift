@@ -1,74 +1,113 @@
 import AVFoundation
 import Foundation
 
-struct SyntheticInterviewTurn: Equatable {
+struct SyntheticInterviewTurn: Codable, Equatable, Sendable {
     let id: String
     let speaker: SpeakerTag
     let text: String
     let pauseAfterSpeech: TimeInterval
 }
 
-struct SyntheticInterviewScenario: Equatable {
+struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
     static let launchArgument = "--synthetic-interview"
+    static let generationVersion = 1
 
+    let generationVersion: Int
     let name: String
+    let referenceRevision: String
+    let referenceDocumentCount: Int
+    let generatedAt: Date
     let finalizationDelay: TimeInterval
     let turns: [SyntheticInterviewTurn]
-
-    static let latencyProbe = SyntheticInterviewScenario(
-        name: "Synthetic latency interview",
-        finalizationDelay: 3,
-        turns: [
-            SyntheticInterviewTurn(
-                id: "opening-question",
-                speaker: .other,
-                text: "Thanks for joining. To start, what kind of product and engineering work have you been focused on recently?",
-                pauseAfterSpeech: 3.6
-            ),
-            SyntheticInterviewTurn(
-                id: "opening-answer",
-                speaker: .you,
-                text: "Recently I have been building a low latency interview assistant for macOS. It captures both sides of a conversation, transcribes them, and turns useful moments into concise guidance.",
-                pauseAfterSpeech: 3.4
-            ),
-            SyntheticInterviewTurn(
-                id: "latency-question",
-                speaker: .other,
-                text: "Tell me about a time you found and fixed a serious latency problem. What did you personally own, and how did you prove the improvement was real?",
-                pauseAfterSpeech: 5
-            ),
-            SyntheticInterviewTurn(
-                id: "latency-answer",
-                speaker: .you,
-                text: "The strongest example is the live assistant itself. I first separated the capture, transcription, and model timing so I could see which stage was slow. Then I changed the assistant to react to stable partial speech instead of waiting only for a finalized turn, and I added an automated replay so the same timing could be measured after every change.",
-                pauseAfterSpeech: 3.6
-            ),
-            SyntheticInterviewTurn(
-                id: "tradeoff-question",
-                speaker: .other,
-                text: "How did you keep the faster system from becoming noisy or expensive when someone paused in the middle of a sentence?",
-                pauseAfterSpeech: 5
-            ),
-            SyntheticInterviewTurn(
-                id: "tradeoff-answer",
-                speaker: .you,
-                text: "I kept the decision model based. An audio pause schedules the current partial once, and exact partial and final duplicates are coalesced, but there is no keyword gate deciding what matters. The structured model still decides whether a suggestion is useful, and final turns remain a reliable fallback.",
-                pauseAfterSpeech: 3
-            )
-        ]
-    )
 }
 
 struct SyntheticInterviewState: Equatable {
+    var isGenerating = false
     var isRunning = false
-    var title = "Synthetic interview ready"
-    var detail = "Built-in voices replay a fixed interview while the host injects its known transcript."
+    var hasRun = false
+    var title = "Reference-grounded interview ready"
+    var detail = "Generate an audible mock interview from the currently indexed reference documents."
+    var scenarioName = ""
+    var referenceRevision = ""
     var currentTurn = 0
-    var totalTurns = SyntheticInterviewScenario.latencyProbe.turns.count
+    var totalTurns = 0
+
+    var isActive: Bool {
+        isGenerating || isRunning
+    }
 
     var progress: Double {
         guard totalTurns > 0 else { return 0 }
         return Double(currentTurn) / Double(totalTurns)
+    }
+}
+
+struct SyntheticInterviewScenarioStore {
+    private static let directoryName = "com.permanentunderclass.meetingcopilot"
+    private static let fileName = "SyntheticInterviewScenario.json"
+
+    let fileURL: URL
+    private let fileManager: FileManager
+
+    init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+    }
+
+    static func applicationSupport(
+        fileManager: FileManager = .default
+    ) -> SyntheticInterviewScenarioStore {
+        let applicationSupportURL = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        return SyntheticInterviewScenarioStore(
+            fileURL: applicationSupportURL
+                .appendingPathComponent(directoryName, isDirectory: true)
+                .appendingPathComponent(fileName),
+            fileManager: fileManager
+        )
+    }
+
+    func load(referenceRevision: String) throws -> SyntheticInterviewScenario? {
+        guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
+        let data = try Data(contentsOf: fileURL)
+        let scenario = try JSONDecoder().decode(
+            SyntheticInterviewScenario.self,
+            from: data
+        )
+        guard
+            scenario.generationVersion
+                == SyntheticInterviewScenario.generationVersion,
+            scenario.referenceRevision == referenceRevision
+        else {
+            return nil
+        }
+        return scenario
+    }
+
+    func save(_ scenario: SyntheticInterviewScenario) throws {
+        try fileManager.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(scenario).write(to: fileURL, options: .atomic)
+    }
+}
+
+enum SyntheticInterviewError: LocalizedError, Equatable {
+    case referencesUnavailable
+    case referencesChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .referencesUnavailable:
+            "Choose and finish indexing a reference folder before generating the synthetic interview."
+        case .referencesChanged:
+            "The reference documents changed during interview generation. Run it again to use the new revision."
+        }
     }
 }
 

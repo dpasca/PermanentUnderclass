@@ -98,12 +98,14 @@ struct CompanionCursor: Codable, Equatable, Sendable, CustomStringConvertible {
 struct CompanionSessionState: Codable, Equatable, Sendable {
     var isListening = false
     var status = "Ready"
-    var behaviorName = "Interview wingman"
-    var behaviorDetail = "Check partial pauses and final turns from both speakers"
+    var behaviorName = "Answer mirror"
+    var behaviorDetail = "Draft a first-person answer when the interviewer pauses"
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
     var source: CompanionSessionSource?
+    var title: String?
+    var isPreparingSyntheticInterview = false
 }
 
 enum CompanionSessionSource: String, Codable, Equatable, Sendable {
@@ -155,16 +157,6 @@ struct CompanionUsageState: Codable, Equatable, Sendable {
     var assistantReasoningTokens = 0
 }
 
-struct CompanionTalkingPoint: Codable, Equatable, Sendable {
-    let title: String
-    let body: String
-}
-
-struct CompanionProofPoint: Codable, Equatable, Sendable {
-    let value: String
-    let label: String
-}
-
 struct CompanionCitation: Codable, Equatable, Sendable {
     let label: String
     let path: String
@@ -190,12 +182,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let id: String
     let basedOnSequence: Int
     let question: String
-    let lead: String
-    let talkingPoints: [CompanionTalkingPoint]
-    let proof: [CompanionProofPoint]
-    let watchoutTitle: String
-    let watchoutBody: String
-    let followup: String
+    let answer: String
     let citations: [CompanionCitation]
     let grounding: CompanionSuggestionGrounding
     let confidence: CompanionSuggestionConfidence
@@ -359,7 +346,9 @@ actor CompanionEventHub {
     func updateSession(
         isListening: Bool,
         status: String,
-        source: CompanionSessionSource = .liveCapture
+        source: CompanionSessionSource = .liveCapture,
+        title: String? = nil,
+        isPreparingSyntheticInterview: Bool = false
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
@@ -370,6 +359,9 @@ actor CompanionEventHub {
         state.session.isListening = isListening
         state.session.status = status
         state.session.source = source
+        state.session.title = title
+        state.session.isPreparingSyntheticInterview =
+            isPreparingSyntheticInterview
         return publish(name: "session.status", payload: state.session)
     }
 
@@ -587,11 +579,11 @@ actor CompanionEventHub {
         case .pauseSuggestions:
             state.session.suggestionsPaused = true
             _ = publish(name: "session.status", payload: state.session)
-            result = (true, "Live suggestions paused")
+            result = (true, "Live model answers paused")
         case .resumeSuggestions:
             state.session.suggestionsPaused = false
             _ = publish(name: "session.status", payload: state.session)
-            result = (true, "Live suggestions resumed")
+            result = (true, "Live model answers resumed")
         case .pinSuggestion:
             if
                 let suggestionID = command.suggestionID,
@@ -599,14 +591,14 @@ actor CompanionEventHub {
             {
                 state.assistant.pinnedSuggestionID = suggestionID
                 _ = publish(name: "assistant.state", payload: state.assistant)
-                result = (true, "Suggestion pinned")
+                result = (true, "Model answer pinned")
             } else {
-                result = (false, "That suggestion is no longer current")
+                result = (false, "That model answer is no longer current")
             }
         case .unpinSuggestion:
             state.assistant.pinnedSuggestionID = nil
             _ = publish(name: "assistant.state", payload: state.assistant)
-            result = (true, "Suggestion unpinned")
+            result = (true, "Model answer unpinned")
         case .dismissSuggestion:
             if
                 command.suggestionID == nil
@@ -616,9 +608,9 @@ actor CompanionEventHub {
                 state.assistant.phase = .idle
                 state.assistant.pinnedSuggestionID = nil
                 _ = publish(name: "assistant.state", payload: state.assistant)
-                result = (true, "Suggestion dismissed")
+                result = (true, "Model answer dismissed")
             } else {
-                result = (false, "That suggestion is no longer current")
+                result = (false, "That model answer is no longer current")
             }
         }
 

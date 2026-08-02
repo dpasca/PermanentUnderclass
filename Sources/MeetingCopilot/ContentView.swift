@@ -165,7 +165,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(controller.isListening ? .red : .accentColor)
-            .disabled(controller.syntheticInterviewState.isRunning)
+            .disabled(controller.syntheticInterviewState.isActive)
         }
     }
 
@@ -326,7 +326,7 @@ struct ContentView: View {
                 HStack(spacing: 7) {
                     Text(state.title)
                         .font(.callout.weight(.semibold))
-                    Text("REPEATABLE LATENCY TEST")
+                    Text("DOCUMENT-GROUNDED REPLAY")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.indigo)
                 }
@@ -334,12 +334,18 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if state.isRunning {
-                    ProgressView(value: state.progress)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 360)
+                if state.isActive {
+                    if state.isGenerating {
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 360)
+                    } else {
+                        ProgressView(value: state.progress)
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 360)
+                    }
                 } else {
-                    Text("macOS voices are audible; known partial/final transcripts bypass ASR so assistant timing is isolated and deterministic.")
+                    Text(controller.syntheticInterviewReadinessDetail)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -348,15 +354,20 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 5) {
-                Text("AUDIO PAUSE 800 ms · FINAL 3.0 s")
+                Text("3 GROUNDED Q&A · AUDIO PAUSE 800 ms")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button("Open Assistant", action: controller.openCompanionDisplay)
-                    if state.isRunning {
+                    if state.isActive {
                         Button("Stop Replay", action: controller.stopSyntheticInterview)
                             .tint(.red)
                     } else {
+                        Button("New Questions") {
+                            controller.openCompanionDisplay()
+                            controller.regenerateSyntheticInterview()
+                        }
+                        .disabled(!controller.canStartSyntheticInterview)
                         Button {
                             controller.openCompanionDisplay()
                             controller.startSyntheticInterview()
@@ -365,7 +376,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.indigo)
-                        .disabled(controller.isListening || controller.isDictationBusy)
+                        .disabled(!controller.canStartSyntheticInterview)
                     }
                 }
             }
@@ -863,7 +874,7 @@ private struct APIExpensePopover: View {
                     Text(InterviewWingmanClient.model)
                         .font(.subheadline.weight(.medium))
                     Text(
-                        "Interview Wingman · \(summary.assistantGenerations) generations · "
+                        "Scenario + Answer Mirror · \(summary.assistantGenerations) generations · "
                             + "\(summary.assistantInputTokens) input / "
                             + "\(summary.assistantOutputTokens) output / "
                             + "\(summary.assistantReasoningTokens) reasoning tokens"

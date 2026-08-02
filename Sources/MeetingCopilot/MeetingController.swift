@@ -63,6 +63,8 @@ final class MeetingController: ObservableObject {
     private var referenceLibraryService: ReferenceLibraryService?
     private let companionGateway = CompanionGateway()
     private let interviewWingmanClient = InterviewWingmanClient()
+    private let syntheticInterviewGeneratorClient =
+        SyntheticInterviewGeneratorClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTask: Task<Void, Never>?
     private var assistantGenerationRequestID: UUID?
@@ -70,8 +72,10 @@ final class MeetingController: ObservableObject {
     private let syntheticSpeechPlayer = SyntheticSpeechPlayer()
     private var syntheticInterviewTask: Task<Void, Never>?
     private var syntheticInterviewRunID: UUID?
+    private var syntheticInterviewReferences: ReferenceLibrarySnapshot?
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
+    private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
 
     private static let dictationEnabledDefaultsKey =
         "MeetingCopilot.HoldToDictateEnabled"
@@ -85,9 +89,12 @@ final class MeetingController: ObservableObject {
     )
 
     init(
-        quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport()
+        quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport(),
+        syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore =
+            .applicationSupport()
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
+        self.syntheticInterviewScenarioStore = syntheticInterviewScenarioStore
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
@@ -229,7 +236,7 @@ final class MeetingController: ObservableObject {
     func startMeeting() {
         errorMessage = nil
         do {
-            guard !syntheticInterviewState.isRunning else {
+            guard !syntheticInterviewState.isActive else {
                 throw MeetingCopilotError.audio(
                     "Stop the synthetic interview before starting live capture."
                 )
@@ -255,6 +262,8 @@ final class MeetingController: ObservableObject {
             } else {
                 selectedProcess = nil
             }
+            syntheticInterviewState = SyntheticInterviewState()
+            syntheticInterviewReferences = nil
             let context = try transcriptionContext()
             uniqueRefinementClients().forEach { $0.disconnect() }
             refinementClients.removeAll()
@@ -646,13 +655,48 @@ final class MeetingController: ObservableObject {
         referenceLibraryService?.setFolder(nil)
     }
 
+    var canStartSyntheticInterview: Bool {
+        guard
+            !syntheticInterviewState.isActive,
+            !isListening,
+            !isDictationBusy,
+            !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            referenceLibraryState.phase == .ready,
+            referenceLibraryState.snapshot?.documents.isEmpty == false
+        else {
+            return false
+        }
+        return true
+    }
+
+    var syntheticInterviewReadinessDetail: String {
+        if apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Save an OpenAI API key to generate an interview from the reference set."
+        }
+        switch referenceLibraryState.phase {
+        case .notConfigured:
+            return "Choose a reference folder; its indexed documents will drive every question and comparison answer."
+        case .scanning:
+            return "Waiting for the reference folder to finish indexing…"
+        case .failed:
+            return "Fix the reference-folder error before generating an interview."
+        case .ready:
+            let count = referenceLibraryState.snapshot?.documents.count ?? 0
+            guard count > 0 else {
+                return "The reference folder has no supported readable documents."
+            }
+            let label = count == 1 ? "document" : "documents"
+            return "Ready to generate from \(count) indexed \(label); the matching scenario is cached for repeatable reruns."
+        }
+    }
+
     func openCompanionDisplay() {
         NSWorkspace.shared.open(CompanionGateway.url)
     }
 
     @MainActor
-    func startSyntheticInterview() {
-        guard !syntheticInterviewState.isRunning else { return }
+    func startSyntheticInterview(forceRegeneration: Bool = false) {
+        guard !syntheticInterviewState.isActive else { return }
         guard !isListening else {
             present(
                 MeetingCopilotError.audio(
@@ -670,22 +714,99 @@ final class MeetingController: ObservableObject {
             return
         }
 
-        let scenario = SyntheticInterviewScenario.latencyProbe
+        let apiKey = apiKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !apiKey.isEmpty else {
+            present(MeetingCopilotError.noAPIKey)
+            return
+        }
+        guard
+            referenceLibraryState.phase == .ready,
+            let references = referenceLibraryState.snapshot,
+            !references.documents.isEmpty
+        else {
+            present(SyntheticInterviewError.referencesUnavailable)
+            return
+        }
+
+        let cachedScenario = forceRegeneration
+            ? nil
+            : try? syntheticInterviewScenarioStore.load(
+                referenceRevision: references.revision
+            )
         let runID = UUID()
         syntheticInterviewRunID = runID
         syntheticInterviewState = SyntheticInterviewState(
-            isRunning: true,
-            title: "Starting synthetic interview",
-            detail: "Opening the fixed six-turn latency scenario…",
+            isGenerating: cachedScenario == nil,
+            isRunning: false,
+            hasRun: cachedScenario != nil,
+            title: cachedScenario == nil
+                ? "Generating interview from references"
+                : "Loading cached reference interview",
+            detail: cachedScenario == nil
+                ? "Creating three grounded exchanges from \(references.documents.count) indexed documents…"
+                : "Reusing the scenario generated for reference revision \(references.revision.prefix(8)).",
+            scenarioName: cachedScenario?.name ?? "Document-grounded mock interview",
+            referenceRevision: references.revision,
             currentTurn: 0,
-            totalTurns: scenario.turns.count
+            totalTurns: cachedScenario?.turns.count ?? 6
         )
-        statusMessage = "Synthetic interview running"
+        statusMessage = cachedScenario == nil
+            ? "Generating synthetic interview…"
+            : "Preparing synthetic interview…"
         publishCompanionSession()
 
         syntheticInterviewTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                let scenario: SyntheticInterviewScenario
+                if let cachedScenario {
+                    scenario = cachedScenario
+                    Self.liveAssistantLogger.notice(
+                        "synthetic_interview_cache_hit document_count=\(references.documents.count, privacy: .public)"
+                    )
+                } else {
+                    let generation = try await self.syntheticInterviewGeneratorClient
+                        .generate(
+                            apiKey: apiKey,
+                            references: references
+                        )
+                    try Task.checkCancellation()
+                    self.recordAssistantUsage(generation.usage)
+                    scenario = generation.scenario
+                    Self.liveAssistantLogger.notice(
+                        "synthetic_interview_generated document_count=\(references.documents.count, privacy: .public) model_ms=\(generation.generationMilliseconds, privacy: .public)"
+                    )
+                    do {
+                        try self.syntheticInterviewScenarioStore.save(scenario)
+                    } catch {
+                        Self.liveAssistantLogger.error(
+                            "synthetic_interview_cache_failed"
+                        )
+                    }
+                }
+                guard
+                    self.referenceLibraryState.snapshot?.revision
+                        == scenario.referenceRevision
+                else {
+                    throw SyntheticInterviewError.referencesChanged
+                }
+
+                self.syntheticInterviewState = SyntheticInterviewState(
+                    isGenerating: false,
+                    isRunning: true,
+                    hasRun: true,
+                    title: scenario.name,
+                    detail: "Generated from \(scenario.referenceDocumentCount) indexed documents · starting audible replay.",
+                    scenarioName: scenario.name,
+                    referenceRevision: scenario.referenceRevision,
+                    currentTurn: 0,
+                    totalTurns: scenario.turns.count
+                )
+                self.syntheticInterviewReferences = references
+                self.statusMessage = "Synthetic interview running"
+                self.publishCompanionSession()
                 try await self.runSyntheticInterview(
                     scenario,
                     runID: runID
@@ -708,8 +829,13 @@ final class MeetingController: ObservableObject {
     }
 
     @MainActor
+    func regenerateSyntheticInterview() {
+        startSyntheticInterview(forceRegeneration: true)
+    }
+
+    @MainActor
     func stopSyntheticInterview() {
-        guard syntheticInterviewState.isRunning else { return }
+        guard syntheticInterviewState.isActive else { return }
         syntheticInterviewTask?.cancel()
         syntheticSpeechPlayer.stop()
     }
@@ -729,9 +855,13 @@ final class MeetingController: ObservableObject {
             let turnID = "synthetic-\(runID.uuidString.lowercased())-\(turn.id)"
             let startedAt = Date()
             syntheticInterviewState = SyntheticInterviewState(
+                isGenerating: false,
                 isRunning: true,
+                hasRun: true,
                 title: "\(turn.speaker.rawValue) is speaking",
                 detail: "Turn \(turnNumber) of \(scenario.turns.count) · transcript words stream with the audible voice.",
+                scenarioName: scenario.name,
+                referenceRevision: scenario.referenceRevision,
                 currentTurn: turnNumber,
                 totalTurns: scenario.turns.count
             )
@@ -754,20 +884,28 @@ final class MeetingController: ObservableObject {
             )
 
             let endedAt = Date()
-            syntheticInterviewState.title = "Partial-pause inference window"
-            syntheticInterviewState.detail =
-                "The audio is quiet now. The assistant starts at the 800 ms pause marker, before the simulated 3-second final-turn boundary."
             let partialPauseSeconds = Double(
                 AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
             ) / 1_000
+            if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {
+                syntheticInterviewState.title = "Model-answer window"
+                syntheticInterviewState.detail =
+                    "The interviewer is quiet. Answer Mirror starts at the 800 ms pause marker while the model-generated candidate reply waits."
+            } else {
+                syntheticInterviewState.title = "Comparison-answer pause"
+                syntheticInterviewState.detail =
+                    "The candidate voice is quiet. Its transcript remains beside the model answer for comparison."
+            }
             try await Self.sleep(seconds: partialPauseSeconds)
-            scheduleInterviewWingman(
-                trigger: .partialTranscript,
-                turnID: turnID,
-                sourceText: turn.text,
-                speaker: turn.speaker,
-                observedAt: endedAt
-            )
+            if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {
+                scheduleInterviewWingman(
+                    trigger: .partialTranscript,
+                    turnID: turnID,
+                    sourceText: turn.text,
+                    speaker: turn.speaker,
+                    observedAt: endedAt
+                )
+            }
             try await Self.sleep(
                 seconds: max(
                     0,
@@ -798,7 +936,7 @@ final class MeetingController: ObservableObject {
         finishSyntheticInterview(
             runID: runID,
             title: "Synthetic interview complete",
-            detail: "All six audible turns and their deterministic transcript events were replayed."
+            detail: "All \(scenario.turns.count) audible turns generated from \(scenario.referenceDocumentCount) reference documents were replayed."
         )
     }
 
@@ -848,12 +986,14 @@ final class MeetingController: ObservableObject {
             return $0.startedAt < $1.startedAt
         }
         publishCompanionFinal(turn)
-        scheduleInterviewWingman(
-            trigger: .finalizedTurn,
-            turnID: id,
-            sourceText: text,
-            speaker: speaker
-        )
+        if AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) {
+            scheduleInterviewWingman(
+                trigger: .finalizedTurn,
+                turnID: id,
+                sourceText: text,
+                speaker: speaker
+            )
+        }
     }
 
     @MainActor
@@ -893,6 +1033,7 @@ final class MeetingController: ObservableObject {
         }
         localTrack.partialTranscript = ""
         remoteTrack.partialTranscript = ""
+        syntheticInterviewState.isGenerating = false
         syntheticInterviewState.isRunning = false
         syntheticInterviewState.title = title
         syntheticInterviewState.detail = detail
@@ -990,12 +1131,14 @@ final class MeetingController: ObservableObject {
                     return $0.startedAt < $1.startedAt
                 }
                 self.publishCompanionFinal(turn)
-                self.scheduleInterviewWingman(
-                    trigger: .finalizedTurn,
-                    turnID: transcriptID,
-                    sourceText: text,
-                    speaker: speaker
-                )
+                if AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) {
+                    self.scheduleInterviewWingman(
+                        trigger: .finalizedTurn,
+                        turnID: transcriptID,
+                        sourceText: text,
+                        speaker: speaker
+                    )
+                }
                 guard
                     !pcm16Audio.isEmpty,
                     let refinementClient = self.refinementClients[speaker],
@@ -1019,7 +1162,13 @@ final class MeetingController: ObservableObject {
                 )
             },
             onSpeechPause: { [weak self] speechEndedAt in
-                guard let self, self.activeSessionID == sessionID else { return }
+                guard
+                    let self,
+                    self.activeSessionID == sessionID,
+                    AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker)
+                else {
+                    return
+                }
                 let itemID: String
                 let text: String
                 if speaker == .you {
@@ -1307,14 +1456,22 @@ final class MeetingController: ObservableObject {
     private func publishCompanionSession() {
         let listening = isListening || syntheticInterviewState.isRunning
         let status = statusMessage
-        let source: CompanionSessionSource = syntheticInterviewState.isRunning
+        let isSyntheticSession = !isListening
+            && (syntheticInterviewState.isActive || syntheticInterviewState.hasRun)
+        let source: CompanionSessionSource = isSyntheticSession
             ? .syntheticInterview
             : .liveCapture
+        let title = isSyntheticSession
+            ? syntheticInterviewState.scenarioName
+            : nil
+        let isPreparingSyntheticInterview = syntheticInterviewState.isGenerating
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
                 status: status,
-                source: source
+                source: source,
+                title: title,
+                isPreparingSyntheticInterview: isPreparingSyntheticInterview
             )
         }
     }
@@ -1419,6 +1576,9 @@ final class MeetingController: ObservableObject {
         speaker: SpeakerTag,
         observedAt: Date = Date()
     ) {
+        guard AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) else {
+            return
+        }
         let normalizedText = sourceText.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
@@ -1440,7 +1600,10 @@ final class MeetingController: ObservableObject {
         assistantGenerationRequestID = requestID
         assistantGenerationIdentity = identity
         let apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let references = referenceLibraryState.snapshot
+        let usesSyntheticReferences = syntheticInterviewState.isRunning
+        let references = usesSyntheticReferences
+            ? syntheticInterviewReferences
+            : referenceLibraryState.snapshot
         let recentTranscript = transcript.suffix(16)
             .map { "\($0.speaker.rawValue): \($0.text)" }
             .joined(separator: "\n")
@@ -1487,7 +1650,7 @@ final class MeetingController: ObservableObject {
                         "assistant_check_skipped reason=api_key_missing"
                     )
                     await hub.assistantFailed(
-                        "Save an OpenAI API key on the Mac to enable Interview Wingman.",
+                        "Save an OpenAI API key on the Mac to enable Answer Mirror.",
                         unavailable: true
                     )
                     return
@@ -1499,7 +1662,9 @@ final class MeetingController: ObservableObject {
                 }
 
                 let currentRevision = await MainActor.run {
-                    controller.value?.referenceLibraryState.snapshot?.revision
+                    controller.value?.assistantReferenceRevision(
+                        usesSyntheticReferences: usesSyntheticReferences
+                    )
                 }
                 guard currentRevision == references?.revision else {
                     Self.liveAssistantLogger.notice(
@@ -1529,6 +1694,7 @@ final class MeetingController: ObservableObject {
                     references: references,
                     recentTranscript: recentTranscript,
                     currentPartial: partialTranscript,
+                    interviewerText: normalizedText,
                     basedOnSequence: basedOnSequence
                 )
                 await MainActor.run {
@@ -1544,8 +1710,9 @@ final class MeetingController: ObservableObject {
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
-                    controller.value?.referenceLibraryState.snapshot?.revision
-                        == references?.revision
+                    controller.value?.assistantReferenceRevision(
+                        usesSyntheticReferences: usesSyntheticReferences
+                    ) == references?.revision
                 }
                 guard isCurrentRevision else {
                     await hub.assistantFinishedWithoutSuggestion(
@@ -1593,6 +1760,15 @@ final class MeetingController: ObservableObject {
                 await hub.assistantFailed(error.localizedDescription)
             }
         }
+    }
+
+    private func assistantReferenceRevision(
+        usesSyntheticReferences: Bool
+    ) -> String? {
+        if usesSyntheticReferences {
+            return syntheticInterviewReferences?.revision
+        }
+        return referenceLibraryState.snapshot?.revision
     }
 
     private func allowAssistantRetry(requestID: UUID) {

@@ -280,7 +280,9 @@ final class MeetingCopilotTests: XCTestCase {
         let plan = AssistantPromptBuilder.plan(
             cachedPrefix: prefix,
             recentTranscript: "Other: What did you build?",
-            currentPartial: "You: I built…"
+            currentPartial: "You: I built…",
+            focusSpeaker: "Other",
+            focusText: "What did you build?"
         )
         let prompt = plan.combinedPrompt
 
@@ -291,6 +293,8 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(plan.promptCacheKey.hasPrefix("punderclass:"))
         XCTAssertEqual(plan.promptCacheKey.count, 44)
         XCTAssertFalse(plan.volatileSuffix.contains("Resume.md"))
+        XCTAssertTrue(plan.volatileSuffix.contains("CURRENT RESPONSE TARGET"))
+        XCTAssertTrue(plan.volatileSuffix.contains("Speaker: Other"))
         XCTAssertLessThan(
             try XCTUnwrap(prompt.range(of: "REFERENCE DOCUMENTS JSON")?.lowerBound),
             try XCTUnwrap(prompt.range(of: "RECENT FINAL TRANSCRIPT")?.lowerBound)

@@ -18,29 +18,13 @@ const eventNames = [
 const mockScenarios = [
   {
     question: "“Tell me about a time you improved the performance of a critical system.”",
-    lead: "Lead with the checkout latency story",
-    points: [
-      ["Set the stakes.", "Checkout p95 had climbed to 1.8 seconds during peak traffic and was starting to affect conversion."],
-      ["Name your move.", "I traced the path across services, found an N+1 lookup, and proposed a request-scoped batcher."],
-      ["Land the result.", "We brought p95 down by 41%, held the gain through holiday load, and added a latency budget."]
-    ],
-    proof: [["41%", "p95 latency reduction"], ["18k", "peak requests / minute"], ["0", "regressions over 6 months"]],
-    watchTitle: "They may ask what you personally owned",
-    watchBody: "Be precise: you led diagnosis and rollout; the inventory team owned the service-side API change.",
-    followup: "“How did you prove the cache would not return stale inventory?”"
+    answer: "I would begin with the customer impact and the measurement that exposed it. In the checkout project, I traced the slow path across services, isolated a repeated inventory lookup, and changed the request path so that work was batched. I validated the improvement under peak-like load, then added a latency budget and monitoring so the same regression could not return unnoticed.",
+    citation: "Projects/Checkout.md"
   },
   {
     question: "“What did you learn when that launch did not go to plan?”",
-    lead: "Use the rollout incident—then show the changed habit",
-    points: [
-      ["Own the miss.", "I optimized for the happy path and underestimated how slowly older clients would drain."],
-      ["Show your response.", "I paused the rollout, wrote the compatibility shim, and kept everyone on one incident timeline."],
-      ["Name the lesson.", "Every later migration shipped with rollback criteria and a rehearsed mixed-version test."]
-    ],
-    proof: [["27 min", "to halt the rollout"], ["2 days", "to safe relaunch"], ["100%", "later migrations rehearsed"]],
-    watchTitle: "Avoid making the story sound too polished",
-    watchBody: "Say what you missed before explaining the recovery. The learning is stronger when the mistake is concrete.",
-    followup: "“How did you rebuild confidence with the teams affected?”"
+    answer: "I learned that I had optimized the rollout plan for the happy path and underestimated how slowly older clients would drain. I paused the release, helped add the compatibility layer, and kept the affected teams on one incident timeline. Since then, I have required explicit rollback criteria and a rehearsed mixed-version test before migrations begin.",
+    citation: "Projects/Rollout-retro.md"
   }
 ];
 
@@ -124,7 +108,7 @@ function setInferenceStatus(kind, eyebrow, title, detail, checkCount = null) {
   const count = $("#inferenceCount");
   count.hidden = checkCount === null;
   if (checkCount !== null) {
-    count.textContent = `${checkCount.toLocaleString()} model check${checkCount === 1 ? "" : "s"}`;
+    count.textContent = `${checkCount.toLocaleString()} model call${checkCount === 1 ? "" : "s"}`;
   }
 }
 
@@ -141,7 +125,7 @@ function renderInferenceStatus() {
       "off",
       "PREVIEW ONLY · INFERENCE OFF",
       "No inference is happening",
-      "These cards are canned examples. Start the Mac app for live transcript analysis."
+      "These answers are canned examples. Start the Mac app for live comparison."
     );
     return;
   }
@@ -151,7 +135,7 @@ function renderInferenceStatus() {
       "connecting",
       "VERIFYING INFERENCE",
       "Checking the Mac host…",
-      "Guidance will not be labeled live until the host state is verified."
+      "Model answers will not be labeled live until the host state is verified."
     );
     return;
   }
@@ -167,12 +151,23 @@ function renderInferenceStatus() {
     return;
   }
 
+  if (session?.isPreparingSyntheticInterview) {
+    setInferenceStatus(
+      "working",
+      "BUILDING SYNTHETIC INTERVIEW",
+      "Generating three exchanges from the indexed references",
+      session.status || "The replay will begin as soon as the document-grounded scenario is ready.",
+      checkCount
+    );
+    return;
+  }
+
   if (session?.suggestionsPaused) {
     setInferenceStatus(
       "off",
       "INFERENCE PAUSED",
       "No inference is happening",
-      "Transcript capture continues, but speech pauses and final turns are not sent to the assistant.",
+      "Transcript capture continues, but interviewer moments are not sent to Answer Mirror.",
       checkCount
     );
     return;
@@ -183,7 +178,7 @@ function renderInferenceStatus() {
       "off",
       "CAPTURE STOPPED · INFERENCE OFF",
       "No inference is happening",
-      "Start meeting capture in the Mac app to analyze speech pauses and final turns.",
+      "Start meeting capture or a reference-grounded replay in the Mac app.",
       checkCount
     );
     return;
@@ -223,9 +218,9 @@ function renderInferenceStatus() {
     setInferenceStatus(
       hasLocalReferences ? "working" : "general",
       hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
-      hasLocalReferences ? `Analyzing the latest ${trigger}` : `Analyzing the latest ${trigger} without local support`,
+      hasLocalReferences ? `Drafting a comparison answer from the latest ${trigger}` : `Drafting an approach-oriented answer from the latest ${trigger}`,
       hasLocalReferences
-        ? `${timing} Turns from both speakers are eligible.`
+        ? `${timing} Only interviewer speech triggers a new model answer.`
         : `${timing} The result will be clearly labeled and should be verified.`,
       checkCount
     );
@@ -241,11 +236,11 @@ function renderInferenceStatus() {
         ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
         : "INFERENCE ACTIVE · LOCALLY GROUNDED",
       usesGeneralKnowledge
-        ? "Guidance ready without local support"
-        : "The latest model check produced locally grounded guidance",
+        ? "Comparison answer ready without local support"
+        : "A locally grounded comparison answer is ready",
       usesGeneralKnowledge
-        ? "The suggestion is prefixed as unverified general model knowledge."
-        : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · both speakers remain eligible.`,
+        ? "The answer is approach-oriented and avoids unverified personal claims."
+        : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · compare it with your transcript on the right.`,
       checkCount
     );
     return;
@@ -261,7 +256,7 @@ function renderInferenceStatus() {
     setInferenceStatus(
       hasLocalReferences ? "active" : "general",
       "INFERENCE ACTIVE · LATEST TURN CHECKED",
-      "The model ran and chose not to interrupt",
+      "The model ran but did not have a clear interviewer question",
       `Latest ${triggerLabel(assistant.lastEvaluationTrigger)} checked${latency}${checkedAt}. ${hasLocalReferences ? "Local material was available." : "General-knowledge fallback was available."}`,
       checkCount
     );
@@ -272,8 +267,8 @@ function renderInferenceStatus() {
     setInferenceStatus(
       "armed",
       "INFERENCE ARMED · LOCAL REFERENCES READY",
-      "Waiting for a stable speech pause",
-      "Both speakers can trigger a check from a stable partial; finalized turns remain the fallback.",
+      "Waiting for the interviewer",
+      "An interviewer pause can produce a grounded first-person answer; your own speech stays in the transcript.",
       checkCount
     );
   } else {
@@ -281,7 +276,7 @@ function renderInferenceStatus() {
       "general",
       "INFERENCE ARMED · GENERAL KNOWLEDGE",
       "No local supporting material",
-      "Stable partials and finalized turns can still produce clearly labeled general guidance.",
+      "Interviewer moments can still produce clearly labeled approach-oriented answers.",
       checkCount
     );
   }
@@ -312,23 +307,27 @@ function updateWatermark(replayed = null) {
 function renderSession(session) {
   if (!session) return;
   const synthetic = session.source === "syntheticInterview";
-  $("#behaviorName").textContent = session.behaviorName || "Interview wingman";
+  $("#behaviorName").textContent = session.behaviorName || "Answer mirror";
   $("#behaviorDetail").textContent = session.behaviorDetail
-    || "Check partial pauses and final turns from both speakers";
+    || "Draft a first-person answer when the interviewer pauses";
   $("#assistantToggle").checked = !session.suggestionsPaused;
-  $("#assistantState").textContent = session.suggestionsPaused
-    ? "Transcript only"
-    : (session.isListening ? "Checking partial pauses + final turns" : "Inference stops with capture");
-  $("#meetingTitle").textContent = synthetic
-    ? "Synthetic latency interview"
-    : "Product engineering interview";
+  $("#assistantState").textContent = session.isPreparingSyntheticInterview
+    ? "Generating interview from references"
+    : (session.suggestionsPaused
+      ? "Transcript only"
+      : (session.isListening ? "Waiting for interviewer pauses" : "Inference stops with capture"));
+  $("#meetingTitle").textContent = session.title
+    || (synthetic ? "Reference-grounded synthetic interview" : "Product engineering interview");
   if (state.mode === "live") {
     $("#modeRibbon").textContent = synthetic
-      ? "SYNTHETIC REPLAY · audible fixed script · real host inference"
+      ? "SYNTHETIC REPLAY · generated from references · live answer comparison"
       : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
   }
   const liveMeta = $(".transcript-meta span:first-child");
-  liveMeta.innerHTML = `<i></i> ${session.isListening ? (synthetic ? "Synthetic" : "Live") : "Stopped"}`;
+  const captureLabel = session.isPreparingSyntheticInterview
+    ? "Preparing"
+    : (session.isListening ? (synthetic ? "Synthetic" : "Live") : "Stopped");
+  liveMeta.innerHTML = `<i></i> ${captureLabel}`;
   renderAssistant(state.snapshot?.assistant, session.suggestionsPaused);
   renderInferenceStatus();
 }
@@ -428,41 +427,9 @@ function renderTranscript(transcript) {
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
 }
 
-function replaceTalkingPoints(points) {
-  const list = $("#talkingPoints");
-  list.replaceChildren();
-  points.forEach((point, index) => {
-    const item = document.createElement("li");
-    const number = document.createElement("span");
-    number.textContent = String(index + 1).padStart(2, "0");
-    const text = document.createElement("p");
-    const title = document.createElement("strong");
-    title.textContent = point.title;
-    text.append(title, document.createTextNode(` ${point.body}`));
-    item.append(number, text);
-    list.append(item);
-  });
-}
-
-function replaceProof(points) {
-  const list = $("#proofList");
-  list.replaceChildren();
-  points.forEach((point) => {
-    const item = document.createElement("li");
-    const value = document.createElement("strong");
-    value.textContent = point.value;
-    const label = document.createElement("span");
-    label.textContent = point.label;
-    item.append(value, label);
-    list.append(item);
-  });
-}
-
 function setGuidanceVisibility(visible) {
   $("#listeningStrip").hidden = !visible;
   $("#answerCard").hidden = !visible;
-  $("#evidenceGrid").hidden = !visible;
-  $("#nextQuestionCard").hidden = !visible;
 }
 
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
@@ -472,17 +439,17 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     setGuidanceVisibility(false);
     empty.hidden = false;
     $("#emptyStateSymbol").textContent = "Ⅱ";
-    $("#emptyStateTitle").textContent = "Live suggestions paused";
-    $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume suggestions whenever you want help.";
+    $("#emptyStateTitle").textContent = "Live model answers paused";
+    $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume when you want comparison answers again.";
     return;
   }
 
   if (assistant?.phase === "working") {
     setGuidanceVisibility(false);
     $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = `Analyzing the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
+    $("#questionText").textContent = `Drafting an answer from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
     empty.hidden = true;
-    $("#assistantState").textContent = "Generating guidance";
+    $("#assistantState").textContent = "Drafting a model answer";
     return;
   }
 
@@ -502,21 +469,25 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     const session = state.snapshot?.session;
     const reference = state.snapshot?.reference;
     const checkedWithoutGuidance = assistant?.lastEvaluationOutcome === "noSuggestion";
-    if (!session?.isListening) {
+    if (session?.isPreparingSyntheticInterview) {
+      $("#emptyStateSymbol").textContent = "AI";
+      $("#emptyStateTitle").textContent = "Building the synthetic interview";
+      $("#emptyStateDetail").textContent = "The first interviewer question will appear when the three document-grounded exchanges are ready.";
+    } else if (!session?.isListening) {
       $("#emptyStateSymbol").textContent = "■";
       $("#emptyStateTitle").textContent = "Meeting capture is stopped";
-      $("#emptyStateDetail").textContent = "Start listening in the Mac app to enable live inference.";
+      $("#emptyStateDetail").textContent = "Start meeting capture or a reference-grounded replay in the Mac app.";
     } else {
       const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
       $("#emptyStateSymbol").textContent = checkedWithoutGuidance ? "✓" : "AI";
       $("#emptyStateTitle").textContent = checkedWithoutGuidance
-        ? "Latest turn checked"
-        : "Waiting for a stable speech pause";
+        ? "Interviewer moment checked"
+        : "Waiting for the interviewer";
       $("#emptyStateDetail").textContent = checkedWithoutGuidance
-        ? "The model ran and found no useful interruption. Both speakers remain eligible."
+        ? "The model ran but did not have a sufficiently clear question to answer."
         : hasLocalReferences
-          ? "A stable partial can start a locally grounded model check before turn finalization."
-          : "Stable partials can produce clearly labeled general guidance before turn finalization.";
+          ? "An interviewer pause can start a grounded model answer before turn finalization."
+          : "Interviewer pauses can produce clearly labeled approach-oriented answers.";
     }
     return;
   }
@@ -524,20 +495,15 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   empty.hidden = true;
   setGuidanceVisibility(true);
   $("#questionText").textContent = suggestion.question;
-  $("#answerLead").textContent = suggestion.lead;
-  $("#watchTitle").textContent = suggestion.watchoutTitle;
-  $("#watchBody").textContent = suggestion.watchoutBody;
-  $("#followupText").textContent = suggestion.followup;
+  $("#answerLead").textContent = "A plausible first-person response";
+  $("#modelAnswer").textContent = suggestion.answer;
   $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
-  replaceTalkingPoints(suggestion.talkingPoints || []);
-  replaceProof(suggestion.proof || []);
   const citationCount = (suggestion.citations || []).length;
   const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
   $("#groundingNotice").hidden = !usesGeneralKnowledge;
-  $("#proofHeading").textContent = usesGeneralKnowledge ? "FACTS TO VERIFY" : "PROOF TO USE";
   $("#groundingLabel").lastChild.textContent = usesGeneralKnowledge
-    ? " General model knowledge · not locally supported"
+    ? " Approach-oriented answer · no personal claims added"
     : ` Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
   const modelTime = suggestion.generationMilliseconds.toLocaleString();
   const totalTime = suggestion.totalLatencyMilliseconds;
@@ -549,9 +515,6 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
   $("#sourceCitation").hidden = !citation;
   $("#pinButton").classList.toggle("is-active", assistant.pinnedSuggestionID === suggestion.id);
-  $("#shorterButton").textContent = "Make shorter";
-  $("#shorterButton").disabled = false;
-  $("#talkingPoints").querySelectorAll("li").forEach((point) => { point.hidden = false; });
   $("#answerCard").animate(
     [{ opacity: 0.45, transform: "translateY(5px)" }, { opacity: 1, transform: "translateY(0)" }],
     { duration: 260, easing: "ease-out" }
@@ -694,7 +657,7 @@ function openEventStream() {
     setConnectionStatus("connected", "Connected to this Mac", "CAUGHT UP");
     const synthetic = state.snapshot?.session?.source === "syntheticInterview";
     $("#modeRibbon").textContent = synthetic
-      ? "SYNTHETIC REPLAY · audible fixed script · real host inference"
+      ? "SYNTHETIC REPLAY · generated from references · live answer comparison"
       : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
     if (state.reconnectStartSequence !== null) {
       const resumedAfter = state.reconnectStartSequence;
@@ -766,16 +729,13 @@ async function enterLiveMode() {
 function renderMockScenario(index) {
   const scenario = mockScenarios[index];
   $("#questionText").textContent = scenario.question;
-  $("#answerLead").textContent = scenario.lead;
-  $("#watchTitle").textContent = scenario.watchTitle;
-  $("#watchBody").textContent = scenario.watchBody;
-  $("#followupText").textContent = scenario.followup;
-  replaceTalkingPoints(scenario.points.map(([title, body]) => ({ title, body })));
-  replaceProof(scenario.proof.map(([value, label]) => ({ value, label })));
+  $("#answerLead").textContent = "A plausible first-person response";
+  $("#modelAnswer").textContent = scenario.answer;
   $("#answerCard").classList.remove("uses-general-knowledge");
   $("#groundingNotice").hidden = true;
-  $("#proofHeading").textContent = "PROOF TO USE";
   $("#sourceCitation").hidden = false;
+  $("#sourceCitationText").textContent = scenario.citation;
+  state.currentCitationPath = scenario.citation;
   setGuidanceVisibility(true);
   $("#pausedState").hidden = true;
 }
@@ -863,7 +823,7 @@ function bindControls() {
   $("#nextMomentButton").addEventListener("click", () => {
     state.mockIndex = (state.mockIndex + 1) % mockScenarios.length;
     renderMockScenario(state.mockIndex);
-    showToast("New simulated guidance generated");
+    showToast("New simulated comparison answer");
   });
   document.addEventListener("keydown", (event) => {
     if (state.mode === "mock" && event.key.toLowerCase() === "n" && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -895,13 +855,10 @@ function bindControls() {
   });
 
   $("#copyButton").addEventListener("click", async () => {
-    const answerParts = [
-      $("#answerLead").textContent,
-      ...Array.from($("#talkingPoints").querySelectorAll("p")).map((item) => item.textContent)
-    ];
+    const answerParts = [$("#modelAnswer").textContent];
     if ($("#answerCard").classList.contains("uses-general-knowledge")) {
       answerParts.unshift(
-        "NO LOCAL SUPPORTING MATERIAL — Uses the live discussion and general model knowledge; verify before relying on it."
+        "NO LOCAL SUPPORTING MATERIAL — This is an approach-oriented model answer and does not claim unverified personal experience."
       );
     }
     const answer = answerParts.join("\n\n");
@@ -911,14 +868,6 @@ function bindControls() {
     } catch {
       showToast("Copy is unavailable in this browser");
     }
-  });
-
-  $("#shorterButton").addEventListener("click", () => {
-    const points = $("#talkingPoints").querySelectorAll("li");
-    points.forEach((point, index) => { point.hidden = index === 1; });
-    $("#shorterButton").textContent = "Shortened";
-    $("#shorterButton").disabled = true;
-    showToast("Condensed locally to two beats");
   });
   $("#sourceCitation").addEventListener("click", () => {
     showToast(state.currentCitationPath || "Citation metadata unavailable");
