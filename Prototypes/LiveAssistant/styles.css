@@ -379,7 +379,7 @@ svg {
 .secondary-button:hover { background: var(--panel-raised); color: var(--ink); }
 kbd { min-width: 20px; padding: 2px 5px; border: 1px solid #3e4947; border-bottom-width: 3px; border-radius: 5px; background: #1b2424; color: var(--muted); font: 10px ui-monospace, monospace; box-shadow: inset 0 1px rgba(255, 255, 255, .08); }
 
-.inference-status, .listening-strip, .answer-card, .evidence-grid, .next-question-card { max-width: 1100px; margin-left: auto; margin-right: auto; }
+.inference-status, .listening-strip, .answer-stack { max-width: 1100px; margin-left: auto; margin-right: auto; }
 
 .inference-status {
   position: relative;
@@ -472,6 +472,7 @@ kbd { min-width: 20px; padding: 2px 5px; border: 1px solid #3e4947; border-botto
 @keyframes wave { 0%, 100% { transform: scaleY(.45); opacity: .6; } 50% { transform: scaleY(1); opacity: 1; } }
 
 .answer-card {
+  width: 100%;
   margin-top: 10px;
   border: 1px solid rgba(201, 249, 112, .28);
   border-radius: var(--radius-xl);
@@ -510,15 +511,33 @@ kbd { min-width: 20px; padding: 2px 5px; border: 1px solid #3e4947; border-botto
 .grounding-notice strong { color: var(--amber); font-size: 11px; letter-spacing: .1em; }
 .grounding-notice small { margin-top: 2px; color: var(--ink); font-size: 14px; }
 
-.model-answer {
-  margin: 0;
-  padding: 20px 22px 22px;
-  color: #e5ebe5;
-  font-size: 21px;
-  line-height: 1.58;
-  letter-spacing: -.01em;
-  white-space: pre-line;
-}
+.answer-question { display: grid; gap: 3px; margin: 14px 18px 5px; }
+.answer-question small { color: var(--blue); font-size: 9px; font-weight: 900; letter-spacing: .13em; }
+.answer-question strong { color: var(--muted); font-size: 14px; line-height: 1.35; }
+
+.answer-beats { display: grid; gap: 0; margin: 0; padding: 7px 18px 15px; list-style: none; }
+.answer-beats li { display: grid; grid-template-columns: minmax(105px, .28fr) minmax(0, 1fr); align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.answer-beats li:last-child { border-bottom: 0; }
+.answer-beats strong { width: max-content; max-width: 100%; padding: 4px 8px; border: 1px solid rgba(201, 249, 112, .28); border-radius: 6px; background: rgba(201, 249, 112, .1); color: var(--acid); font-size: 13px; font-weight: 850; letter-spacing: .025em; line-height: 1.2; }
+.answer-beats span { color: #e3e9e3; font-size: 18px; font-weight: 650; line-height: 1.38; }
+
+.answer-history { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.answer-history > header { display: flex; justify-content: space-between; align-items: center; margin: 0 3px 8px; color: var(--faint); font-size: 10px; font-weight: 850; letter-spacing: .11em; }
+.answer-history > header small { font-size: 10px; font-weight: 650; letter-spacing: .02em; }
+#answerHistoryCards { display: grid; gap: 10px; }
+
+.history-card { margin-top: 0; border-color: rgba(201, 249, 112, .16); background: linear-gradient(145deg, rgba(28, 38, 38, .92), rgba(14, 20, 21, .94)); box-shadow: 0 8px 20px rgba(0, 0, 0, .28), inset 0 1px rgba(255, 255, 255, .06); }
+.history-card > header { padding: 10px 13px; }
+.history-card-title { display: grid; min-width: 0; gap: 2px; }
+.history-card-title small { color: var(--faint); font-size: 9px; font-weight: 850; letter-spacing: .11em; }
+.history-card-title strong { overflow: hidden; color: var(--muted); font-size: 13px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.history-copy-button { flex: 0 0 auto; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255, 255, 255, .03); color: var(--muted); font-size: 10px; font-weight: 750; cursor: pointer; }
+.history-copy-button:hover { border-color: var(--acid); color: var(--acid); }
+.compact-beats { padding: 4px 14px 8px; }
+.compact-beats li { grid-template-columns: minmax(90px, .23fr) minmax(0, 1fr); gap: 10px; padding: 7px 0; }
+.compact-beats strong { font-size: 11px; }
+.compact-beats span { color: #cbd3cc; font-size: 14px; font-weight: 550; }
+.history-card > footer { min-height: 34px; padding: 6px 13px; }
 
 .answer-card > footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 13px; min-height: 40px; padding: 8px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(180deg, rgba(0, 0, 0, .04), rgba(0, 0, 0, .18)); color: var(--muted); font-size: 11px; }
 .answer-card > footer span:first-child { display: flex; align-items: center; gap: 6px; }

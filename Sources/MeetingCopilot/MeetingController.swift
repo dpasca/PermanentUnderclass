@@ -675,7 +675,7 @@ final class MeetingController: ObservableObject {
         }
         switch referenceLibraryState.phase {
         case .notConfigured:
-            return "Choose a reference folder; its indexed documents will drive every question and comparison answer."
+            return "Choose a reference folder; its indexed documents will drive every question and comparison outline."
         case .scanning:
             return "Waiting for the reference folder to finish indexing…"
         case .failed:
@@ -745,12 +745,12 @@ final class MeetingController: ObservableObject {
                 ? "Generating interview from references"
                 : "Loading cached reference interview",
             detail: cachedScenario == nil
-                ? "Creating three grounded exchanges from \(references.documents.count) indexed documents…"
+                ? "Creating five grounded exchanges from \(references.documents.count) indexed documents…"
                 : "Reusing the scenario generated for reference revision \(references.revision.prefix(8)).",
             scenarioName: cachedScenario?.name ?? "Document-grounded mock interview",
             referenceRevision: references.revision,
             currentTurn: 0,
-            totalTurns: cachedScenario?.turns.count ?? 6
+            totalTurns: cachedScenario?.turns.count ?? 10
         )
         statusMessage = cachedScenario == nil
             ? "Generating synthetic interview…"
@@ -890,11 +890,11 @@ final class MeetingController: ObservableObject {
             if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {
                 syntheticInterviewState.title = "Model-answer window"
                 syntheticInterviewState.detail =
-                    "The interviewer is quiet. Answer Mirror starts at the 800 ms pause marker while the model-generated candidate reply waits."
+                    "The interviewer is quiet. Answer Mirror starts a shorthand outline at the 800 ms pause marker while the model-generated candidate reply waits."
             } else {
                 syntheticInterviewState.title = "Comparison-answer pause"
                 syntheticInterviewState.detail =
-                    "The candidate voice is quiet. Its transcript remains beside the model answer for comparison."
+                    "The candidate voice is quiet. Its transcript remains beside the model outline stack for comparison."
             }
             try await Self.sleep(seconds: partialPauseSeconds)
             if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {

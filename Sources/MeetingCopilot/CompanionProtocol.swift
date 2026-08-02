@@ -99,7 +99,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var isListening = false
     var status = "Ready"
     var behaviorName = "Answer mirror"
-    var behaviorDetail = "Draft a first-person answer when the interviewer pauses"
+    var behaviorDetail = "Show 3–5 shorthand beats when the interviewer pauses"
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
@@ -162,6 +162,11 @@ struct CompanionCitation: Codable, Equatable, Sendable {
     let path: String
 }
 
+struct CompanionAnswerBeat: Codable, Equatable, Sendable {
+    let label: String
+    let point: String
+}
+
 enum CompanionSuggestionConfidence: String, Codable, Equatable, Sendable {
     case low
     case medium
@@ -182,7 +187,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let id: String
     let basedOnSequence: Int
     let question: String
-    let answer: String
+    let beats: [CompanionAnswerBeat]
     let citations: [CompanionCitation]
     let grounding: CompanionSuggestionGrounding
     let confidence: CompanionSuggestionConfidence
@@ -210,6 +215,7 @@ enum CompanionInferenceOutcome: String, Codable, Equatable, Sendable {
 struct CompanionAssistantState: Codable, Equatable, Sendable {
     var phase: CompanionAssistantPhase = .idle
     var suggestion: CompanionAssistantSuggestion?
+    var suggestionHistory: [CompanionAssistantSuggestion] = []
     var lastError: String?
     var pinnedSuggestionID: String?
     var evaluatingSequence: Int?
@@ -302,6 +308,8 @@ struct CompanionCommandResponse: Codable, Equatable, Sendable {
 }
 
 actor CompanionEventHub {
+    private static let suggestionHistoryLimit = 4
+
     let streamID: String
     private let bufferCapacity: Int
     private var sequence = 0
@@ -445,6 +453,18 @@ actor CompanionEventHub {
     func assistantSuggested(_ suggestion: CompanionAssistantSuggestion) -> CompanionEvent {
         state.assistant.phase = .ready
         state.assistant.suggestion = suggestion
+        state.assistant.suggestionHistory.removeAll {
+            $0.id == suggestion.id
+        }
+        state.assistant.suggestionHistory.insert(suggestion, at: 0)
+        if state.assistant.suggestionHistory.count
+            > Self.suggestionHistoryLimit
+        {
+            state.assistant.suggestionHistory.removeLast(
+                state.assistant.suggestionHistory.count
+                    - Self.suggestionHistoryLimit
+            )
+        }
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
         state.assistant.evaluatingTrigger = nil
@@ -483,9 +503,6 @@ actor CompanionEventHub {
             evaluationTriggeredAt.map {
                 Self.milliseconds(from: $0, to: completedAt)
             }
-        if state.assistant.pinnedSuggestionID == nil {
-            state.assistant.suggestion = nil
-        }
         return publish(name: "assistant.state", payload: state.assistant)
     }
 
@@ -579,11 +596,11 @@ actor CompanionEventHub {
         case .pauseSuggestions:
             state.session.suggestionsPaused = true
             _ = publish(name: "session.status", payload: state.session)
-            result = (true, "Live model answers paused")
+            result = (true, "Live answer outlines paused")
         case .resumeSuggestions:
             state.session.suggestionsPaused = false
             _ = publish(name: "session.status", payload: state.session)
-            result = (true, "Live model answers resumed")
+            result = (true, "Live answer outlines resumed")
         case .pinSuggestion:
             if
                 let suggestionID = command.suggestionID,
@@ -591,26 +608,34 @@ actor CompanionEventHub {
             {
                 state.assistant.pinnedSuggestionID = suggestionID
                 _ = publish(name: "assistant.state", payload: state.assistant)
-                result = (true, "Model answer pinned")
+                result = (true, "Answer outline pinned")
             } else {
-                result = (false, "That model answer is no longer current")
+                result = (false, "That answer outline is no longer current")
             }
         case .unpinSuggestion:
             state.assistant.pinnedSuggestionID = nil
             _ = publish(name: "assistant.state", payload: state.assistant)
-            result = (true, "Model answer unpinned")
+            result = (true, "Answer outline unpinned")
         case .dismissSuggestion:
             if
                 command.suggestionID == nil
                     || state.assistant.suggestion?.id == command.suggestionID
             {
-                state.assistant.suggestion = nil
-                state.assistant.phase = .idle
+                if let currentID = state.assistant.suggestion?.id {
+                    state.assistant.suggestionHistory.removeAll {
+                        $0.id == currentID
+                    }
+                }
+                state.assistant.suggestion =
+                    state.assistant.suggestionHistory.first
+                state.assistant.phase = state.assistant.suggestion == nil
+                    ? .idle
+                    : .ready
                 state.assistant.pinnedSuggestionID = nil
                 _ = publish(name: "assistant.state", payload: state.assistant)
-                result = (true, "Model answer dismissed")
+                result = (true, "Answer outline dismissed")
             } else {
-                result = (false, "That model answer is no longer current")
+                result = (false, "That answer outline is no longer current")
             }
         }
 

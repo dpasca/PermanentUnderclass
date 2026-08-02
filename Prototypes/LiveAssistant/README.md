@@ -20,18 +20,23 @@ into the display client.
 
 Useful interactions:
 
-- **Next mock answer** appears only in standalone mode and cycles sample comparisons.
+- **Next mock answer** appears only in standalone mode and cycles six sample
+  comparisons, including two CUDA performance-debugging questions.
 - **Test reconnect** closes the real SSE stream in live mode and resumes from
   its composite cursor; in standalone mode it runs a visual simulation.
 - The connection chip shows stream health and protocol details.
 - The session estimate opens a cost breakdown.
-- Model answers can be paused, pinned, copied, or dismissed.
+- Answer outlines can be paused, pinned, copied, or dismissed. The newest card
+  stays on top, with up to three previous cards below it; host snapshots retain
+  that history across reloads and reconnects.
 - The inference panel distinguishes preview-only, blocked, paused, armed,
   working, checked-without-answer, ready, and failed states.
 - An `Other` interviewer pause or final turn is eligible for the host model's
-  structured answer decision. `You` turns remain visible for comparison and do
-  not replace the answer. The browser itself never decides via text matching.
-- File-backed answers show their citations. Approach-oriented answers based on
+  structured outline decision. Each outline contains three to five labeled,
+  conversational beats rather than polished corporate phrasing. `You` turns
+  remain visible for comparison and do not
+  replace it. The browser itself never decides via text matching.
+- File-backed outlines show their citations. Approach-oriented outlines based on
   the live discussion and general model knowledge remain available when local
   files do not support the topic, with a **NO LOCAL SUPPORTING MATERIAL** prefix.
 

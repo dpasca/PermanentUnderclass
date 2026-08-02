@@ -38,7 +38,7 @@ Security and pairing).
 ## Why SSE, not a WebSocket
 
 The ongoing traffic is overwhelmingly host-to-display: transcript deltas,
-final turns, comparison answers, source matches, usage, and health. SSE gives this
+final turns, answer outlines, source matches, usage, and health. SSE gives this
 shape ordered delivery over HTTP, native browser reconnects, and a standard
 `Last-Event-ID` resume cursor. Commands such as pin, dismiss, or pause are
 ordinary short requests and do not need a permanent upstream channel.
@@ -108,9 +108,9 @@ Initial event set:
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
 - `assistant.working`: generation started for a transcript watermark.
-- `assistant.suggestion`: complete replaceable comparison answer with citation labels.
+- `assistant.suggestion`: newest structured answer outline with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
-  the latest interviewer moment produced no answer. This prevents silence from
+  the latest interviewer moment produced no outline. This prevents silence from
   being confused with a disconnected assistant.
 - `usage.updated`: cumulative reported usage and estimated USD by model.
 - `reference.status`: folder display name, document count, revision, and
@@ -124,7 +124,11 @@ An `assistant.suggestion` payload is already a view model, for example:
   "id": "sg_01J...",
   "basedOnSequence": 2487,
   "question": "Tell me about a time you improved a critical system.",
-  "answer": "I started by measuring the customer-facing path end to end...",
+  "beats": [
+    {"label": "Context", "point": "Checkout latency hurting conversion"},
+    {"label": "My move", "point": "Trace slow path; remove repeated lookup"},
+    {"label": "Proof", "point": "Validate 41% lower p95 under load"}
+  ],
   "citations": [{"label": "Checkout latency", "path": "Projects/Checkout.md"}],
   "grounding": "localReferences",
   "confidence": "high",
@@ -134,28 +138,30 @@ An `assistant.suggestion` payload is already a view model, for example:
 }
 ```
 
-The host chooses the facts and wording. The display may lay out, copy, pin, or
-dismiss this object, but it does not receive retrieved chunks and does not run a
-second interpretation step.
+The host chooses the facts and shorthand wording. `assistant.suggestionHistory`
+in the atomic snapshot retains the newest four outlines in newest-first order.
+The display may lay out, copy, pin, or dismiss these objects, but it does not
+receive retrieved chunks and does not run a second interpretation step.
 
-An 800 ms audio pause from `Other` schedules a structured first-person answer
+An 800 ms audio pause from `Other` schedules a structured shorthand outline
 from the current interviewer partial before the 3 second final-turn boundary.
 A finalized `Other` turn schedules immediately as the reliable fallback. `You`
 turns remain visible in the transcript for comparison but do not schedule or
-replace the model answer. Exact partial/final duplicates for one interviewer
+replace the model outline. Exact partial/final duplicates for one interviewer
 turn are coalesced. This is structural speaker routing, not a language
 heuristic; there is no keyword or pattern gate in front of the model. A
-completed decision that returns no answer is retained as assistant state so
+completed decision that returns no outline leaves the previous cards intact and
+is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
 
-The structured decision labels every displayed answer as either
+The structured decision labels every displayed outline as either
 `localReferences` or `generalKnowledge`. Local grounding requires at least one
 validated citation path from the current indexed snapshot. If no indexed file
-supports a useful answer, the model may use the live discussion as context and
+supports a useful outline, the model may use the live discussion as context and
 general model knowledge with an empty citation list. The display prefixes that
 card with **NO LOCAL SUPPORTING MATERIAL** and keeps the warning when copying
-the answer.
+the outline.
 
 The host also writes privacy-safe lifecycle markers under the
 `com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
@@ -232,7 +238,7 @@ with certificate pinning/TOFU or a trusted HTTPS certificate provisioned during
 device setup. A self-signed certificate that every browser warns about is not a
 good product flow.
 
-Only transcript text, complete comparison-answer cards, citation metadata, health,
+Only transcript text, complete answer-outline cards, citation metadata, health,
 reference status, and aggregate usage cross the companion boundary. Source
 documents, retrieval indexes, raw audio, prompts, model credentials, and the
 OpenAI key do not.
@@ -278,7 +284,7 @@ For the proposed GPT-5.6 integration, ordering is necessary but not sufficient:
 - log `cached_tokens` and `cache_write_tokens` with each assistant generation.
 
 Keep a single cache key near or below 15 requests per minute. That is a useful
-initial upper bound for the model-answer cadence; a higher measured cadence needs
+initial upper bound for the answer-outline cadence; a higher measured cadence needs
 a stable key-partitioning strategy and cache-hit evaluation.
 
 GPT-5.6 caching has a strict 1,024-token minimum, and cache writes are billed at
@@ -307,16 +313,17 @@ Each behavior defines:
 
 - goal and audience;
 - allowed source collection;
-- structured answer schema;
+- structured outline schema;
 - cadence and latency budget;
-- minimum confidence for showing an answer;
+- minimum confidence for showing an outline;
 - expiry/replacement policy;
 - a model choice and per-session spend ceiling.
 
 The host passes the cached stable reference prefix, recent finalized turns,
 the current partial, and an explicit interviewer response target to a fast
-model and requires structured output. It converts the model result into a
-complete first-person answer before publishing it. It should cancel or
+model and requires structured output. It converts the model result into three
+to five labeled telegraphic beats in plain, conversational language before
+publishing it. It should cancel or
 supersede stale generations when a newer interviewer moment arrives. No regex
 or keyword gate should decide whether the meeting "looks like" an interview.
 
@@ -326,7 +333,7 @@ Start the measured prototype with `gpt-5.6-luna` through the Responses API. It
 is the efficient, high-volume member of the current GPT-5.6 family and fits the
 frequent short-generation shape better than using the flagship model for every
 transcript change. The latency harness currently uses `reasoning.effort: none`
-and a 500-token output ceiling with the compact answer schema. Compare that
+and a 350-token output ceiling with the compact outline schema. Compare that
 configuration against `low` on the same cached interview moments before trading
 latency for more reasoning.
 
@@ -368,9 +375,10 @@ the source of truth.
 2. **Completed loopback vertical slice:** Hummingbird service, event hub,
    snapshot, real transcript/reference/usage events, structured Answer Mirror
    behavior, idempotent commands, and reconnect/replay tests.
-3. **Completed synthetic latency slice:** a structured model generates three
-   grounded exchanges from the indexed document revision, a local cache keeps
-   reruns stable, two audible macOS voices replay the six turns, and independent
+3. **Completed synthetic latency slice:** a structured model generates five
+   grounded exchanges from the indexed document revision, with two deep CUDA
+   questions when the references support that subject. A versioned local cache
+   keeps reruns stable, two audible macOS voices replay the ten turns, and independent
    Answer Mirror output is shown beside the generated candidate response with
    visible end-to-end timings.
 4. **Reliability:** durable replay across host restarts, app-sleep tests, fault
@@ -385,7 +393,7 @@ the source of truth.
 - Drop the SSE connection for 30 seconds while both speakers produce turns;
   after reconnect the client shows every final turn once and reports caught up.
 - Reload during an assistant generation; the snapshot and subsequent event
-  produce one current model answer, not duplicates.
+  preserve the newest four outlines in order without duplicates.
 - Force the cursor outside the ring; the client replaces state from a snapshot
   without mixing old and new stream IDs.
 - Repeat a pin/dismiss command after timing out; it is applied once.
@@ -394,5 +402,5 @@ the source of truth.
   while live-transcription cost continues.
 - Run the document-grounded synthetic interview; each interviewer partial can
   start inference before its simulated final boundary, candidate turns leave
-  the answer intact, the unchanged final does not create a duplicate
+  the outline stack intact, the unchanged final does not create a duplicate
   generation, and the display reports model and transcript-to-card milliseconds.
