@@ -25,4 +25,8 @@ if pgrep -f "${app_executable}$" >/dev/null 2>&1; then
 fi
 
 app_path="$("$project_dir/scripts/build-app.sh" debug | tail -n 1)"
-open "$app_path"
+if (( $# > 0 )); then
+    open "$app_path" --args "$@"
+else
+    open "$app_path"
+fi

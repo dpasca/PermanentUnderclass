@@ -99,10 +99,16 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var isListening = false
     var status = "Ready"
     var behaviorName = "Interview wingman"
-    var behaviorDetail = "Check both speakers; label local versus general support"
+    var behaviorDetail = "Check partial pauses and final turns from both speakers"
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
+    var source: CompanionSessionSource?
+}
+
+enum CompanionSessionSource: String, Codable, Equatable, Sendable {
+    case liveCapture
+    case syntheticInterview
 }
 
 struct CompanionTranscriptTurn: Codable, Equatable, Identifiable, Sendable {
@@ -175,6 +181,11 @@ enum CompanionSuggestionGrounding: String, Codable, Equatable, Sendable {
     case generalKnowledge
 }
 
+enum CompanionAssistantTrigger: String, Codable, Equatable, Sendable {
+    case partialTranscript
+    case finalizedTurn
+}
+
 struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let basedOnSequence: Int
@@ -190,6 +201,9 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let confidence: CompanionSuggestionConfidence
     let generatedAt: Date
     let generationMilliseconds: Int
+    var trigger: CompanionAssistantTrigger?
+    var triggeredAt: Date?
+    var totalLatencyMilliseconds: Int?
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -212,9 +226,21 @@ struct CompanionAssistantState: Codable, Equatable, Sendable {
     var lastError: String?
     var pinnedSuggestionID: String?
     var evaluatingSequence: Int?
+    var evaluatingTrigger: CompanionAssistantTrigger?
+    var evaluationTriggeredAt: Date?
+    var evaluationStartedAt: Date?
     var lastEvaluatedSequence: Int?
     var lastEvaluationAt: Date?
     var lastEvaluationOutcome: CompanionInferenceOutcome?
+    var lastEvaluationTrigger: CompanionAssistantTrigger?
+    var lastEvaluationLatencyMilliseconds: Int?
+}
+
+struct CompanionAssistantWorking: Codable, Equatable, Sendable {
+    let basedOnSequence: Int
+    let trigger: CompanionAssistantTrigger
+    let triggeredAt: Date
+    let startedAt: Date
 }
 
 struct CompanionSnapshot: Codable, Equatable, Sendable {
@@ -330,7 +356,11 @@ actor CompanionEventHub {
     }
 
     @discardableResult
-    func updateSession(isListening: Bool, status: String) -> CompanionEvent {
+    func updateSession(
+        isListening: Bool,
+        status: String,
+        source: CompanionSessionSource = .liveCapture
+    ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
             state.session.endedAt = nil
@@ -339,6 +369,7 @@ actor CompanionEventHub {
         }
         state.session.isListening = isListening
         state.session.status = status
+        state.session.source = source
         return publish(name: "session.status", payload: state.session)
     }
 
@@ -395,13 +426,26 @@ actor CompanionEventHub {
     }
 
     @discardableResult
-    func assistantWorking(basedOnSequence: Int) -> CompanionEvent {
+    func assistantWorking(
+        basedOnSequence: Int,
+        trigger: CompanionAssistantTrigger = .finalizedTurn,
+        triggeredAt: Date = Date(),
+        startedAt: Date = Date()
+    ) -> CompanionEvent {
         state.assistant.phase = .working
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = basedOnSequence
+        state.assistant.evaluatingTrigger = trigger
+        state.assistant.evaluationTriggeredAt = triggeredAt
+        state.assistant.evaluationStartedAt = startedAt
         return publish(
             name: "assistant.working",
-            payload: ["basedOnSequence": basedOnSequence]
+            payload: CompanionAssistantWorking(
+                basedOnSequence: basedOnSequence,
+                trigger: trigger,
+                triggeredAt: triggeredAt,
+                startedAt: startedAt
+            )
         )
     }
 
@@ -411,20 +455,42 @@ actor CompanionEventHub {
         state.assistant.suggestion = suggestion
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
+        state.assistant.evaluatingTrigger = nil
+        state.assistant.evaluationTriggeredAt = nil
+        state.assistant.evaluationStartedAt = nil
         state.assistant.lastEvaluatedSequence = suggestion.basedOnSequence
         state.assistant.lastEvaluationAt = suggestion.generatedAt
         state.assistant.lastEvaluationOutcome = .suggestion
+        state.assistant.lastEvaluationTrigger = suggestion.trigger
+        state.assistant.lastEvaluationLatencyMilliseconds =
+            suggestion.totalLatencyMilliseconds
         return publish(name: "assistant.suggestion", payload: suggestion)
     }
 
     @discardableResult
-    func assistantFinishedWithoutSuggestion(basedOnSequence: Int) -> CompanionEvent {
+    func assistantFinishedWithoutSuggestion(
+        basedOnSequence: Int,
+        trigger: CompanionAssistantTrigger? = nil,
+        triggeredAt: Date? = nil,
+        completedAt: Date = Date()
+    ) -> CompanionEvent {
+        let evaluationTrigger = trigger ?? state.assistant.evaluatingTrigger
+        let evaluationTriggeredAt = triggeredAt
+            ?? state.assistant.evaluationTriggeredAt
         state.assistant.phase = .idle
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
+        state.assistant.evaluatingTrigger = nil
+        state.assistant.evaluationTriggeredAt = nil
+        state.assistant.evaluationStartedAt = nil
         state.assistant.lastEvaluatedSequence = basedOnSequence
-        state.assistant.lastEvaluationAt = Date()
+        state.assistant.lastEvaluationAt = completedAt
         state.assistant.lastEvaluationOutcome = .noSuggestion
+        state.assistant.lastEvaluationTrigger = evaluationTrigger
+        state.assistant.lastEvaluationLatencyMilliseconds =
+            evaluationTriggeredAt.map {
+                Self.milliseconds(from: $0, to: completedAt)
+            }
         if state.assistant.pinnedSuggestionID == nil {
             state.assistant.suggestion = nil
         }
@@ -439,8 +505,17 @@ actor CompanionEventHub {
             state.assistant.lastEvaluatedSequence = sequence
             state.assistant.lastEvaluationAt = Date()
             state.assistant.lastEvaluationOutcome = .failed
+            state.assistant.lastEvaluationTrigger =
+                state.assistant.evaluatingTrigger
+            if let triggeredAt = state.assistant.evaluationTriggeredAt {
+                state.assistant.lastEvaluationLatencyMilliseconds =
+                    Self.milliseconds(from: triggeredAt, to: Date())
+            }
         }
         state.assistant.evaluatingSequence = nil
+        state.assistant.evaluatingTrigger = nil
+        state.assistant.evaluationTriggeredAt = nil
+        state.assistant.evaluationStartedAt = nil
         return publish(
             name: "assistant.failed",
             payload: [
@@ -448,6 +523,10 @@ actor CompanionEventHub {
                 "phase": state.assistant.phase.rawValue
             ]
         )
+    }
+
+    private static func milliseconds(from startedAt: Date, to endedAt: Date) -> Int {
+        max(0, Int(endedAt.timeIntervalSince(startedAt) * 1_000))
     }
 
     func subscribe(after cursor: CompanionCursor?) -> AsyncStream<CompanionStreamItem> {

@@ -11,6 +11,7 @@ struct AssistantGenerationUsage: Codable, Equatable, Sendable {
 struct InterviewWingmanGeneration: Equatable, Sendable {
     let suggestion: CompanionAssistantSuggestion?
     let usage: AssistantGenerationUsage
+    let generationMilliseconds: Int
 }
 
 enum InterviewWingmanError: LocalizedError, Equatable {
@@ -52,7 +53,7 @@ struct InterviewWingmanClient: Sendable {
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
 
     static let behaviorInstructions = """
-    You are Interview Wingman, a low-latency assistant watching a live interview transcript. Decide whether the newest completed turn from either speaker creates a useful moment for concise, immediate guidance. A turn from You may ask for help, surface uncertainty, or introduce a topic that would benefit from support; ordinary answer narration does not automatically require an interruption. A turn from Other may ask a direct question or create another useful coaching moment. Prefer the supplied local reference documents when they support the response. When they do, set grounding to localReferences and cite every document used by its exact path. When local references do not support the topic but a useful response can be given using the live discussion as context and general model knowledge, still provide it, set grounding to generalKnowledge, and return an empty citations array. Never invent personal achievements, metrics, employers, dates, or responsibilities, and never present general knowledge as locally verified. Set shouldShow to false only when neither locally grounded nor general guidance would be useful. Keep the lead short, use at most three talking points, and make the answer natural to say aloud.
+    You are Interview Wingman, a low-latency assistant watching a live interview transcript. Decide whether the newest transcript moment from either speaker creates a useful opportunity for concise, immediate guidance. The newest moment may be a finalized turn or a stable partial captured during a speech pause; treat a partial as potentially incomplete and do not invent its missing ending. A turn from You may ask for help, surface uncertainty, or introduce a topic that would benefit from support; ordinary answer narration does not automatically require an interruption. A turn from Other may ask a direct question or create another useful coaching moment. Prefer the supplied local reference documents when they support the response. When they do, set grounding to localReferences and cite every document used by its exact path. When local references do not support the topic but a useful response can be given using the live discussion as context and general model knowledge, still provide it, set grounding to generalKnowledge, and return an empty citations array. Never invent personal achievements, metrics, employers, dates, or responsibilities, and never present general knowledge as locally verified. Set shouldShow to false only when neither locally grounded nor general guidance would be useful. Keep the lead short, use at most three talking points, and make the answer natural to say aloud.
     """
 
     private let session: URLSession
@@ -110,8 +111,8 @@ struct InterviewWingmanClient: Sendable {
         let request: [String: Any] = [
             "model": model,
             "store": false,
-            "max_output_tokens": 1_200,
-            "reasoning": ["effort": "low"],
+            "max_output_tokens": 700,
+            "reasoning": ["effort": "none"],
             "input": [
                 [
                     "type": "message",
@@ -189,14 +190,22 @@ struct InterviewWingmanClient: Sendable {
         let output = try JSONDecoder().decode(InterviewWingmanOutput.self, from: outputData)
         let usage = usage(from: root)
         guard output.shouldShow else {
-            return InterviewWingmanGeneration(suggestion: nil, usage: usage)
+            return InterviewWingmanGeneration(
+                suggestion: nil,
+                usage: usage,
+                generationMilliseconds: generationMilliseconds
+            )
         }
 
         let allowedCitations = output.citations.filter {
             allowedReferencePaths.contains($0.path)
         }
         guard output.grounding != .localReferences || !allowedCitations.isEmpty else {
-            return InterviewWingmanGeneration(suggestion: nil, usage: usage)
+            return InterviewWingmanGeneration(
+                suggestion: nil,
+                usage: usage,
+                generationMilliseconds: generationMilliseconds
+            )
         }
         let citations = output.grounding == .localReferences ? allowedCitations : []
         let suggestion = CompanionAssistantSuggestion(
@@ -215,7 +224,11 @@ struct InterviewWingmanClient: Sendable {
             generatedAt: Date(),
             generationMilliseconds: generationMilliseconds
         )
-        return InterviewWingmanGeneration(suggestion: suggestion, usage: usage)
+        return InterviewWingmanGeneration(
+            suggestion: suggestion,
+            usage: usage,
+            generationMilliseconds: generationMilliseconds
+        )
     }
 
     private static func usage(from root: [String: Any]) -> AssistantGenerationUsage {

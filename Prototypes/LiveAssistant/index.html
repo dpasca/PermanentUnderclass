@@ -62,14 +62,14 @@
             </span>
             <span>
               <strong id="behaviorName">Interview wingman</strong>
-              <small id="behaviorDetail">Check both speakers; label local vs. general support</small>
+              <small id="behaviorDetail">Check partial pauses and final turns from both speakers</small>
             </span>
             <span class="host-lock" aria-hidden="true">MAC</span>
           </div>
           <label class="switch-row">
             <span>
               <strong>Live suggestions</strong>
-              <small id="assistantState">Checking every completed turn</small>
+              <small id="assistantState">Checking partial pauses + final turns</small>
             </span>
             <input id="assistantToggle" type="checkbox" checked>
             <span class="switch" aria-hidden="true"></span>
@@ -207,8 +207,8 @@
 
         <div class="paused-state" id="pausedState" hidden>
           <span class="pause-symbol" id="emptyStateSymbol">AI</span>
-          <h2 id="emptyStateTitle">Waiting for a completed turn</h2>
-          <p id="emptyStateDetail">Both speakers are eligible for a model check.</p>
+          <h2 id="emptyStateTitle">Waiting for a stable speech pause</h2>
+          <p id="emptyStateDetail">Both speakers are eligible before or at turn finalization.</p>
         </div>
       </section>
 

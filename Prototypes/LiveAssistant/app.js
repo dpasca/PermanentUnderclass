@@ -90,6 +90,19 @@ function formatTime(dateValue) {
   }).format(date);
 }
 
+function triggerLabel(trigger) {
+  if (trigger === "partialTranscript") return "stable partial";
+  if (trigger === "finalizedTurn") return "final turn";
+  return "transcript moment";
+}
+
+function elapsedMilliseconds(startedAt, endedAt = Date.now()) {
+  const start = new Date(startedAt).getTime();
+  const end = typeof endedAt === "number" ? endedAt : new Date(endedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.round(end - start));
+}
+
 function setConnectionStatus(kind, label, eyebrow = null) {
   state.connectionKind = kind;
   const chip = $("#connectionButton");
@@ -159,7 +172,7 @@ function renderInferenceStatus() {
       "off",
       "INFERENCE PAUSED",
       "No inference is happening",
-      "Transcript capture continues, but completed turns are not sent to the assistant.",
+      "Transcript capture continues, but speech pauses and final turns are not sent to the assistant.",
       checkCount
     );
     return;
@@ -170,7 +183,7 @@ function renderInferenceStatus() {
       "off",
       "CAPTURE STOPPED · INFERENCE OFF",
       "No inference is happening",
-      "Start meeting capture in the Mac app to analyze completed turns.",
+      "Start meeting capture in the Mac app to analyze speech pauses and final turns.",
       checkCount
     );
     return;
@@ -199,13 +212,21 @@ function renderInferenceStatus() {
   }
 
   if (assistant?.phase === "working") {
+    const trigger = triggerLabel(assistant.evaluatingTrigger);
+    const startDelay = elapsedMilliseconds(
+      assistant.evaluationTriggeredAt,
+      assistant.evaluationStartedAt
+    );
+    const timing = startDelay === null
+      ? `Triggered by the latest ${trigger}.`
+      : `Triggered by the latest ${trigger}; inference started after ${startDelay.toLocaleString()} ms.`;
     setInferenceStatus(
       hasLocalReferences ? "working" : "general",
       hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
-      hasLocalReferences ? "Analyzing the latest completed turn" : "Analyzing without local supporting material",
+      hasLocalReferences ? `Analyzing the latest ${trigger}` : `Analyzing the latest ${trigger} without local support`,
       hasLocalReferences
-        ? "A locally grounded model decision is in progress. Turns from both speakers are eligible."
-        : "The result will be clearly labeled and should be verified before relying on it.",
+        ? `${timing} Turns from both speakers are eligible.`
+        : `${timing} The result will be clearly labeled and should be verified.`,
       checkCount
     );
     return;
@@ -234,11 +255,14 @@ function renderInferenceStatus() {
     const checkedAt = assistant.lastEvaluationAt
       ? ` at ${formatTime(assistant.lastEvaluationAt)}`
       : "";
+    const latency = Number.isFinite(assistant.lastEvaluationLatencyMilliseconds)
+      ? ` in ${assistant.lastEvaluationLatencyMilliseconds.toLocaleString()} ms`
+      : "";
     setInferenceStatus(
       hasLocalReferences ? "active" : "general",
       "INFERENCE ACTIVE · LATEST TURN CHECKED",
       "The model ran and chose not to interrupt",
-      `Latest completed turn checked${checkedAt}. ${hasLocalReferences ? "Local material was available." : "General-knowledge fallback was available."}`,
+      `Latest ${triggerLabel(assistant.lastEvaluationTrigger)} checked${latency}${checkedAt}. ${hasLocalReferences ? "Local material was available." : "General-knowledge fallback was available."}`,
       checkCount
     );
     return;
@@ -248,8 +272,8 @@ function renderInferenceStatus() {
     setInferenceStatus(
       "armed",
       "INFERENCE ARMED · LOCAL REFERENCES READY",
-      "Waiting for a completed turn",
-      "Your speech and the other speaker are both checked after each finalized turn.",
+      "Waiting for a stable speech pause",
+      "Both speakers can trigger a check from a stable partial; finalized turns remain the fallback.",
       checkCount
     );
   } else {
@@ -257,7 +281,7 @@ function renderInferenceStatus() {
       "general",
       "INFERENCE ARMED · GENERAL KNOWLEDGE",
       "No local supporting material",
-      "The assistant will still suggest an answer and prefix it as general model knowledge.",
+      "Stable partials and finalized turns can still produce clearly labeled general guidance.",
       checkCount
     );
   }
@@ -287,12 +311,24 @@ function updateWatermark(replayed = null) {
 
 function renderSession(session) {
   if (!session) return;
+  const synthetic = session.source === "syntheticInterview";
+  $("#behaviorName").textContent = session.behaviorName || "Interview wingman";
+  $("#behaviorDetail").textContent = session.behaviorDetail
+    || "Check partial pauses and final turns from both speakers";
   $("#assistantToggle").checked = !session.suggestionsPaused;
   $("#assistantState").textContent = session.suggestionsPaused
     ? "Transcript only"
-    : (session.isListening ? "Checking every completed turn" : "Inference stops with capture");
+    : (session.isListening ? "Checking partial pauses + final turns" : "Inference stops with capture");
+  $("#meetingTitle").textContent = synthetic
+    ? "Synthetic latency interview"
+    : "Product engineering interview";
+  if (state.mode === "live") {
+    $("#modeRibbon").textContent = synthetic
+      ? "SYNTHETIC REPLAY · audible fixed script · real host inference"
+      : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
+  }
   const liveMeta = $(".transcript-meta span:first-child");
-  liveMeta.innerHTML = `<i></i> ${session.isListening ? "Live" : "Stopped"}`;
+  liveMeta.innerHTML = `<i></i> ${session.isListening ? (synthetic ? "Synthetic" : "Live") : "Stopped"}`;
   renderAssistant(state.snapshot?.assistant, session.suggestionsPaused);
   renderInferenceStatus();
 }
@@ -444,7 +480,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   if (assistant?.phase === "working") {
     setGuidanceVisibility(false);
     $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = "Analyzing the latest completed turn…";
+    $("#questionText").textContent = `Analyzing the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
     empty.hidden = true;
     $("#assistantState").textContent = "Generating guidance";
     return;
@@ -475,12 +511,12 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
       $("#emptyStateSymbol").textContent = checkedWithoutGuidance ? "✓" : "AI";
       $("#emptyStateTitle").textContent = checkedWithoutGuidance
         ? "Latest turn checked"
-        : "Waiting for a completed turn";
+        : "Waiting for a stable speech pause";
       $("#emptyStateDetail").textContent = checkedWithoutGuidance
         ? "The model ran and found no useful interruption. Both speakers remain eligible."
         : hasLocalReferences
-          ? "Your speech and the other speaker will both receive a locally grounded model check."
-          : "No local supporting material is loaded. General-knowledge suggestions will be clearly labeled.";
+          ? "A stable partial can start a locally grounded model check before turn finalization."
+          : "Stable partials can produce clearly labeled general guidance before turn finalization.";
     }
     return;
   }
@@ -503,7 +539,11 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   $("#groundingLabel").lastChild.textContent = usesGeneralKnowledge
     ? " General model knowledge · not locally supported"
     : ` Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
-  $("#generationTime").textContent = `generated in ${suggestion.generationMilliseconds.toLocaleString()} ms`;
+  const modelTime = suggestion.generationMilliseconds.toLocaleString();
+  const totalTime = suggestion.totalLatencyMilliseconds;
+  $("#generationTime").textContent = Number.isFinite(totalTime)
+    ? `model ${modelTime} ms · transcript→card ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
+    : `model ${modelTime} ms`;
   const citation = suggestion.citations?.[0];
   state.currentCitationPath = citation?.path || "";
   $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
@@ -585,6 +625,9 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.phase = "working";
       state.snapshot.assistant.lastError = null;
       state.snapshot.assistant.evaluatingSequence = payload.basedOnSequence;
+      state.snapshot.assistant.evaluatingTrigger = payload.trigger;
+      state.snapshot.assistant.evaluationTriggeredAt = payload.triggeredAt;
+      state.snapshot.assistant.evaluationStartedAt = payload.startedAt;
       renderAssistant(state.snapshot.assistant);
       break;
     case "assistant.suggestion":
@@ -595,6 +638,11 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.lastEvaluatedSequence = payload.basedOnSequence;
       state.snapshot.assistant.lastEvaluationAt = payload.generatedAt;
       state.snapshot.assistant.lastEvaluationOutcome = "suggestion";
+      state.snapshot.assistant.lastEvaluationTrigger = payload.trigger;
+      state.snapshot.assistant.lastEvaluationLatencyMilliseconds = payload.totalLatencyMilliseconds;
+      state.snapshot.assistant.evaluatingTrigger = null;
+      state.snapshot.assistant.evaluationTriggeredAt = null;
+      state.snapshot.assistant.evaluationStartedAt = null;
       renderAssistant(state.snapshot.assistant);
       break;
     case "assistant.failed":
@@ -644,7 +692,10 @@ function openEventStream() {
   stream.onopen = () => {
     state.lastHeartbeatAt = Date.now();
     setConnectionStatus("connected", "Connected to this Mac", "CAUGHT UP");
-    $("#modeRibbon").textContent = "LIVE LOOPBACK · host-owned assistant · replayable SSE";
+    const synthetic = state.snapshot?.session?.source === "syntheticInterview";
+    $("#modeRibbon").textContent = synthetic
+      ? "SYNTHETIC REPLAY · audible fixed script · real host inference"
+      : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
     if (state.reconnectStartSequence !== null) {
       const resumedAfter = state.reconnectStartSequence;
       setTimeout(() => {

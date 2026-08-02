@@ -267,7 +267,18 @@ enum CompanionGatewayRoutes {
 
 final class CompanionGateway: @unchecked Sendable {
     static let host = "127.0.0.1"
-    static let port = 4_173
+    static let port: Int = {
+        guard
+            let rawValue = ProcessInfo.processInfo.environment[
+                "PUNDERCLASS_COMPANION_PORT"
+            ],
+            let value = Int(rawValue),
+            (1_024...65_535).contains(value)
+        else {
+            return 4_173
+        }
+        return value
+    }()
     static let url = URL(string: "http://\(host):\(port)")!
 
     let hub: CompanionEventHub
