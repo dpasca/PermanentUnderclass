@@ -147,6 +147,9 @@ recording and periodically sends bounded snapshots to the same selected model
 to update the preview text. Quick Dictation does not use the Meeting-only
 `gpt-live-transcribe` model. After release, the selected model transcribes the
 complete recording once for the pasted and saved result.
+That final transcription runs in the background, so another Quick Dictation can
+start immediately. Completed recordings remain queued in capture order so their
+text is pasted in the same order it was spoken.
 The waveform uses adaptive visual gain so quiet microphones still provide clear
 feedback. The pipeline's **Screen preview (optional stage)** switch directly
 controls the snapshot stage and overlay. Turning it off does not disable the
