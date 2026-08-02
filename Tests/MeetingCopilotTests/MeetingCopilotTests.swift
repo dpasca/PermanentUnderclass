@@ -802,6 +802,61 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testPasteVerificationUsesAccessibilityUTF16SelectionRange() throws {
+        let original = "alpha 👋 omega"
+        let selectedRange = (original as NSString).range(of: "👋")
+        let verification = try XCTUnwrap(
+            QuickDictationPasteVerification(
+                originalValue: original,
+                selectedRange: CFRange(
+                    location: selectedRange.location,
+                    length: selectedRange.length
+                ),
+                insertedText: "beta"
+            )
+        )
+
+        XCTAssertEqual(verification.expectedValue, "alpha beta omega")
+        XCTAssertEqual(verification.expectedSelectedRange.location, 10)
+        XCTAssertEqual(verification.expectedSelectedRange.length, 0)
+        XCTAssertTrue(
+            verification.matches(
+                currentValue: "alpha beta omega",
+                selectedRange: CFRange(location: 10, length: 0)
+            )
+        )
+        XCTAssertFalse(
+            verification.matches(
+                currentValue: "alpha 👋 omega",
+                selectedRange: CFRange(location: 6, length: 2)
+            )
+        )
+    }
+
+    func testClipboardRestoresOnlyAfterVerifiedUnchangedDelivery() {
+        XCTAssertTrue(
+            QuickDictationClipboardRestorationPolicy.shouldRestore(
+                deliveryWasVerified: true,
+                insertedChangeCount: 12,
+                currentChangeCount: 12
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationClipboardRestorationPolicy.shouldRestore(
+                deliveryWasVerified: false,
+                insertedChangeCount: 12,
+                currentChangeCount: 12
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationClipboardRestorationPolicy.shouldRestore(
+                deliveryWasVerified: true,
+                insertedChangeCount: 12,
+                currentChangeCount: 13
+            )
+        )
+    }
+
     func testQuickDictationDoesNotSendSilenceToParakeet() {
         let silence = Data(repeating: 0, count: 9_600)
         XCTAssertFalse(PCM16SignalGate.containsAudibleSignal(silence))

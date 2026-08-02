@@ -211,7 +211,8 @@ final class DictationSelfTestRunner {
                         return
                     }
 
-                    // PasteInjector restores the original clipboard after 600 ms.
+                    // Allow the verified paste transaction to restore the
+                    // original clipboard before checking the final state.
                     DispatchQueue.main.asyncAfter(
                         deadline: .now() + 0.75
                     ) { [weak self, weak textView, weak distractionView] in

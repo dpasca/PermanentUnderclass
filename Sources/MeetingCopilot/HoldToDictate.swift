@@ -879,9 +879,9 @@ final class HoldToDictateService {
                 return
             }
             switch pasteResult {
-            case .success:
+            case let .success(delivery):
                 Self.logger.notice(
-                    "transcription_completed characters=\(result.count, privacy: .public)"
+                    "transcription_completed characters=\(result.count, privacy: .public) paste_delivery=\(delivery.rawValue, privacy: .public)"
                 )
                 self.resultHandler(result)
                 if self.recordingID == nil {
@@ -1098,6 +1098,56 @@ private final class LockedAudioBuffer: @unchecked Sendable {
     }
 }
 
+struct QuickDictationPasteVerification {
+    let expectedValue: String
+    let expectedSelectedRange: CFRange
+
+    init?(
+        originalValue: String,
+        selectedRange: CFRange,
+        insertedText: String
+    ) {
+        let original = originalValue as NSString
+        guard
+            selectedRange.location >= 0,
+            selectedRange.length >= 0,
+            selectedRange.location + selectedRange.length <= original.length
+        else {
+            return nil
+        }
+        expectedValue = original.replacingCharacters(
+            in: NSRange(
+                location: selectedRange.location,
+                length: selectedRange.length
+            ),
+            with: insertedText
+        )
+        expectedSelectedRange = CFRange(
+            location: selectedRange.location + (insertedText as NSString).length,
+            length: 0
+        )
+    }
+
+    func matches(
+        currentValue: String,
+        selectedRange: CFRange
+    ) -> Bool {
+        currentValue == expectedValue
+            && selectedRange.location == expectedSelectedRange.location
+            && selectedRange.length == expectedSelectedRange.length
+    }
+}
+
+enum QuickDictationClipboardRestorationPolicy {
+    static func shouldRestore(
+        deliveryWasVerified: Bool,
+        insertedChangeCount: Int,
+        currentChangeCount: Int
+    ) -> Bool {
+        deliveryWasVerified && insertedChangeCount == currentChangeCount
+    }
+}
+
 /// The application, window, and keyboard-focused control that were active when
 /// a Quick Dictation recording began.
 final class QuickDictationPasteTarget {
@@ -1176,6 +1226,49 @@ final class QuickDictationPasteTarget {
                 attribute: kAXFocusedUIElementAttribute as CFString,
                 from: accessibilityApplication
             )
+        )
+    }
+
+    func makePasteVerification(
+        inserting text: String
+    ) -> QuickDictationPasteVerification? {
+        guard
+            let focusedElement,
+            let originalValue = Self.copyString(
+                attribute: kAXValueAttribute as CFString,
+                from: focusedElement
+            ),
+            let selectedRange = Self.copyRange(
+                attribute: kAXSelectedTextRangeAttribute as CFString,
+                from: focusedElement
+            )
+        else {
+            return nil
+        }
+        return QuickDictationPasteVerification(
+            originalValue: originalValue,
+            selectedRange: selectedRange,
+            insertedText: text
+        )
+    }
+
+    func verifyPaste(_ verification: QuickDictationPasteVerification) -> Bool {
+        guard
+            let focusedElement,
+            let currentValue = Self.copyString(
+                attribute: kAXValueAttribute as CFString,
+                from: focusedElement
+            ),
+            let selectedRange = Self.copyRange(
+                attribute: kAXSelectedTextRangeAttribute as CFString,
+                from: focusedElement
+            )
+        else {
+            return false
+        }
+        return verification.matches(
+            currentValue: currentValue,
+            selectedRange: selectedRange
         )
     }
 
@@ -1285,12 +1378,55 @@ final class QuickDictationPasteTarget {
         }
         return (value as! AXUIElement)
     }
+
+    private static func copyString(
+        attribute: CFString,
+        from element: AXUIElement
+    ) -> String? {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+            let value
+        else {
+            return nil
+        }
+        if let string = value as? String {
+            return string
+        }
+        return (value as? NSAttributedString)?.string
+    }
+
+    private static func copyRange(
+        attribute: CFString,
+        from element: AXUIElement
+    ) -> CFRange? {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+            let value,
+            CFGetTypeID(value) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+        let accessibilityValue = value as! AXValue
+        guard AXValueGetType(accessibilityValue) == .cfRange else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(accessibilityValue, .cfRange, &range) else {
+            return nil
+        }
+        return range
+    }
+}
+
+enum QuickDictationPasteDelivery: String, Equatable {
+    case verified
+    case unverified
 }
 
 /// Serializes focus restoration, paste events, and clipboard restoration so
 /// multiple completed dictations cannot redirect or overwrite one another.
 final class PasteInjector {
-    typealias Completion = (Result<Void, Error>) -> Void
+    typealias Completion = (Result<QuickDictationPasteDelivery, Error>) -> Void
 
     private struct Request {
         let text: String
@@ -1298,9 +1434,21 @@ final class PasteInjector {
         let completion: Completion
     }
 
+    private struct PasteAttempt {
+        let verification: QuickDictationPasteVerification?
+        let previousClipboardItems: [NSPasteboardItem]
+        let insertedChangeCount: Int
+    }
+
+    private static let logger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "QuickDictationPaste"
+    )
     private static let focusRetryDelay = DispatchTimeInterval.milliseconds(50)
     private static let maximumFocusAttempts = 20
-    private static let clipboardRestoreDelay = DispatchTimeInterval.milliseconds(600)
+    private static let verificationRetryDelay = DispatchTimeInterval.milliseconds(50)
+    private static let maximumVerificationAttempts = 40
+    private static let unverifiedDeliveryDelay = DispatchTimeInterval.seconds(2)
     private static let pasteSerializationDelay = DispatchTimeInterval.milliseconds(650)
 
     private var queuedRequests: [Request] = []
@@ -1359,10 +1507,13 @@ final class PasteInjector {
         }
         if request.target.restoreFocus() {
             do {
-                try Self.performPaste(request.text)
-                finishActiveRequest(
-                    with: .success(()),
-                    delayBeforeNextRequest: Self.pasteSerializationDelay,
+                let attempt = try Self.performPaste(
+                    request.text,
+                    into: request.target
+                )
+                awaitPasteDelivery(
+                    attempt,
+                    remainingAttempts: Self.maximumVerificationAttempts,
                     generation: generation
                 )
             } catch {
@@ -1399,8 +1550,97 @@ final class PasteInjector {
         )
     }
 
+    private func awaitPasteDelivery(
+        _ attempt: PasteAttempt,
+        remainingAttempts: Int,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            let request = activeRequest
+        else {
+            return
+        }
+
+        guard let verification = attempt.verification else {
+            scheduleUnverifiedCompletion(
+                generation: generation,
+                applicationName: request.target.applicationName
+            )
+            return
+        }
+        if request.target.verifyPaste(verification) {
+            Self.restoreClipboardIfAppropriate(
+                after: attempt,
+                deliveryWasVerified: true
+            )
+            Self.logger.notice(
+                "paste_delivery_verified target=\(request.target.applicationName, privacy: .public)"
+            )
+            finishActiveRequest(
+                with: .success(.verified),
+                delayBeforeNextRequest: Self.pasteSerializationDelay,
+                generation: generation
+            )
+            return
+        }
+        guard remainingAttempts > 1 else {
+            Self.logger.error(
+                "paste_delivery_unconfirmed target=\(request.target.applicationName, privacy: .public) clipboard_retained=true"
+            )
+            finishActiveRequest(
+                with: .failure(
+                    MeetingCopilotError.audio(
+                        "Quick Dictation sent the paste to \(request.target.applicationName) but could not confirm that the text was inserted. The completed text remains on the clipboard."
+                    )
+                ),
+                delayBeforeNextRequest: Self.pasteSerializationDelay,
+                generation: generation
+            )
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scheduledWorkItem = nil
+            self.awaitPasteDelivery(
+                attempt,
+                remainingAttempts: remainingAttempts - 1,
+                generation: generation
+            )
+        }
+        scheduledWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.verificationRetryDelay,
+            execute: workItem
+        )
+    }
+
+    private func scheduleUnverifiedCompletion(
+        generation: UUID,
+        applicationName: String
+    ) {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == generation else { return }
+            self.scheduledWorkItem = nil
+            Self.logger.notice(
+                "paste_delivery_unverifiable target=\(applicationName, privacy: .public) clipboard_retained=true"
+            )
+            self.finishActiveRequest(
+                with: .success(.unverified),
+                delayBeforeNextRequest: Self.pasteSerializationDelay,
+                generation: generation
+            )
+        }
+        scheduledWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.unverifiedDeliveryDelay,
+            execute: workItem
+        )
+    }
+
     private func finishActiveRequest(
-        with result: Result<Void, Error>,
+        with result: Result<QuickDictationPasteDelivery, Error>,
         delayBeforeNextRequest: DispatchTimeInterval? = nil,
         generation: UUID
     ) {
@@ -1433,7 +1673,10 @@ final class PasteInjector {
         processNextRequest()
     }
 
-    private static func performPaste(_ text: String) throws {
+    private static func performPaste(
+        _ text: String,
+        into target: QuickDictationPasteTarget
+    ) throws -> PasteAttempt {
         guard AXIsProcessTrusted() else {
             throw MeetingCopilotError.audio(
                 "Accessibility permission is required to paste dictation into another app."
@@ -1464,6 +1707,7 @@ final class PasteInjector {
             value: ModifierHoldMonitor.pasteEventTag
         )
 
+        let verification = target.makePasteVerification(inserting: text)
         let pasteboard = NSPasteboard.general
         let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
         pasteboard.clearContents()
@@ -1475,13 +1719,26 @@ final class PasteInjector {
 
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+        return PasteAttempt(
+            verification: verification,
+            previousClipboardItems: previousItems,
+            insertedChangeCount: insertedChangeCount
+        )
+    }
 
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + clipboardRestoreDelay
-        ) {
-            guard pasteboard.changeCount == insertedChangeCount else { return }
-            restore(items: previousItems, to: pasteboard)
+    private static func restoreClipboardIfAppropriate(
+        after attempt: PasteAttempt,
+        deliveryWasVerified: Bool
+    ) {
+        let pasteboard = NSPasteboard.general
+        guard QuickDictationClipboardRestorationPolicy.shouldRestore(
+            deliveryWasVerified: deliveryWasVerified,
+            insertedChangeCount: attempt.insertedChangeCount,
+            currentChangeCount: pasteboard.changeCount
+        ) else {
+            return
         }
+        restore(items: attempt.previousClipboardItems, to: pasteboard)
     }
 
     private static func restore(
