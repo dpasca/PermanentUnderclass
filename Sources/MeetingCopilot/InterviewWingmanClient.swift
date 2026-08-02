@@ -38,12 +38,7 @@ private struct InterviewWingmanOutput: Decodable {
     let shouldShow: Bool
     let grounding: CompanionSuggestionGrounding
     let question: String
-    let lead: String
-    let talkingPoints: [CompanionTalkingPoint]
-    let proof: [CompanionProofPoint]
-    let watchoutTitle: String
-    let watchoutBody: String
-    let followup: String
+    let answer: String
     let citations: [CompanionCitation]
     let confidence: CompanionSuggestionConfidence
 }
@@ -53,7 +48,7 @@ struct InterviewWingmanClient: Sendable {
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
 
     static let behaviorInstructions = """
-    You are Interview Wingman, a low-latency assistant watching a live interview transcript. Decide whether the newest transcript moment from either speaker creates a useful opportunity for concise, immediate guidance. The newest moment may be a finalized turn or a stable partial captured during a speech pause; treat a partial as potentially incomplete and do not invent its missing ending. A turn from You may ask for help, surface uncertainty, or introduce a topic that would benefit from support; ordinary answer narration does not automatically require an interruption. A turn from Other may ask a direct question or create another useful coaching moment. Prefer the supplied local reference documents when they support the response. When they do, set grounding to localReferences and cite every document used by its exact path. When local references do not support the topic but a useful response can be given using the live discussion as context and general model knowledge, still provide it, set grounding to generalKnowledge, and return an empty citations array. Never invent personal achievements, metrics, employers, dates, or responsibilities, and never present general knowledge as locally verified. Set shouldShow to false only when neither locally grounded nor general guidance would be useful. Keep the lead short, use at most three talking points, and make the answer natural to say aloud.
+    You are Answer Mirror, a low-latency interview companion. The current response target is an interviewer moment captured after a speech pause or at turn finalization. When it contains a sufficiently clear question or prompt, write one coherent first-person answer the candidate could plausibly say and set shouldShow to true. Make the answer direct, natural aloud, and easy to compare with the candidate's own live transcript: normally 60 to 100 words in three to five short sentences. Treat a partial as potentially incomplete and do not invent its missing ending. Prefer the supplied local reference documents for personal and context-specific facts. When they support the answer, set grounding to localReferences and cite every document used by its exact path. When they do not support the question, you may still give an approach-oriented answer using general model knowledge, set grounding to generalKnowledge, return no citations, and avoid claiming the candidate actually performed work not established in the references. Never invent achievements, metrics, employers, dates, or responsibilities. Set shouldShow to false when the interviewer moment is not clear enough to answer. Return the interviewer question in question and the speakable comparison response in answer.
     """
 
     private let session: URLSession
@@ -67,6 +62,7 @@ struct InterviewWingmanClient: Sendable {
         references: ReferenceLibrarySnapshot?,
         recentTranscript: String,
         currentPartial: String,
+        interviewerText: String,
         basedOnSequence: Int
     ) async throws -> InterviewWingmanGeneration {
         let prefix = try AssistantPromptBuilder.cachedPrefix(
@@ -76,7 +72,9 @@ struct InterviewWingmanClient: Sendable {
         let plan = AssistantPromptBuilder.plan(
             cachedPrefix: prefix,
             recentTranscript: recentTranscript,
-            currentPartial: currentPartial
+            currentPartial: currentPartial,
+            focusSpeaker: SpeakerTag.other.rawValue,
+            focusText: interviewerText
         )
         let body = try Self.requestBody(for: plan)
         var request = URLRequest(url: Self.endpoint)
@@ -111,7 +109,7 @@ struct InterviewWingmanClient: Sendable {
         let request: [String: Any] = [
             "model": model,
             "store": false,
-            "max_output_tokens": 700,
+            "max_output_tokens": 500,
             "reasoning": ["effort": "none"],
             "input": [
                 [
@@ -139,7 +137,7 @@ struct InterviewWingmanClient: Sendable {
                 "verbosity": "low",
                 "format": [
                     "type": "json_schema",
-                    "name": "interview_wingman_suggestion",
+                    "name": "interview_answer_mirror",
                     "strict": true,
                     "schema": outputSchema
                 ]
@@ -196,6 +194,15 @@ struct InterviewWingmanClient: Sendable {
                 generationMilliseconds: generationMilliseconds
             )
         }
+        let question = output.question.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let answer = output.answer.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !question.isEmpty, !answer.isEmpty else {
+            throw InterviewWingmanError.invalidResponse
+        }
 
         let allowedCitations = output.citations.filter {
             allowedReferencePaths.contains($0.path)
@@ -211,13 +218,8 @@ struct InterviewWingmanClient: Sendable {
         let suggestion = CompanionAssistantSuggestion(
             id: UUID().uuidString.lowercased(),
             basedOnSequence: basedOnSequence,
-            question: output.question,
-            lead: output.lead,
-            talkingPoints: Array(output.talkingPoints.prefix(3)),
-            proof: Array(output.proof.prefix(4)),
-            watchoutTitle: output.watchoutTitle,
-            watchoutBody: output.watchoutBody,
-            followup: output.followup,
+            question: question,
+            answer: answer,
             citations: citations,
             grounding: output.grounding,
             confidence: output.confidence,
@@ -271,34 +273,7 @@ struct InterviewWingmanClient: Sendable {
                 "enum": ["localReferences", "generalKnowledge"]
             ],
             "question": ["type": "string"],
-            "lead": ["type": "string"],
-            "talkingPoints": [
-                "type": "array",
-                "items": [
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": [
-                        "title": ["type": "string"],
-                        "body": ["type": "string"]
-                    ],
-                    "required": ["title", "body"]
-                ]
-            ],
-            "proof": [
-                "type": "array",
-                "items": [
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": [
-                        "value": ["type": "string"],
-                        "label": ["type": "string"]
-                    ],
-                    "required": ["value", "label"]
-                ]
-            ],
-            "watchoutTitle": ["type": "string"],
-            "watchoutBody": ["type": "string"],
-            "followup": ["type": "string"],
+            "answer": ["type": "string"],
             "citations": [
                 "type": "array",
                 "items": [
@@ -320,12 +295,7 @@ struct InterviewWingmanClient: Sendable {
             "shouldShow",
             "grounding",
             "question",
-            "lead",
-            "talkingPoints",
-            "proof",
-            "watchoutTitle",
-            "watchoutBody",
-            "followup",
+            "answer",
             "citations",
             "confidence"
         ]

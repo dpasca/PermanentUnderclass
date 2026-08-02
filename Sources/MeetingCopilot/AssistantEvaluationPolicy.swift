@@ -8,6 +8,10 @@ struct AssistantEvaluationIdentity: Equatable {
 enum AssistantEvaluationPolicy {
     static let partialSpeechPauseMilliseconds = 800
 
+    static func shouldEvaluate(speaker: SpeakerTag) -> Bool {
+        speaker == .other
+    }
+
     static func delayMilliseconds(
         for _: CompanionAssistantTrigger
     ) -> Int {

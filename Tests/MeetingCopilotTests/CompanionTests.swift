@@ -109,6 +109,24 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.suggestionsPaused)
     }
 
+    func testSyntheticInterviewPreparationIsPublishedToTheCompanion() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: false,
+            status: "Generating an interview from 3 references…",
+            source: .syntheticInterview,
+            title: "Reference-grounded interview",
+            isPreparingSyntheticInterview: true
+        )
+        let snapshot = await hub.snapshot()
+
+        XCTAssertFalse(snapshot.session.isListening)
+        XCTAssertTrue(snapshot.session.isPreparingSyntheticInterview)
+        XCTAssertEqual(snapshot.session.source, .syntheticInterview)
+        XCTAssertEqual(snapshot.session.title, "Reference-grounded interview")
+    }
+
     func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
         let hub = CompanionEventHub(streamID: "test-stream")
         let triggeredAt = Date(timeIntervalSince1970: 100)
@@ -159,20 +177,104 @@ final class CompanionTests: XCTestCase {
             RealtimeTranscriptionClient.assistantPauseSilenceChunkCount * 20,
             AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
         )
+        XCTAssertTrue(AssistantEvaluationPolicy.shouldEvaluate(speaker: .other))
+        XCTAssertFalse(AssistantEvaluationPolicy.shouldEvaluate(speaker: .you))
     }
 
-    func testSyntheticInterviewIsFixedAudibleTwoSpeakerLatencyScenario() {
-        let scenario = SyntheticInterviewScenario.latencyProbe
+    func testSyntheticInterviewGenerationUsesReferencesAndBuildsThreeExchanges() throws {
+        let references = referenceSnapshot()
+        let requestData = try SyntheticInterviewGeneratorClient.requestBody(
+            references: references
+        )
+        let request = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+        )
+        XCTAssertEqual(request["model"] as? String, "gpt-5.6-luna")
+        XCTAssertEqual(request["max_output_tokens"] as? Int, 1_600)
+        let input = try XCTUnwrap(request["input"] as? [[String: Any]])
+        let developerContent = try XCTUnwrap(
+            input[0]["content"] as? [[String: Any]]
+        )
+        let developerPrompt = try XCTUnwrap(
+            developerContent[0]["text"] as? String
+        )
+        XCTAssertTrue(developerPrompt.contains("Resume.md"))
+        XCTAssertTrue(
+            developerPrompt.contains("must be grounded in this local material")
+        )
+        let text = try XCTUnwrap(request["text"] as? [String: Any])
+        let format = try XCTUnwrap(text["format"] as? [String: Any])
+        let schema = try XCTUnwrap(format["schema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let exchanges = try XCTUnwrap(properties["exchanges"] as? [String: Any])
+        XCTAssertEqual(exchanges["minItems"] as? Int, 3)
+        XCTAssertEqual(exchanges["maxItems"] as? Int, 3)
 
+        let generatedAt = Date(timeIntervalSince1970: 200)
+        let generation = try SyntheticInterviewGeneratorClient.parseResponse(
+            try syntheticInterviewResponseData(),
+            references: references,
+            generatedAt: generatedAt,
+            generationMilliseconds: 640
+        )
+        let scenario = generation.scenario
+        XCTAssertEqual(scenario.referenceRevision, references.revision)
+        XCTAssertEqual(scenario.referenceDocumentCount, 1)
+        XCTAssertEqual(scenario.generatedAt, generatedAt)
         XCTAssertEqual(scenario.finalizationDelay, 3)
         XCTAssertEqual(scenario.turns.count, 6)
-        XCTAssertEqual(scenario.turns.first?.speaker, .other)
-        XCTAssertTrue(scenario.turns.contains { $0.speaker == .you })
-        XCTAssertTrue(scenario.turns.contains { $0.speaker == .other })
+        XCTAssertEqual(scenario.turns.map(\.speaker), [
+            .other, .you, .other, .you, .other, .you
+        ])
         XCTAssertGreaterThan(
-            scenario.turns.map(\.pauseAfterSpeech).max() ?? 0,
+            scenario.turns[0].pauseAfterSpeech,
             scenario.finalizationDelay
         )
+        XCTAssertEqual(generation.usage.inputTokens, 900)
+        XCTAssertEqual(generation.generationMilliseconds, 640)
+    }
+
+    func testSyntheticInterviewScenarioStoreMatchesReferenceRevision() throws {
+        let generation = try SyntheticInterviewGeneratorClient.parseResponse(
+            try syntheticInterviewResponseData(),
+            references: referenceSnapshot(),
+            generatedAt: Date(timeIntervalSince1970: 200),
+            generationMilliseconds: 640
+        )
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SyntheticInterviewStore-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = SyntheticInterviewScenarioStore(
+            fileURL: folder.appendingPathComponent("scenario.json")
+        )
+
+        try store.save(generation.scenario)
+
+        XCTAssertEqual(
+            try store.load(referenceRevision: "reference-revision"),
+            generation.scenario
+        )
+        XCTAssertNil(try store.load(referenceRevision: "changed-revision"))
+    }
+
+    func testSyntheticInterviewRejectsUnknownReferencePaths() throws {
+        XCTAssertThrowsError(
+            try SyntheticInterviewGeneratorClient.parseResponse(
+                try syntheticInterviewResponseData(
+                    sourcePaths: ["Resume.md", "NotIndexed.md"]
+                ),
+                references: referenceSnapshot(),
+                generatedAt: Date(timeIntervalSince1970: 200),
+                generationMilliseconds: 640
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SyntheticInterviewGeneratorError,
+                .invalidGrounding
+            )
+        }
     }
 
     func testExpenseSummaryTracksAssistantCacheAndReasoningUsage() {
@@ -199,7 +301,7 @@ final class CompanionTests: XCTestCase {
     func testWingmanRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
         XCTAssertTrue(
             InterviewWingmanClient.behaviorInstructions.contains(
-                "stable partial captured during a speech pause"
+                "one coherent first-person answer"
             )
         )
         let plan = AssistantPromptPlan(
@@ -213,7 +315,7 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
         XCTAssertEqual(root["store"] as? Bool, false)
-        XCTAssertEqual(root["max_output_tokens"] as? Int, 700)
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 500)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
         XCTAssertEqual(reasoning["effort"], "none")
@@ -251,17 +353,7 @@ final class CompanionTests: XCTestCase {
             "shouldShow": true,
             "grounding": "localReferences",
             "question": "What did you improve?",
-            "lead": "Use the checkout example",
-            "talkingPoints": [
-                ["title": "Stakes", "body": "Latency was hurting conversion."],
-                ["title": "Action", "body": "I removed an N+1 lookup."],
-                ["title": "Result", "body": "p95 fell by 41%."],
-                ["title": "Extra", "body": "This fourth point is intentionally trimmed."]
-            ],
-            "proof": [["value": "41%", "label": "p95 reduction"]],
-            "watchoutTitle": "Be precise about ownership",
-            "watchoutBody": "You led diagnosis and rollout.",
-            "followup": "How did you validate it?",
+            "answer": "I traced the checkout path, removed an N+1 lookup, and validated a 41 percent p95 reduction under representative load.",
             "citations": [
                 ["label": "Project brief", "path": "Projects/Checkout.md"],
                 ["label": "Invented", "path": "not-indexed.txt"]
@@ -299,7 +391,9 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(generation.usage.reasoningTokens, 32)
         XCTAssertEqual(generation.suggestion?.basedOnSequence, 19)
         XCTAssertEqual(generation.suggestion?.grounding, .localReferences)
-        XCTAssertEqual(generation.suggestion?.talkingPoints.count, 3)
+        XCTAssertTrue(
+            generation.suggestion?.answer.contains("41 percent") == true
+        )
         XCTAssertEqual(
             generation.suggestion?.citations,
             [CompanionCitation(label: "Project brief", path: "Projects/Checkout.md")]
@@ -390,6 +484,74 @@ final class CompanionTests: XCTestCase {
         XCTAssertFalse(
             CompanionGatewayRoutes.isAllowedLoopbackAuthority("attacker.example:4173")
         )
+    }
+
+    private func referenceSnapshot() -> ReferenceLibrarySnapshot {
+        ReferenceLibrarySnapshot(
+            folderURL: URL(
+                fileURLWithPath: "/tmp/references",
+                isDirectory: true
+            ),
+            documents: [
+                ReferenceDocument(
+                    relativePath: "Resume.md",
+                    kind: .markdown,
+                    content: "Built and measured low-latency audio systems.",
+                    sourceByteCount: 45,
+                    isTruncated: false
+                )
+            ],
+            revision: "reference-revision",
+            indexedAt: Date(timeIntervalSince1970: 100),
+            ignoredFileCount: 0,
+            issues: []
+        )
+    }
+
+    private func syntheticInterviewResponseData(
+        sourcePaths: [String] = ["Resume.md"]
+    ) throws -> Data {
+        let output: [String: Any] = [
+            "title": "Audio systems interview",
+            "exchanges": [
+                [
+                    "question": "What low-latency system did you build?",
+                    "candidateAnswer": "I built an audio system and measured its latency end to end.",
+                    "sourcePaths": sourcePaths
+                ],
+                [
+                    "question": "How did you validate its performance?",
+                    "candidateAnswer": "I separated the pipeline stages and measured each one independently.",
+                    "sourcePaths": sourcePaths
+                ],
+                [
+                    "question": "What tradeoff mattered most?",
+                    "candidateAnswer": "I balanced response speed against stable, trustworthy output.",
+                    "sourcePaths": sourcePaths
+                ]
+            ]
+        ]
+        let outputData = try JSONSerialization.data(withJSONObject: output)
+        let outputText = try XCTUnwrap(
+            String(data: outputData, encoding: .utf8)
+        )
+        let response: [String: Any] = [
+            "status": "completed",
+            "output": [[
+                "type": "message",
+                "content": [["type": "output_text", "text": outputText]]
+            ]],
+            "usage": [
+                "input_tokens": 900,
+                "input_tokens_details": [
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0
+                ],
+                "output_tokens": 180,
+                "output_tokens_details": ["reasoning_tokens": 20]
+            ]
+        ]
+        return try JSONSerialization.data(withJSONObject: response)
     }
 
     private func nextEvent(

@@ -55,19 +55,22 @@ cross-platform thin display itself. Start the Mac app, expand **References and
 meeting context**, choose a reference folder, then press **Open Live
 Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
 local references, OpenAI request, usage tracking, event ordering, and replay;
-the browser receives only transcript text, reference status, citations, and
-presentation-ready guidance.
+the browser receives only transcript text, reference status, citations, and a
+presentation-ready comparison answer.
 
-The first real behavior is **Interview Wingman**. An 800 ms audio pause can
-trigger a structured `gpt-5.6-luna` Responses API decision from the current
-partial transcript before the 3 second final-turn boundary. Finalized turns
-remain a fallback, and an exact partial/final duplicate is coalesced rather
-than billed twice. The same model-based decision handles both speakers; there
-is no keyword or regex gate.
+The first real behavior is **Answer Mirror**. An 800 ms pause in the
+interviewer's audio can trigger a structured `gpt-5.6-luna` Responses API
+answer from the current partial transcript before the 3 second final-turn
+boundary. The final interviewer turn remains a fallback, and an exact
+partial/final duplicate is coalesced rather than billed twice. Candidate
+speech stays visible in the transcript but does not replace the model answer,
+so the two can be compared in real time. Speaker identity provides this
+routing; there is no keyword or regex gate.
 Indexed local files are preferred when they support the answer. If they do not,
-the model may still suggest an answer from the live discussion and general
-model knowledge; the display prefixes it with **NO LOCAL SUPPORTING MATERIAL**
-and tells the user to verify it.
+the model may still draft an approach-oriented first-person answer from the
+live discussion and general model knowledge without claiming unverified
+personal experience. The display prefixes it with **NO LOCAL SUPPORTING
+MATERIAL**.
 The stable behavior/reference prefix uses an explicit prompt-cache breakpoint
 and cache key, while recent transcript stays in the volatile suffix. Assistant
 token and cache usage is counted separately; it is not folded into the dollar
@@ -88,15 +91,24 @@ pairing boundary, and follow-up durability work are in
 
 ## Synthetic interview replay
 
-The Meeting tab includes a **Repeatable latency test**. Press **Run Interview**
-to open the Live Assistant and hear a fixed six-turn interview spoken by two
-macOS voices. The host streams the scenario's known words as partial transcript
-events, waits through the same simulated 3 second final-turn boundary, and runs
-the real Interview Wingman request with the configured API key and references.
-The companion displays both model time and end-to-end `transcript → card` time.
+The Meeting tab includes a **Document-grounded replay**. Choose a reference
+folder and wait for indexing, then press **Run Interview**. On the first run for
+a reference revision, the host uses a structured model call to create three
+question/answer exchanges grounded in exact indexed paths. Two macOS voices
+speak the resulting six turns while the host streams their known words as
+partial transcript events. After every interviewer question, the real Answer
+Mirror independently drafts the model answer shown beside the generated
+candidate response. The companion reports both model time and end-to-end
+`transcript → card` time.
+
+The generated scenario is stored locally in Application Support and reused
+while the reference revision and scenario format match, making latency reruns
+repeatable without another scenario-generation call. **New Questions** forces
+a fresh document-grounded scenario. Changing any indexed document naturally
+produces a new revision and invalidates the cached scenario.
 
 This mode deliberately bypasses microphone capture and speech recognition. It
-isolates assistant cadence and model latency so the same conversation can be
+isolates answer cadence and model latency so the same conversation can be
 compared after every prompt, model, or scheduling change. Live capture and the
 existing optional network ASR tests continue to cover the audio/transcription
 path separately.
@@ -208,8 +220,10 @@ The proof of concept includes:
   second end-of-turn pause, and explicit turn commits. Partial text continues
   streaming during the finalization pause. A **Finish My Turn** button supplies
   a manual boundary for controlled comparisons.
-- Interview Wingman checks a partial after an 800 ms audio pause, immediately
-  checks a new finalized turn, and coalesces an unchanged partial/final pair.
+- Answer Mirror checks an interviewer partial after an 800 ms audio pause,
+  immediately checks a new finalized interviewer turn, and coalesces an
+  unchanged partial/final pair. Candidate turns never replace the comparison
+  answer.
   Privacy-safe lifecycle logs include trigger-to-start, model, and total
   transcript-to-result timings.
 - Context prompt, literal terminology hints, language hints, and delay control.

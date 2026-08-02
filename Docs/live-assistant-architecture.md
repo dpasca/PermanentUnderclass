@@ -38,7 +38,7 @@ Security and pairing).
 ## Why SSE, not a WebSocket
 
 The ongoing traffic is overwhelmingly host-to-display: transcript deltas,
-final turns, suggestions, source matches, usage, and health. SSE gives this
+final turns, comparison answers, source matches, usage, and health. SSE gives this
 shape ordered delivery over HTTP, native browser reconnects, and a standard
 `Last-Event-ID` resume cursor. Commands such as pin, dismiss, or pause are
 ordinary short requests and do not need a permanent upstream channel.
@@ -108,9 +108,9 @@ Initial event set:
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
 - `assistant.working`: generation started for a transcript watermark.
-- `assistant.suggestion`: complete replaceable card with citation labels and expiry.
+- `assistant.suggestion`: complete replaceable comparison answer with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
-  the latest eligible turn produced no suggestion. This prevents silence from
+  the latest interviewer moment produced no answer. This prevents silence from
   being confused with a disconnected assistant.
 - `usage.updated`: cumulative reported usage and estimated USD by model.
 - `reference.status`: folder display name, document count, revision, and
@@ -121,17 +121,16 @@ An `assistant.suggestion` payload is already a view model, for example:
 
 ```json
 {
-  "suggestionId": "sg_01J...",
+  "id": "sg_01J...",
   "basedOnSequence": 2487,
   "question": "Tell me about a time you improved a critical system.",
-  "lead": "Use the checkout latency story.",
-  "talkingPoints": ["Set the stakes", "Name your move", "Land the result"],
-  "proof": [{"value": "41%", "label": "p95 latency reduction"}],
-  "watchout": "Be precise about what you personally owned.",
-  "followup": "How did you prevent stale inventory?",
+  "answer": "I started by measuring the customer-facing path end to end...",
   "citations": [{"label": "Checkout latency", "path": "Projects/Checkout.md"}],
   "grounding": "localReferences",
-  "expiresAt": "2026-08-01T01:25:12.318Z"
+  "confidence": "high",
+  "generationMilliseconds": 640,
+  "trigger": "partialTranscript",
+  "totalLatencyMilliseconds": 1440
 }
 ```
 
@@ -139,16 +138,18 @@ The host chooses the facts and wording. The display may lay out, copy, pin, or
 dismiss this object, but it does not receive retrieved chunks and does not run a
 second interpretation step.
 
-An 800 ms audio pause from `You` or `Other` schedules the same structured model
-decision from the current partial transcript before the 3 second final-turn
-boundary. A finalized turn schedules immediately as the reliable fallback.
-Exact partial/final duplicates for one turn are coalesced. Speaker identity is
-supplied as transcript context; there is no keyword or pattern gate in front of
-the model. A completed decision that returns no suggestion is retained as
-assistant state so the display can distinguish "checked, no interruption" from
-"no inference happened."
+An 800 ms audio pause from `Other` schedules a structured first-person answer
+from the current interviewer partial before the 3 second final-turn boundary.
+A finalized `Other` turn schedules immediately as the reliable fallback. `You`
+turns remain visible in the transcript for comparison but do not schedule or
+replace the model answer. Exact partial/final duplicates for one interviewer
+turn are coalesced. This is structural speaker routing, not a language
+heuristic; there is no keyword or pattern gate in front of the model. A
+completed decision that returns no answer is retained as assistant state so
+the display can distinguish "question checked, not clear enough" from "no
+inference happened."
 
-The structured decision labels every displayed suggestion as either
+The structured decision labels every displayed answer as either
 `localReferences` or `generalKnowledge`. Local grounding requires at least one
 validated citation path from the current indexed snapshot. If no indexed file
 supports a useful answer, the model may use the live discussion as context and
@@ -231,7 +232,7 @@ with certificate pinning/TOFU or a trusted HTTPS certificate provisioned during
 device setup. A self-signed certificate that every browser warns about is not a
 good product flow.
 
-Only transcript text, complete suggestion cards, citation metadata, health,
+Only transcript text, complete comparison-answer cards, citation metadata, health,
 reference status, and aggregate usage cross the companion boundary. Source
 documents, retrieval indexes, raw audio, prompts, model credentials, and the
 OpenAI key do not.
@@ -277,7 +278,7 @@ For the proposed GPT-5.6 integration, ordering is necessary but not sufficient:
 - log `cached_tokens` and `cache_write_tokens` with each assistant generation.
 
 Keep a single cache key near or below 15 requests per minute. That is a useful
-initial upper bound for the suggestion cadence; a higher measured cadence needs
+initial upper bound for the model-answer cadence; a higher measured cadence needs
 a stable key-partitioning strategy and cache-hit evaluation.
 
 GPT-5.6 caching has a strict 1,024-token minimum, and cache writes are billed at
@@ -306,16 +307,17 @@ Each behavior defines:
 
 - goal and audience;
 - allowed source collection;
-- structured suggestion schema;
+- structured answer schema;
 - cadence and latency budget;
-- minimum confidence for showing a suggestion;
+- minimum confidence for showing an answer;
 - expiry/replacement policy;
 - a model choice and per-session spend ceiling.
 
-The host passes the cached stable prefix, recent finalized turns, and the
-current partial to a fast model and requires structured output. It converts the
-model result into a complete display card before publishing it. It should
-cancel or supersede stale generations when the conversation moves on. No regex
+The host passes the cached stable reference prefix, recent finalized turns,
+the current partial, and an explicit interviewer response target to a fast
+model and requires structured output. It converts the model result into a
+complete first-person answer before publishing it. It should cancel or
+supersede stale generations when a newer interviewer moment arrives. No regex
 or keyword gate should decide whether the meeting "looks like" an interview.
 
 ### Initial model hypothesis
@@ -324,8 +326,8 @@ Start the measured prototype with `gpt-5.6-luna` through the Responses API. It
 is the efficient, high-volume member of the current GPT-5.6 family and fits the
 frequent short-generation shape better than using the flagship model for every
 transcript change. The latency harness currently uses `reasoning.effort: none`
-and a 700-token output ceiling with the compact suggestion schema. Compare that
-configuration against `low` on the same fixed interview moments before trading
+and a 500-token output ceiling with the compact answer schema. Compare that
+configuration against `low` on the same cached interview moments before trading
 latency for more reasoning.
 
 Treat this as an eval hypothesis, not a permanent routing rule. Measure
@@ -346,8 +348,9 @@ The initial meter covers:
 - `gpt-live-transcribe` for each live audio track;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` assistant generations from the model response's own token
-  usage (tracked separately until a dollar rate is configured).
+- `gpt-5.6-luna` scenario-generation and Answer Mirror calls from each model
+  response's own token usage (tracked separately until a dollar rate is
+  configured).
 
 For GPT-5.6 assistant calls, record uncached input, cached input, cache writes,
 output, and reasoning tokens separately. This makes a folder edit's one-time
@@ -363,11 +366,13 @@ the source of truth.
    host-side reference-folder ingestion/watch, deterministic prompt prefix
    builder, and host-side transcription cost meter.
 2. **Completed loopback vertical slice:** Hummingbird service, event hub,
-   snapshot, real transcript/reference/usage events, structured Interview
-   Wingman behavior, idempotent commands, and reconnect/replay tests.
-3. **Completed synthetic latency slice:** two audible macOS voices, a fixed
-   six-turn transcript timeline, stable-partial and final events, real model
-   inference, exact partial/final coalescing, and visible end-to-end timings.
+   snapshot, real transcript/reference/usage events, structured Answer Mirror
+   behavior, idempotent commands, and reconnect/replay tests.
+3. **Completed synthetic latency slice:** a structured model generates three
+   grounded exchanges from the indexed document revision, a local cache keeps
+   reruns stable, two audible macOS voices replay the six turns, and independent
+   Answer Mirror output is shown beside the generated candidate response with
+   visible end-to-end timings.
 4. **Reliability:** durable replay across host restarts, app-sleep tests, fault
    injection, and an optional SQLite journal decision. The loopback slice
    already bounds replay and disconnects slow consumers so they recover from a
@@ -380,14 +385,14 @@ the source of truth.
 - Drop the SSE connection for 30 seconds while both speakers produce turns;
   after reconnect the client shows every final turn once and reports caught up.
 - Reload during an assistant generation; the snapshot and subsequent event
-  produce one current suggestion, not duplicates.
+  produce one current model answer, not duplicates.
 - Force the cursor outside the ring; the client replaces state from a snapshot
   without mixing old and new stream IDs.
 - Repeat a pin/dismiss command after timing out; it is applied once.
 - Stop all clients; capture and transcript finalization continue unaffected.
 - Switch finalization to Parakeet; the cloud-finalization cost stops increasing
   while live-transcription cost continues.
-- Run the fixed synthetic interview; each stable partial can start inference
-  before its simulated final boundary, the unchanged final does not create a
-  duplicate generation, and the display reports model and transcript-to-card
-  milliseconds.
+- Run the document-grounded synthetic interview; each interviewer partial can
+  start inference before its simulated final boundary, candidate turns leave
+  the answer intact, the unchanged final does not create a duplicate
+  generation, and the display reports model and transcript-to-card milliseconds.

@@ -9,7 +9,7 @@ preview, run from the repository root:
 ```
 
 The standalone server automatically falls back to mock data and makes no model
-request. The page labels that state prominently so simulated guidance cannot be
+request. The page labels that state prominently so simulated answers cannot be
 mistaken for live inference.
 
 This is deliberately a thin display. The behavior and reference-folder status
@@ -20,20 +20,20 @@ into the display client.
 
 Useful interactions:
 
-- **Next mock moment** appears only in standalone mode and cycles sample guidance.
+- **Next mock answer** appears only in standalone mode and cycles sample comparisons.
 - **Test reconnect** closes the real SSE stream in live mode and resumes from
   its composite cursor; in standalone mode it runs a visual simulation.
 - The connection chip shows stream health and protocol details.
 - The session estimate opens a cost breakdown.
-- Suggestions can be paused, pinned, copied, or shortened.
+- Model answers can be paused, pinned, copied, or dismissed.
 - The inference panel distinguishes preview-only, blocked, paused, armed,
-  working, checked-without-guidance, ready, and failed states.
-- Every finalized `You` or `Other` turn is eligible for the host model's
-  structured usefulness decision; the browser itself never decides via text
-  matching.
-- File-backed suggestions show their citations. Suggestions based on the live
-  discussion and general model knowledge remain available when local files do
-  not support the topic, with a **NO LOCAL SUPPORTING MATERIAL** prefix.
+  working, checked-without-answer, ready, and failed states.
+- An `Other` interviewer pause or final turn is eligible for the host model's
+  structured answer decision. `You` turns remain visible for comparison and do
+  not replace the answer. The browser itself never decides via text matching.
+- File-backed answers show their citations. Approach-oriented answers based on
+  the live discussion and general model knowledge remain available when local
+  files do not support the topic, with a **NO LOCAL SUPPORTING MATERIAL** prefix.
 
 The transport and recovery decision is documented in
 [`Docs/live-assistant-architecture.md`](../../Docs/live-assistant-architecture.md).
