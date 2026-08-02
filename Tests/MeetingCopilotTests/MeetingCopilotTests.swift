@@ -1009,6 +1009,60 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testQuickDictationCanRecordWhileEarlierTranscriptionIsPending() {
+        var state = QuickDictationWorkState()
+        state.submit(transcriptID: "first")
+
+        XCTAssertEqual(
+            state.phase(
+                isRunning: true,
+                isRecording: false,
+                isModelReady: true,
+                engine: .localParakeet
+            ),
+            .transcribing
+        )
+        XCTAssertEqual(
+            state.phase(
+                isRunning: true,
+                isRecording: true,
+                isModelReady: false,
+                engine: .localParakeet
+            ),
+            .recording
+        )
+
+        state.submit(transcriptID: "second")
+        XCTAssertTrue(state.complete(transcriptID: "first"))
+        XCTAssertEqual(
+            state.phase(
+                isRunning: true,
+                isRecording: false,
+                isModelReady: true,
+                engine: .localParakeet
+            ),
+            .transcribing
+        )
+        XCTAssertTrue(state.complete(transcriptID: "second"))
+        XCTAssertEqual(
+            state.phase(
+                isRunning: true,
+                isRecording: false,
+                isModelReady: true,
+                engine: .localParakeet
+            ),
+            .ready
+        )
+    }
+
+    func testQuickDictationWorkStateIgnoresUnknownCompletion() {
+        var state = QuickDictationWorkState()
+        state.submit(transcriptID: "active")
+
+        XCTAssertFalse(state.complete(transcriptID: "stale-preview"))
+        XCTAssertEqual(state.pendingTranscriptionIDs, ["active"])
+    }
+
     func testGPTTranscribeConnectionAttemptHasABoundedTimeout() {
         XCTAssertEqual(
             RealtimeRefinementClient.connectionTimeoutSeconds,

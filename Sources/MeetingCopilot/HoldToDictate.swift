@@ -258,6 +258,48 @@ struct QuickDictationReconnectPolicy {
     }
 }
 
+struct QuickDictationWorkState {
+    private(set) var pendingTranscriptionIDs: Set<String> = []
+
+    var hasPendingTranscriptions: Bool {
+        !pendingTranscriptionIDs.isEmpty
+    }
+
+    mutating func submit(transcriptID: String) {
+        pendingTranscriptionIDs.insert(transcriptID)
+    }
+
+    @discardableResult
+    mutating func complete(transcriptID: String) -> Bool {
+        pendingTranscriptionIDs.remove(transcriptID) != nil
+    }
+
+    mutating func reset() {
+        pendingTranscriptionIDs.removeAll()
+    }
+
+    func phase(
+        isRunning: Bool,
+        isRecording: Bool,
+        isModelReady: Bool,
+        engine: TranscriptRefinementEngine
+    ) -> DictationPhase {
+        if isRecording {
+            return .recording
+        }
+        if hasPendingTranscriptions {
+            return .transcribing
+        }
+        if !isRunning {
+            return .off
+        }
+        if !isModelReady {
+            return .preparing(engine)
+        }
+        return .ready
+    }
+}
+
 final class HoldToDictateService {
     typealias PhaseHandler = (DictationPhase) -> Void
     typealias PermissionHandler = (DictationPermissionState) -> Void
@@ -293,7 +335,7 @@ final class HoldToDictateService {
     private var audioBuffer: LockedAudioBuffer?
     private var recordingID: UUID?
     private var transcriber: TranscriptRefining?
-    private var activeTranscriptionID: String?
+    private var workState = QuickDictationWorkState()
     private var activeLivePreviewID: String?
     private var livePreviewWorkItem: DispatchWorkItem?
     private var lastLivePreviewByteCount = 0
@@ -387,7 +429,7 @@ final class HoldToDictateService {
             || isRunning
             || recordingID != nil
             || transcriber != nil
-            || activeTranscriptionID != nil
+            || workState.hasPendingTranscriptions
             || activeLivePreviewID != nil
             || livePreviewWorkItem != nil
             || reconnectWorkItem != nil
@@ -402,7 +444,7 @@ final class HoldToDictateService {
         cancelRecording(nextPhase: .off)
         transcriber?.disconnect()
         transcriber = nil
-        activeTranscriptionID = nil
+        workState.reset()
         transcriberState = .idle
         isModelReady = false
         isRunning = false
@@ -470,7 +512,7 @@ final class HoldToDictateService {
 
     private func connectTranscriber(generation: UUID) {
         transcriberState = .connecting
-        if recordingID == nil, activeTranscriptionID == nil {
+        if recordingID == nil, !workState.hasPendingTranscriptions {
             phaseHandler(.preparing(transcriptionEngine))
         }
         let callbacks = DictationTranscriberCallbacks(
@@ -517,24 +559,30 @@ final class HoldToDictateService {
         switch state {
         case .idle:
             isModelReady = false
-            if recordingID == nil, activeTranscriptionID == nil {
+            if recordingID == nil, !workState.hasPendingTranscriptions {
                 phaseHandler(.preparing(transcriptionEngine))
             }
         case .connecting:
             isModelReady = false
-            if recordingID == nil, activeTranscriptionID == nil {
+            if recordingID == nil, !workState.hasPendingTranscriptions {
                 phaseHandler(.preparing(transcriptionEngine))
             }
         case .connected:
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             isModelReady = true
-            if recordingID == nil, activeTranscriptionID == nil {
+            if recordingID == nil, !workState.hasPendingTranscriptions {
                 phaseHandler(.ready)
             }
         case let .failed(message):
             isModelReady = false
-            phaseHandler(.failed(message))
+            if recordingID == nil {
+                phaseHandler(.failed(message))
+            } else {
+                Self.logger.error(
+                    "transcriber_failed_while_recording error=\(message, privacy: .public)"
+                )
+            }
         }
         if let reconnectDelay {
             scheduleTranscriberReconnect(
@@ -594,12 +642,12 @@ final class HoldToDictateService {
         case .released:
             finishRecording()
         case .cancelled:
-            cancelRecording(nextPhase: isRunning ? .ready : .off)
+            cancelRecording()
         }
     }
 
     private func startRecording() {
-        guard isRunning, recordingID == nil, activeTranscriptionID == nil else { return }
+        guard isRunning, recordingID == nil else { return }
         guard isModelReady else {
             if transcriptionEngine == .openAITranscribe,
                transcriberState != .connecting {
@@ -695,30 +743,31 @@ final class HoldToDictateService {
             "recording_finished bytes=\(audio.count, privacy: .public) peak=\(peak, privacy: .public)"
         )
         guard transcribesAfterRecording else {
-            phaseHandler(isRunning ? .ready : .off)
+            phaseHandler(currentWorkPhase())
             return
         }
         guard audio.count >= 4_800 else {
             Self.logger.notice("recording_skipped reason=too_short")
-            phaseHandler(.ready)
+            phaseHandler(currentWorkPhase())
             return
         }
         guard peak >= 64 else {
             Self.logger.notice("recording_skipped reason=silence")
-            phaseHandler(.ready)
+            phaseHandler(currentWorkPhase())
             return
         }
 
         let languages = expectedLanguages()
-        phaseHandler(.transcribing)
-        Self.logger.notice("transcription_started")
         let transcriptID = "dictation-\(UUID().uuidString)"
-        activeTranscriptionID = transcriptID
         guard let transcriber else {
-            activeTranscriptionID = nil
             phaseHandler(.failed("The selected Quick Dictation model is unavailable."))
             return
         }
+        workState.submit(transcriptID: transcriptID)
+        phaseHandler(currentWorkPhase())
+        Self.logger.notice(
+            "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
+        )
         transcriber.refine(
             RealtimeRefinementRequest(
                 transcriptID: transcriptID,
@@ -752,17 +801,15 @@ final class HoldToDictateService {
             return
         }
 
-        guard
-            recordingID == nil,
-            activeTranscriptionID == transcriptID
-        else {
+        guard workState.complete(transcriptID: transcriptID) else {
             return
         }
-        activeTranscriptionID = nil
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else {
             Self.logger.error("transcription_empty")
-            phaseHandler(.failed("\(transcriptionEngine.title) returned no dictation text."))
+            publishTranscriptionFailure(
+                "\(transcriptionEngine.title) returned no dictation text."
+            )
             return
         }
         do {
@@ -771,13 +818,15 @@ final class HoldToDictateService {
                 "transcription_completed characters=\(result.count, privacy: .public)"
             )
             resultHandler(result)
-            phaseHandler(.ready)
+            if recordingID == nil {
+                phaseHandler(currentWorkPhase())
+            }
         } catch {
             Self.logger.error(
                 "paste_failed error=\(error.localizedDescription, privacy: .public)"
             )
             resultHandler(result)
-            phaseHandler(.failed(error.localizedDescription))
+            publishTranscriptionFailure(error.localizedDescription)
         }
     }
 
@@ -798,19 +847,35 @@ final class HoldToDictateService {
             return
         }
 
-        guard
-            activeTranscriptionID == transcriptID
-        else {
+        guard workState.complete(transcriptID: transcriptID) else {
             return
         }
-        activeTranscriptionID = nil
         Self.logger.error(
             "transcription_failed error=\(message, privacy: .public)"
         )
+        publishTranscriptionFailure(message)
+    }
+
+    private func publishTranscriptionFailure(_ message: String) {
+        guard recordingID == nil else {
+            Self.logger.error(
+                "background_transcription_failed_while_recording error=\(message, privacy: .public)"
+            )
+            return
+        }
         phaseHandler(.failed(message))
     }
 
-    private func cancelRecording(nextPhase: DictationPhase) {
+    private func currentWorkPhase() -> DictationPhase {
+        workState.phase(
+            isRunning: isRunning,
+            isRecording: recordingID != nil,
+            isModelReady: isModelReady,
+            engine: transcriptionEngine
+        )
+    }
+
+    private func cancelRecording(nextPhase: DictationPhase? = nil) {
         stopLivePreview()
         microphoneCapture?.stop()
         pipeline?.finish()
@@ -819,7 +884,7 @@ final class HoldToDictateService {
         audioBuffer = nil
         recordingID = nil
         recordingHandler(false)
-        phaseHandler(nextPhase)
+        phaseHandler(nextPhase ?? currentWorkPhase())
     }
 
     /// The selected transcribers consume committed clips, so the overlay
