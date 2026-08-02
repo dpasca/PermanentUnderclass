@@ -136,7 +136,7 @@ struct QuickDictationControlPanel: View {
                 .textSelection(.enabled)
         } else {
             Text(
-                "Keep both modifiers held while speaking; release either one to transcribe and paste into the focused app."
+                "Keep both modifiers held while speaking; release either one to transcribe and paste back into the app and field that were focused when recording began."
             )
             .foregroundStyle(.secondary)
         }

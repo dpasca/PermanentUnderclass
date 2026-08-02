@@ -260,7 +260,7 @@ struct TranscriptionPipelinePopover: View {
                         stage: "ON RELEASE · FINAL",
                         modelName: controller.refinementEngine.modelName,
                         role: "\(controller.refinementEngine.title) · full recording",
-                        detail: "Transcribes the complete clip once, then pastes the result into the focused app and saves it in history.",
+                        detail: "Transcribes the complete clip once, then returns to the app and field focused when recording began, pastes there, and saves it in history.",
                         badge: selectedLocationBadge,
                         systemImage: controller.refinementEngine.systemImage,
                         color: .green

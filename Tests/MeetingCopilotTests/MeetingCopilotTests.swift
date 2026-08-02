@@ -1010,8 +1010,8 @@ final class MeetingCopilotTests: XCTestCase {
     }
 
     func testQuickDictationCanRecordWhileEarlierTranscriptionIsPending() {
-        var state = QuickDictationWorkState()
-        state.submit(transcriptID: "first")
+        var state = QuickDictationWorkState<String>()
+        state.submit(transcriptID: "first", target: "first window")
 
         XCTAssertEqual(
             state.phase(
@@ -1032,8 +1032,11 @@ final class MeetingCopilotTests: XCTestCase {
             .recording
         )
 
-        state.submit(transcriptID: "second")
-        XCTAssertTrue(state.complete(transcriptID: "first"))
+        state.submit(transcriptID: "second", target: "second window")
+        XCTAssertEqual(
+            state.complete(transcriptID: "first"),
+            "first window"
+        )
         XCTAssertEqual(
             state.phase(
                 isRunning: true,
@@ -1043,7 +1046,10 @@ final class MeetingCopilotTests: XCTestCase {
             ),
             .transcribing
         )
-        XCTAssertTrue(state.complete(transcriptID: "second"))
+        XCTAssertEqual(
+            state.complete(transcriptID: "second"),
+            "second window"
+        )
         XCTAssertEqual(
             state.phase(
                 isRunning: true,
@@ -1056,11 +1062,27 @@ final class MeetingCopilotTests: XCTestCase {
     }
 
     func testQuickDictationWorkStateIgnoresUnknownCompletion() {
-        var state = QuickDictationWorkState()
-        state.submit(transcriptID: "active")
+        var state = QuickDictationWorkState<String>()
+        state.submit(transcriptID: "active", target: "original field")
 
-        XCTAssertFalse(state.complete(transcriptID: "stale-preview"))
+        XCTAssertNil(state.complete(transcriptID: "stale-preview"))
         XCTAssertEqual(state.pendingTranscriptionIDs, ["active"])
+    }
+
+    func testQuickDictationKeepsEachRecordingTargetUntilItsResultArrives() {
+        var state = QuickDictationWorkState<String>()
+        state.submit(transcriptID: "first", target: "mail compose field")
+        state.submit(transcriptID: "second", target: "notes window")
+
+        XCTAssertEqual(
+            state.complete(transcriptID: "second"),
+            "notes window"
+        )
+        XCTAssertEqual(
+            state.complete(transcriptID: "first"),
+            "mail compose field"
+        )
+        XCTAssertFalse(state.hasPendingTranscriptions)
     }
 
     func testGPTTranscribeConnectionAttemptHasABoundedTimeout() {

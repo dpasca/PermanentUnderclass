@@ -21,7 +21,9 @@ final class DictationSelfTestRunner {
     private var sawRecordingStop = false
     private var telemetry = TrackTelemetry()
     private var isVerifyingPaste = false
+    private let pasteInjector = PasteInjector()
     private var pasteWindow: NSWindow?
+    private var focusStealingWindow: NSWindow?
     private var isFinished = false
 
     func start() {
@@ -159,30 +161,86 @@ final class DictationSelfTestRunner {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak textView] in
             guard let self, !self.isFinished, let textView else { return }
-            do {
-                try PasteInjector.paste(marker)
-            } catch {
-                self.finish(success: false, message: "Paste injection failed: \(error.localizedDescription)")
+            guard let target = QuickDictationPasteTarget.capture() else {
+                self.finish(
+                    success: false,
+                    message: "Could not capture the original paste target."
+                )
                 return
             }
 
-            // PasteInjector restores the original clipboard after 600 ms.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self, weak textView] in
-                guard let self, !self.isFinished, let textView else { return }
-                let pasted = textView.string == marker
-                self.pasteWindow?.orderOut(nil)
-                guard pasted else {
-                    self.finish(
-                        success: false,
-                        message: "Command-V was posted, but the focused field did not receive the text."
-                    )
+            let distractionView = NSTextView(
+                frame: NSRect(x: 0, y: 0, width: 320, height: 80)
+            )
+            distractionView.string = ""
+            let distractionWindow = NSWindow(
+                contentRect: NSRect(
+                    x: -10_000,
+                    y: -10_000,
+                    width: 320,
+                    height: 80
+                ),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            distractionWindow.alphaValue = 0.01
+            distractionWindow.contentView = distractionView
+            self.focusStealingWindow = distractionWindow
+            distractionWindow.makeKeyAndOrderFront(nil)
+            distractionWindow.makeFirstResponder(distractionView)
+
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + 0.1
+            ) { [weak self, weak textView, weak distractionView] in
+                guard
+                    let self,
+                    !self.isFinished,
+                    let textView,
+                    let distractionView
+                else {
                     return
                 }
-                self.finish(
-                    success: true,
-                    message: "model=ready shortcut=press+release "
-                        + "microphone_packets=\(self.telemetry.packets) paste=verified"
-                )
+                self.pasteInjector.paste(marker, into: target) { [weak self] result in
+                    guard let self, !self.isFinished else { return }
+                    if case let .failure(error) = result {
+                        self.finish(
+                            success: false,
+                            message: "Targeted paste injection failed: \(error.localizedDescription)"
+                        )
+                        return
+                    }
+
+                    // PasteInjector restores the original clipboard after 600 ms.
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + 0.75
+                    ) { [weak self, weak textView, weak distractionView] in
+                        guard
+                            let self,
+                            !self.isFinished,
+                            let textView,
+                            let distractionView
+                        else {
+                            return
+                        }
+                        guard
+                            textView.string == marker,
+                            distractionView.string.isEmpty
+                        else {
+                            self.finish(
+                                success: false,
+                                message: "The paste did not return to the originally focused field."
+                            )
+                            return
+                        }
+                        self.finish(
+                            success: true,
+                            message: "model=ready shortcut=press+release "
+                                + "microphone_packets=\(self.telemetry.packets) "
+                                + "paste_target=restored"
+                        )
+                    }
+                }
             }
         }
     }
@@ -233,6 +291,9 @@ final class DictationSelfTestRunner {
 
         // Never leave synthetic modifier state or an active capture behind.
         postShortcut(isDown: false)
+        pasteInjector.cancel()
+        pasteWindow?.orderOut(nil)
+        focusStealingWindow?.orderOut(nil)
         service?.disable()
         service = nil
         log("RESULT \(success ? "PASS" : "FAIL") \(message)")

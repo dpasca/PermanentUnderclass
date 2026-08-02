@@ -53,7 +53,10 @@ struct ModifierHoldState {
 }
 
 final class ModifierHoldMonitor {
-    typealias SignalHandler = (ModifierHoldSignal) -> Void
+    typealias SignalHandler = (
+        _ signal: ModifierHoldSignal,
+        _ focusedApplication: NSRunningApplication?
+    ) -> Void
 
     static let diagnosticEventTag: Int64 = 0x4D_43_44_54
     private static let logger = Logger(
@@ -164,11 +167,17 @@ final class ModifierHoldMonitor {
             signal = nil
         }
         if let signal {
+            // Capture the receiving app in the event-tap turn itself. The
+            // handler runs on the next main-queue turn, by which time another
+            // process may already have taken focus.
+            let focusedApplication = signal == .pressed
+                ? NSWorkspace.shared.frontmostApplication
+                : nil
             Self.logger.notice(
                 "shortcut_signal=\(String(describing: signal), privacy: .public) flags=\(event.flags.rawValue, privacy: .public)"
             )
-            DispatchQueue.main.async { [signalHandler] in
-                signalHandler(signal)
+            DispatchQueue.main.async { [signalHandler, focusedApplication] in
+                signalHandler(signal, focusedApplication)
             }
         }
         return Unmanaged.passUnretained(event)
@@ -258,24 +267,28 @@ struct QuickDictationReconnectPolicy {
     }
 }
 
-struct QuickDictationWorkState {
-    private(set) var pendingTranscriptionIDs: Set<String> = []
+struct QuickDictationWorkState<Target> {
+    private var targetsByTranscriptionID: [String: Target] = [:]
 
-    var hasPendingTranscriptions: Bool {
-        !pendingTranscriptionIDs.isEmpty
+    var pendingTranscriptionIDs: Set<String> {
+        Set(targetsByTranscriptionID.keys)
     }
 
-    mutating func submit(transcriptID: String) {
-        pendingTranscriptionIDs.insert(transcriptID)
+    var hasPendingTranscriptions: Bool {
+        !targetsByTranscriptionID.isEmpty
+    }
+
+    mutating func submit(transcriptID: String, target: Target) {
+        targetsByTranscriptionID[transcriptID] = target
     }
 
     @discardableResult
-    mutating func complete(transcriptID: String) -> Bool {
-        pendingTranscriptionIDs.remove(transcriptID) != nil
+    mutating func complete(transcriptID: String) -> Target? {
+        targetsByTranscriptionID.removeValue(forKey: transcriptID)
     }
 
     mutating func reset() {
-        pendingTranscriptionIDs.removeAll()
+        targetsByTranscriptionID.removeAll()
     }
 
     func phase(
@@ -327,15 +340,17 @@ final class HoldToDictateService {
     private let transcriptionEngine: TranscriptRefinementEngine
     private let apiKey: String
 
-    private lazy var monitor = ModifierHoldMonitor { [weak self] signal in
-        self?.handle(signal)
+    private lazy var monitor = ModifierHoldMonitor { [weak self] signal, application in
+        self?.handle(signal, initialApplication: application)
     }
     private var microphoneCapture: CaptureSessionMicrophoneCapture?
     private var pipeline: AudioTrackPipeline?
     private var audioBuffer: LockedAudioBuffer?
     private var recordingID: UUID?
+    private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
-    private var workState = QuickDictationWorkState()
+    private var workState = QuickDictationWorkState<QuickDictationPasteTarget>()
+    private let pasteInjector = PasteInjector()
     private var activeLivePreviewID: String?
     private var livePreviewWorkItem: DispatchWorkItem?
     private var lastLivePreviewByteCount = 0
@@ -442,6 +457,7 @@ final class HoldToDictateService {
         monitor.stop()
         stopLivePreview()
         cancelRecording(nextPhase: .off)
+        pasteInjector.cancel()
         transcriber?.disconnect()
         transcriber = nil
         workState.reset()
@@ -635,10 +651,13 @@ final class HoldToDictateService {
         connectTranscriber(generation: nextGeneration)
     }
 
-    private func handle(_ signal: ModifierHoldSignal) {
+    private func handle(
+        _ signal: ModifierHoldSignal,
+        initialApplication: NSRunningApplication?
+    ) {
         switch signal {
         case .pressed:
-            startRecording()
+            startRecording(initialApplication: initialApplication)
         case .released:
             finishRecording()
         case .cancelled:
@@ -646,7 +665,9 @@ final class HoldToDictateService {
         }
     }
 
-    private func startRecording() {
+    private func startRecording(
+        initialApplication: NSRunningApplication?
+    ) {
         guard isRunning, recordingID == nil else { return }
         guard isModelReady else {
             if transcriptionEngine == .openAITranscribe,
@@ -660,6 +681,22 @@ final class HoldToDictateService {
         guard canRecord() else {
             phaseHandler(.failed("Quick Dictation is unavailable while meeting capture is active."))
             return
+        }
+        let pasteTarget: QuickDictationPasteTarget?
+        if transcribesAfterRecording {
+            guard
+                let capturedTarget = QuickDictationPasteTarget.capture(
+                    initialApplication: initialApplication
+                )
+            else {
+                phaseHandler(
+                    .failed("Quick Dictation could not identify the focused app that should receive the text.")
+                )
+                return
+            }
+            pasteTarget = capturedTarget
+        } else {
+            pasteTarget = nil
         }
 
         let currentRecordingID = UUID()
@@ -676,6 +713,7 @@ final class HoldToDictateService {
         let capture = CaptureSessionMicrophoneCapture()
 
         recordingID = currentRecordingID
+        recordingTarget = pasteTarget
         audioBuffer = buffer
         self.pipeline = pipeline
         microphoneCapture = capture
@@ -727,11 +765,13 @@ final class HoldToDictateService {
         let capture = microphoneCapture
         let pipeline = pipeline
         let buffer = audioBuffer
+        let pasteTarget = recordingTarget
 
         microphoneCapture = nil
         self.pipeline = nil
         audioBuffer = nil
         self.recordingID = nil
+        recordingTarget = nil
         capture?.stop()
         pipeline?.finish()
         stopLivePreview()
@@ -763,7 +803,13 @@ final class HoldToDictateService {
             phaseHandler(.failed("The selected Quick Dictation model is unavailable."))
             return
         }
-        workState.submit(transcriptID: transcriptID)
+        guard let pasteTarget else {
+            phaseHandler(
+                .failed("Quick Dictation lost the original app target before transcription began.")
+            )
+            return
+        }
+        workState.submit(transcriptID: transcriptID, target: pasteTarget)
         phaseHandler(currentWorkPhase())
         Self.logger.notice(
             "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
@@ -801,7 +847,7 @@ final class HoldToDictateService {
             return
         }
 
-        guard workState.complete(transcriptID: transcriptID) else {
+        guard let pasteTarget = workState.complete(transcriptID: transcriptID) else {
             return
         }
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -812,21 +858,30 @@ final class HoldToDictateService {
             )
             return
         }
-        do {
-            try PasteInjector.paste(result)
-            Self.logger.notice(
-                "transcription_completed characters=\(result.count, privacy: .public)"
-            )
-            resultHandler(result)
-            if recordingID == nil {
-                phaseHandler(currentWorkPhase())
+        pasteInjector.paste(result, into: pasteTarget) { [weak self] pasteResult in
+            guard
+                let self,
+                self.generation == generation,
+                self.isRunning
+            else {
+                return
             }
-        } catch {
-            Self.logger.error(
-                "paste_failed error=\(error.localizedDescription, privacy: .public)"
-            )
-            resultHandler(result)
-            publishTranscriptionFailure(error.localizedDescription)
+            switch pasteResult {
+            case .success:
+                Self.logger.notice(
+                    "transcription_completed characters=\(result.count, privacy: .public)"
+                )
+                self.resultHandler(result)
+                if self.recordingID == nil {
+                    self.phaseHandler(self.currentWorkPhase())
+                }
+            case let .failure(error):
+                Self.logger.error(
+                    "paste_failed error=\(error.localizedDescription, privacy: .public)"
+                )
+                self.resultHandler(result)
+                self.publishTranscriptionFailure(error.localizedDescription)
+            }
         }
     }
 
@@ -847,7 +902,7 @@ final class HoldToDictateService {
             return
         }
 
-        guard workState.complete(transcriptID: transcriptID) else {
+        guard workState.complete(transcriptID: transcriptID) != nil else {
             return
         }
         Self.logger.error(
@@ -883,6 +938,7 @@ final class HoldToDictateService {
         pipeline = nil
         audioBuffer = nil
         recordingID = nil
+        recordingTarget = nil
         recordingHandler(false)
         phaseHandler(nextPhase ?? currentWorkPhase())
     }
@@ -1030,22 +1086,347 @@ private final class LockedAudioBuffer: @unchecked Sendable {
     }
 }
 
-enum PasteInjector {
-    static func paste(_ text: String) throws {
+/// The application, window, and keyboard-focused control that were active when
+/// a Quick Dictation recording began.
+final class QuickDictationPasteTarget {
+    private let runningApplication: NSRunningApplication
+    private let accessibilityApplication: AXUIElement
+    private let window: AXUIElement?
+    private let focusedElement: AXUIElement?
+
+    var applicationName: String {
+        runningApplication.localizedName
+            ?? runningApplication.bundleIdentifier
+            ?? "the original application"
+    }
+
+    var isAvailable: Bool {
+        !runningApplication.isTerminated
+    }
+
+    private init(
+        runningApplication: NSRunningApplication,
+        accessibilityApplication: AXUIElement,
+        window: AXUIElement?,
+        focusedElement: AXUIElement?
+    ) {
+        self.runningApplication = runningApplication
+        self.accessibilityApplication = accessibilityApplication
+        self.window = window
+        self.focusedElement = focusedElement
+    }
+
+    static func capture(
+        initialApplication: NSRunningApplication? = nil
+    ) -> QuickDictationPasteTarget? {
+        let systemWideElement = AXUIElementCreateSystemWide()
+        let accessibilityApplication: AXUIElement
+        let runningApplication: NSRunningApplication
+
+        if let initialApplication {
+            runningApplication = initialApplication
+            accessibilityApplication = AXUIElementCreateApplication(
+                initialApplication.processIdentifier
+            )
+        } else if let focusedApplication = copyElement(
+            attribute: kAXFocusedApplicationAttribute as CFString,
+            from: systemWideElement
+        ) {
+            var processIdentifier: pid_t = 0
+            guard
+                AXUIElementGetPid(focusedApplication, &processIdentifier) == .success,
+                let application = NSRunningApplication(
+                    processIdentifier: processIdentifier
+                )
+            else {
+                return nil
+            }
+            accessibilityApplication = focusedApplication
+            runningApplication = application
+        } else {
+            guard let application = NSWorkspace.shared.frontmostApplication else {
+                return nil
+            }
+            runningApplication = application
+            accessibilityApplication = AXUIElementCreateApplication(
+                application.processIdentifier
+            )
+        }
+
+        return QuickDictationPasteTarget(
+            runningApplication: runningApplication,
+            accessibilityApplication: accessibilityApplication,
+            window: copyElement(
+                attribute: kAXFocusedWindowAttribute as CFString,
+                from: accessibilityApplication
+            ),
+            focusedElement: copyElement(
+                attribute: kAXFocusedUIElementAttribute as CFString,
+                from: accessibilityApplication
+            )
+        )
+    }
+
+    /// Requests activation and reasserts the exact window and control. The
+    /// activation itself can complete on a later run-loop turn, so callers may
+    /// need to retry this method briefly before posting keyboard events.
+    @discardableResult
+    func restoreFocus() -> Bool {
+        guard isAvailable else { return false }
+
+        _ = runningApplication.activate(options: [])
+        _ = AXUIElementSetAttributeValue(
+            accessibilityApplication,
+            kAXFrontmostAttribute as CFString,
+            kCFBooleanTrue
+        )
+        if let window {
+            _ = AXUIElementSetAttributeValue(
+                accessibilityApplication,
+                kAXMainWindowAttribute as CFString,
+                window
+            )
+            _ = AXUIElementSetAttributeValue(
+                accessibilityApplication,
+                kAXFocusedWindowAttribute as CFString,
+                window
+            )
+            _ = AXUIElementSetAttributeValue(
+                window,
+                kAXMainAttribute as CFString,
+                kCFBooleanTrue
+            )
+            _ = AXUIElementSetAttributeValue(
+                window,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
+            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        }
+        if let focusedElement {
+            _ = AXUIElementSetAttributeValue(
+                focusedElement,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
+        }
+        return hasFocus
+    }
+
+    private var hasFocus: Bool {
+        let systemWideElement = AXUIElementCreateSystemWide()
+        guard
+            let currentApplication = Self.copyElement(
+                attribute: kAXFocusedApplicationAttribute as CFString,
+                from: systemWideElement
+            )
+        else {
+            return false
+        }
+        var currentProcessIdentifier: pid_t = 0
+        guard
+            AXUIElementGetPid(
+                currentApplication,
+                &currentProcessIdentifier
+            ) == .success,
+            currentProcessIdentifier == runningApplication.processIdentifier
+        else {
+            return false
+        }
+
+        if let window {
+            guard
+                let currentWindow = Self.copyElement(
+                    attribute: kAXFocusedWindowAttribute as CFString,
+                    from: accessibilityApplication
+                ),
+                CFEqual(currentWindow, window)
+            else {
+                return false
+            }
+        }
+        if let focusedElement {
+            guard
+                let currentElement = Self.copyElement(
+                    attribute: kAXFocusedUIElementAttribute as CFString,
+                    from: accessibilityApplication
+                ),
+                CFEqual(currentElement, focusedElement)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func copyElement(
+        attribute: CFString,
+        from element: AXUIElement
+    ) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+            let value,
+            CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        return (value as! AXUIElement)
+    }
+}
+
+/// Serializes focus restoration, paste events, and clipboard restoration so
+/// multiple completed dictations cannot redirect or overwrite one another.
+final class PasteInjector {
+    typealias Completion = (Result<Void, Error>) -> Void
+
+    private struct Request {
+        let text: String
+        let target: QuickDictationPasteTarget
+        let completion: Completion
+    }
+
+    private static let focusRetryDelay = DispatchTimeInterval.milliseconds(50)
+    private static let maximumFocusAttempts = 20
+    private static let clipboardRestoreDelay = DispatchTimeInterval.milliseconds(600)
+    private static let pasteSerializationDelay = DispatchTimeInterval.milliseconds(650)
+
+    private var queuedRequests: [Request] = []
+    private var activeRequest: Request?
+    private var scheduledWorkItem: DispatchWorkItem?
+    private var generation = UUID()
+
+    func paste(
+        _ text: String,
+        into target: QuickDictationPasteTarget,
+        completion: @escaping Completion
+    ) {
+        queuedRequests.append(
+            Request(text: text, target: target, completion: completion)
+        )
+        processNextRequest()
+    }
+
+    func cancel() {
+        generation = UUID()
+        scheduledWorkItem?.cancel()
+        scheduledWorkItem = nil
+        queuedRequests.removeAll()
+        activeRequest = nil
+    }
+
+    private func processNextRequest() {
+        guard activeRequest == nil, !queuedRequests.isEmpty else { return }
+        activeRequest = queuedRequests.removeFirst()
+        attemptFocus(
+            remainingAttempts: Self.maximumFocusAttempts,
+            generation: generation
+        )
+    }
+
+    private func attemptFocus(
+        remainingAttempts: Int,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            let request = activeRequest
+        else {
+            return
+        }
+        guard request.target.isAvailable else {
+            finishActiveRequest(
+                with: .failure(
+                    MeetingCopilotError.audio(
+                        "\(request.target.applicationName) closed before Quick Dictation could paste the text."
+                    )
+                ),
+                generation: generation
+            )
+            return
+        }
+        if request.target.restoreFocus() {
+            do {
+                try Self.performPaste(request.text)
+                finishActiveRequest(
+                    with: .success(()),
+                    delayBeforeNextRequest: Self.pasteSerializationDelay,
+                    generation: generation
+                )
+            } catch {
+                finishActiveRequest(
+                    with: .failure(error),
+                    generation: generation
+                )
+            }
+            return
+        }
+        guard remainingAttempts > 1 else {
+            finishActiveRequest(
+                with: .failure(
+                    MeetingCopilotError.audio(
+                        "Quick Dictation could not return to the original field in \(request.target.applicationName), so no text was pasted."
+                    )
+                ),
+                generation: generation
+            )
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.scheduledWorkItem = nil
+            self?.attemptFocus(
+                remainingAttempts: remainingAttempts - 1,
+                generation: generation
+            )
+        }
+        scheduledWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.focusRetryDelay,
+            execute: workItem
+        )
+    }
+
+    private func finishActiveRequest(
+        with result: Result<Void, Error>,
+        delayBeforeNextRequest: DispatchTimeInterval? = nil,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            let request = activeRequest
+        else {
+            return
+        }
+
+        if let delayBeforeNextRequest {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, self.generation == generation else { return }
+                self.scheduledWorkItem = nil
+                self.activeRequest = nil
+                self.processNextRequest()
+            }
+            scheduledWorkItem = workItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + delayBeforeNextRequest,
+                execute: workItem
+            )
+            request.completion(result)
+            return
+        }
+
+        activeRequest = nil
+        request.completion(result)
+        guard self.generation == generation else { return }
+        processNextRequest()
+    }
+
+    private static func performPaste(_ text: String) throws {
         guard AXIsProcessTrusted() else {
             throw MeetingCopilotError.audio(
                 "Accessibility permission is required to paste dictation into another app."
             )
         }
-
-        let pasteboard = NSPasteboard.general
-        let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
-            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
-        }
-        let insertedChangeCount = pasteboard.changeCount
-
         guard
             let keyDown = CGEvent(
                 keyboardEventSource: nil,
@@ -1062,15 +1443,34 @@ enum PasteInjector {
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
+
+        let pasteboard = NSPasteboard.general
+        let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            restore(items: previousItems, to: pasteboard)
+            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+        }
+        let insertedChangeCount = pasteboard.changeCount
+
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(600)) {
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + clipboardRestoreDelay
+        ) {
             guard pasteboard.changeCount == insertedChangeCount else { return }
-            pasteboard.clearContents()
-            if !previousItems.isEmpty {
-                pasteboard.writeObjects(previousItems)
-            }
+            restore(items: previousItems, to: pasteboard)
+        }
+    }
+
+    private static func restore(
+        items: [NSPasteboardItem],
+        to pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
         }
     }
 

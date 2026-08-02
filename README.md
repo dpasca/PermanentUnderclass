@@ -135,11 +135,13 @@ prompted. Accessibility allows both global shortcut monitoring and automatic
 paste. macOS may require PUnderclass to be quit and reopened after this
 permission changes. Hold the exact modifier-only chord **Command + Option**
 while speaking and release either modifier to transcribe with the currently
-selected final-pass and Quick Dictation model, then paste into the focused
-application. Local Parakeet keeps dictation audio on this Mac; GPT-Transcribe
-sends the captured dictation audio to OpenAI. Pressing another keyboard key
-while the chord is down cancels the recording, so normal Command-Option
-shortcuts do not become dictations.
+selected final-pass and Quick Dictation model. Quick Dictation captures the
+focused application, window, and control when recording begins, then returns
+to that original target before pasting—even if another process takes focus
+while recording or transcribing. Local Parakeet keeps dictation audio on this
+Mac; GPT-Transcribe sends the captured dictation audio to OpenAI. Pressing
+another keyboard key while the chord is down cancels the recording, so normal
+Command-Option shortcuts do not become dictations.
 
 By default, Quick Dictation shows a small, non-activating preview near the
 bottom of the current screen. It displays the live microphone waveform while
@@ -155,9 +157,11 @@ feedback. The pipeline's **Screen preview (optional stage)** switch directly
 controls the snapshot stage and overlay. Turning it off does not disable the
 required final transcription that runs when the shortcut is released.
 
-The focused application's clipboard is used briefly for the paste and restored
-afterward if it was not changed by another application. Quick Dictation is
-paused while meeting capture is using the microphone.
+The system clipboard is used briefly for the paste and restored afterward if it
+was not changed by another application. If the original target closes or can no
+longer be focused, Quick Dictation saves the completed text in history instead
+of pasting it into a different window. Quick Dictation is paused while meeting
+capture is using the microphone.
 
 The main window's **Quick Dictation** tab owns the shortcut, permission,
 preview, live microphone, and history controls. Completed text appears there in
@@ -230,8 +234,8 @@ The proof of concept includes:
   and speaker pull-down buttons list compatible devices and change the current
   macOS default input or output without opening System Settings.
 - Optional global hold-to-dictate using the selected final transcription model,
-  modifier-only Command-Option monitoring, and automatic paste into the focused
-  application.
+  modifier-only Command-Option monitoring, and automatic paste into the app,
+  window, and control that were focused when recording began.
 
 Audio and meeting transcripts remain in memory. Quick Dictation final text is
 the exception: it is stored locally for the history tab until the user erases
