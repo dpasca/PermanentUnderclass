@@ -56,21 +56,25 @@ meeting context**, choose a reference folder, then press **Open Live
 Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
 local references, OpenAI request, usage tracking, event ordering, and replay;
 the browser receives only transcript text, reference status, citations, and a
-presentation-ready comparison answer.
+presentation-ready comparison outline.
 
 The first real behavior is **Answer Mirror**. An 800 ms pause in the
 interviewer's audio can trigger a structured `gpt-5.6-luna` Responses API
-answer from the current partial transcript before the 3 second final-turn
+outline from the current partial transcript before the 3 second final-turn
 boundary. The final interviewer turn remains a fallback, and an exact
 partial/final duplicate is coalesced rather than billed twice. Candidate
-speech stays visible in the transcript but does not replace the model answer,
+speech stays visible in the transcript but does not replace the model outline,
 so the two can be compared in real time. Speaker identity provides this
 routing; there is no keyword or regex gate.
-Indexed local files are preferred when they support the answer. If they do not,
-the model may still draft an approach-oriented first-person answer from the
-live discussion and general model knowledge without claiming unverified
-personal experience. The display prefixes it with **NO LOCAL SUPPORTING
-MATERIAL**.
+Each result is three to five labeled, telegraphic beats rather than polished
+prose, using plain conversational wording instead of corporate interview
+language. This makes it possible to compare substance without reading a script. The
+newest card appears first and the host retains three previous cards in the
+snapshot, preserving the stack across browser refreshes and reconnects.
+Indexed local files are preferred when they support the outline. If they do
+not, the model may still draft an approach-oriented outline from the live
+discussion and general model knowledge without claiming unverified personal
+experience. The display prefixes it with **NO LOCAL SUPPORTING MATERIAL**.
 The stable behavior/reference prefix uses an explicit prompt-cache breakpoint
 and cache key, while recent transcript stays in the volatile suffix. Assistant
 token and cache usage is counted separately; it is not folded into the dollar
@@ -93,11 +97,13 @@ pairing boundary, and follow-up durability work are in
 
 The Meeting tab includes a **Document-grounded replay**. Choose a reference
 folder and wait for indexing, then press **Run Interview**. On the first run for
-a reference revision, the host uses a structured model call to create three
-question/answer exchanges grounded in exact indexed paths. Two macOS voices
-speak the resulting six turns while the host streams their known words as
+a reference revision, the host uses a structured model call to create five
+question/answer exchanges grounded in exact indexed paths. The final two probe
+CUDA in depth when that subject is supported by the references; otherwise they
+use the deepest supported technical topic. Two macOS voices speak the resulting
+ten turns while the host streams their known words as
 partial transcript events. After every interviewer question, the real Answer
-Mirror independently drafts the model answer shown beside the generated
+Mirror independently drafts the shorthand model outline shown beside the generated
 candidate response. The companion reports both model time and end-to-end
 `transcript → card` time.
 

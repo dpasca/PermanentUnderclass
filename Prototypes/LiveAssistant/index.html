@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0d1314">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23172021'/%3E%3Cpath d='M9 20v-7m7 9V8m7 12v-5' stroke='%23c9f970' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <title>PUnderclass Live Assistant — interactive prototype</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <div class="prototype-ribbon" id="modeRibbon">Connecting to PUnderclass host…</div>
@@ -62,13 +62,13 @@
             </span>
             <span>
               <strong id="behaviorName">Answer mirror</strong>
-              <small id="behaviorDetail">Draft a first-person answer when the interviewer pauses</small>
+              <small id="behaviorDetail">Show 3–5 shorthand beats when the interviewer pauses</small>
             </span>
             <span class="host-lock" aria-hidden="true">MAC</span>
           </div>
           <label class="switch-row">
             <span>
-              <strong>Live model answers</strong>
+              <strong>Live answer outlines</strong>
               <small id="assistantState">Waiting for the interviewer</small>
             </span>
             <input id="assistantToggle" type="checkbox" checked>
@@ -119,7 +119,7 @@
               Next mock answer
               <kbd>N</kbd>
             </button>
-            <button class="icon-button" id="dismissButton" type="button" aria-label="Dismiss current model answer" title="Dismiss current model answer">
+            <button class="icon-button" id="dismissButton" type="button" aria-label="Dismiss current answer outline" title="Dismiss current answer outline">
               <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg>
             </button>
           </div>
@@ -144,39 +144,52 @@
           <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
         </div>
 
-        <article class="answer-card" id="answerCard">
-          <header>
-            <div class="answer-title">
-              <span class="spark-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z"/></svg>
-              </span>
-              <span><small>MODEL ANSWER TO COMPARE</small><strong id="answerLead">A plausible first-person response</strong></span>
+        <div class="answer-stack" id="answerStack">
+          <article class="answer-card" id="answerCard">
+            <header>
+              <div class="answer-title">
+                <span class="spark-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z"/></svg>
+                </span>
+                <span><small>NEWEST ANSWER OUTLINE</small><strong id="answerLead">Key beats · not a script</strong></span>
+              </div>
+              <div class="answer-actions">
+                <button class="icon-button pin-button" id="pinButton" type="button" aria-label="Pin answer outline" title="Pin answer outline">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-.8 4 2.3 2.2v1.3H11V17l-1 1-1-1v-6.5H5.5V9.2L7.8 7 7 3z"/></svg>
+                </button>
+                <button class="icon-button" id="copyButton" type="button" aria-label="Copy answer outline" title="Copy answer outline">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 011-1h9v1"/></svg>
+                </button>
+              </div>
+            </header>
+            <div class="grounding-notice" id="groundingNotice" role="note" hidden>
+              <span aria-hidden="true">!</span>
+              <span><strong>NO LOCAL SUPPORTING MATERIAL</strong><small>This outline is approach-oriented and does not claim unverified personal experience.</small></span>
             </div>
-            <div class="answer-actions">
-              <button class="icon-button pin-button" id="pinButton" type="button" aria-label="Pin answer" title="Pin answer">
-                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-.8 4 2.3 2.2v1.3H11V17l-1 1-1-1v-6.5H5.5V9.2L7.8 7 7 3z"/></svg>
-              </button>
-              <button class="icon-button" id="copyButton" type="button" aria-label="Copy answer" title="Copy answer">
-                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M4.5 13.5h-1v-9a1 1 0 011-1h9v1"/></svg>
-              </button>
-            </div>
-          </header>
-          <div class="grounding-notice" id="groundingNotice" role="note" hidden>
-            <span aria-hidden="true">!</span>
-            <span><strong>NO LOCAL SUPPORTING MATERIAL</strong><small>This comparison answer is approach-oriented and does not claim unverified personal experience.</small></span>
-          </div>
-          <p class="model-answer" id="modelAnswer">I would start by identifying the customer-facing symptom and measuring the slow path end to end. In one relevant project, I traced latency across service boundaries, isolated the repeated lookup, and changed the request path so the work was batched. I then validated the improvement under representative load and added a latency budget so the regression could not quietly return.</p>
-          <footer>
-            <span id="groundingLabel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded in 2 Mac-hosted references</span>
-            <button class="source-citation compact-citation" id="sourceCitation" type="button"><span class="file-icon note">TXT</span><span id="sourceCitationText">Checkout latency · project brief</span></button>
-            <span class="generation-time" id="generationTime">generated in 640 ms</span>
-          </footer>
-        </article>
+            <div class="answer-question"><small>QUESTION</small><strong id="answerQuestion">Tell me about a time you improved the performance of a critical system.</strong></div>
+            <ul class="answer-beats" id="answerBeats">
+              <li><strong>What I saw</strong><span>The checkout path was just too slow</span></li>
+              <li><strong>What I tried</strong><span>Profiled it; found the same inventory lookup repeating</span></li>
+              <li><strong>Check</strong><span>Replayed traffic and watched p95, not just averages</span></li>
+              <li><strong>Afterward</strong><span>Put a latency alert on that path</span></li>
+            </ul>
+            <footer>
+              <span id="groundingLabel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded in 2 Mac-hosted references</span>
+              <button class="source-citation compact-citation" id="sourceCitation" type="button"><span class="file-icon note">TXT</span><span id="sourceCitationText">Checkout latency · project brief</span></button>
+              <span class="generation-time" id="generationTime">generated in 640 ms</span>
+            </footer>
+          </article>
+
+          <section class="answer-history" id="answerHistory" aria-label="Previous answer outlines" hidden>
+            <header><span>PREVIOUS ANSWER OUTLINES</span><small id="answerHistoryCount">0 kept</small></header>
+            <div id="answerHistoryCards"></div>
+          </section>
+        </div>
 
         <div class="paused-state" id="pausedState" hidden>
           <span class="pause-symbol" id="emptyStateSymbol">AI</span>
           <h2 id="emptyStateTitle">Waiting for the interviewer</h2>
-          <p id="emptyStateDetail">A model answer appears after the interviewer pauses; your own answer remains in the transcript for comparison.</p>
+          <p id="emptyStateDetail">A shorthand answer outline appears after the interviewer pauses; your own answer remains in the transcript for comparison.</p>
         </div>
       </section>
 
@@ -212,12 +225,12 @@
           <article class="turn interviewer active-turn">
             <header><span class="speaker-avatar">AM</span><strong>Alex Morgan</strong><time>10:24:42</time></header>
             <p id="transcriptQuestion">That’s relevant to this team. Tell me about a time you improved the performance of a critical system.</p>
-            <div class="turn-match"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l1.4 5.1L16.5 8.5l-5.1 1.4L10 15l-1.4-5.1-5.1-1.4 5.1-1.4L10 2z"/></svg> Model answer shown</div>
+            <div class="turn-match"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l1.4 5.1L16.5 8.5l-5.1 1.4L10 15l-1.4-5.1-5.1-1.4 5.1-1.4L10 2z"/></svg> Model outline shown</div>
           </article>
 
           <article class="turn partial-turn" id="partialTurn">
             <header><span class="speaker-avatar">YOU</span><strong>You</strong><time>now</time></header>
-            <p><span id="partialWords">The best example is probably our checkout path...</span><span class="partial-caret"></span></p>
+            <p><span id="partialWords">Yeah—the clearest one is probably our checkout path...</span><span class="partial-caret"></span></p>
           </article>
         </div>
 
@@ -265,8 +278,8 @@
     <span><strong id="recoveryTitle">Connection interrupted</strong><small id="recoveryDetail">The Mac keeps recording. Reconnecting…</small></span>
   </div>
 
-  <div class="toast" id="toast" role="status" aria-live="polite" hidden>Copied answer</div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>Copied answer outline</div>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

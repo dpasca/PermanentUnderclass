@@ -18,13 +18,69 @@ const eventNames = [
 const mockScenarios = [
   {
     question: "“Tell me about a time you improved the performance of a critical system.”",
-    answer: "I would begin with the customer impact and the measurement that exposed it. In the checkout project, I traced the slow path across services, isolated a repeated inventory lookup, and changed the request path so that work was batched. I validated the improvement under peak-like load, then added a latency budget and monitoring so the same regression could not return unnoticed.",
+    candidateStart: "Yeah—the clearest one is probably our checkout path...",
+    beats: [
+      { label: "What I saw", point: "The checkout path was just too slow" },
+      { label: "What I tried", point: "Profiled it; found the same inventory lookup repeating" },
+      { label: "Check", point: "Replayed traffic and watched p95, not just averages" },
+      { label: "Afterward", point: "Put a latency alert on that path" }
+    ],
     citation: "Projects/Checkout.md"
   },
   {
     question: "“What did you learn when that launch did not go to plan?”",
-    answer: "I learned that I had optimized the rollout plan for the happy path and underestimated how slowly older clients would drain. I paused the release, helped add the compatibility layer, and kept the affected teams on one incident timeline. Since then, I have required explicit rollback criteria and a rehearsed mixed-version test before migrations begin.",
+    candidateStart: "Honestly, that first rollout was messier than I expected...",
+    beats: [
+      { label: "What broke", point: "I had really planned for the happy path" },
+      { label: "First move", point: "Paused the rollout and added a compatibility layer" },
+      { label: "Messy bit", point: "Two teams were debugging from different timelines" },
+      { label: "Now", point: "I rehearse rollback and mixed-version cases first" }
+    ],
     citation: "Projects/Rollout-retro.md"
+  },
+  {
+    question: "“How do you decide when a low-latency system is ready to ship?”",
+    candidateStart: "I start with what delay a person can actually feel...",
+    beats: [
+      { label: "Start", point: "Pick a delay people can actually notice" },
+      { label: "Break it down", point: "Time capture, model, and display separately" },
+      { label: "Try bad cases", point: "Replay awkward pauses and broken connections" },
+      { label: "Good enough", point: "Fast, but not constantly firing at the wrong time" }
+    ],
+    citation: "Projects/Audio-assistant.md"
+  },
+  {
+    question: "“What tradeoff did you make to keep the assistant useful?”",
+    candidateStart: "The awkward part was answering early without jumping in too soon...",
+    beats: [
+      { label: "The tension", point: "Answer early, or wait for cleaner transcript" },
+      { label: "What I chose", point: "Start after a stable 800 ms pause" },
+      { label: "Fallback", point: "Run again when the final turn arrives" },
+      { label: "Still checking", point: "Whether early cards are useful, not merely fast" }
+    ],
+    citation: "Architecture/Latency-harness.md"
+  },
+  {
+    question: "“A CUDA kernel shows high occupancy but still runs slowly. What would you look at next?”",
+    candidateStart: "I would not trust occupancy by itself; I would open Nsight Compute first...",
+    beats: [
+      { label: "First thought", point: "High occupancy does not mean useful work" },
+      { label: "Memory", point: "Check coalescing, cache misses, and DRAM throughput" },
+      { label: "Warp stalls", point: "Use Nsight Compute; see what warps wait on" },
+      { label: "Then code", point: "Look for divergence, spills, and expensive instructions" }
+    ],
+    citation: "Notes/CUDA-performance.md"
+  },
+  {
+    question: "“Why might a tiled CUDA matrix multiply get slower when you increase the tile size?”",
+    candidateStart: "My first guess is that the larger tile pushed resource use too far...",
+    beats: [
+      { label: "Likely cost", point: "The bigger tile uses more shared memory" },
+      { label: "Registers", point: "Pressure may spill values into local memory" },
+      { label: "Residency", point: "Fewer blocks can stay active on each SM" },
+      { label: "I would test", point: "Compare tile sizes and bank conflicts in Nsight" }
+    ],
+    citation: "Notes/CUDA-kernels.md"
   }
 ];
 
@@ -39,7 +95,12 @@ const state = {
   lastHeartbeatAt: 0,
   resyncing: false,
   currentCitationPath: "",
+  currentSuggestion: null,
+  visibleSuggestions: [],
   mockIndex: 0,
+  mockGeneration: 0,
+  mockHistory: [],
+  renderedSuggestionID: null,
   mockElapsedSeconds: 24 * 60 + 18
 };
 
@@ -125,7 +186,7 @@ function renderInferenceStatus() {
       "off",
       "PREVIEW ONLY · INFERENCE OFF",
       "No inference is happening",
-      "These answers are canned examples. Start the Mac app for live comparison."
+      "These outlines are canned examples. Start the Mac app for live comparison."
     );
     return;
   }
@@ -135,7 +196,7 @@ function renderInferenceStatus() {
       "connecting",
       "VERIFYING INFERENCE",
       "Checking the Mac host…",
-      "Model answers will not be labeled live until the host state is verified."
+      "Model outlines will not be labeled live until the host state is verified."
     );
     return;
   }
@@ -155,7 +216,7 @@ function renderInferenceStatus() {
     setInferenceStatus(
       "working",
       "BUILDING SYNTHETIC INTERVIEW",
-      "Generating three exchanges from the indexed references",
+      "Generating five exchanges from the indexed references",
       session.status || "The replay will begin as soon as the document-grounded scenario is ready.",
       checkCount
     );
@@ -218,9 +279,9 @@ function renderInferenceStatus() {
     setInferenceStatus(
       hasLocalReferences ? "working" : "general",
       hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
-      hasLocalReferences ? `Drafting a comparison answer from the latest ${trigger}` : `Drafting an approach-oriented answer from the latest ${trigger}`,
+      hasLocalReferences ? `Drafting comparison beats from the latest ${trigger}` : `Drafting an approach-oriented outline from the latest ${trigger}`,
       hasLocalReferences
-        ? `${timing} Only interviewer speech triggers a new model answer.`
+        ? `${timing} Only interviewer speech triggers a new answer outline.`
         : `${timing} The result will be clearly labeled and should be verified.`,
       checkCount
     );
@@ -236,10 +297,10 @@ function renderInferenceStatus() {
         ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
         : "INFERENCE ACTIVE · LOCALLY GROUNDED",
       usesGeneralKnowledge
-        ? "Comparison answer ready without local support"
-        : "A locally grounded comparison answer is ready",
+        ? "Comparison outline ready without local support"
+        : "A locally grounded answer outline is ready",
       usesGeneralKnowledge
-        ? "The answer is approach-oriented and avoids unverified personal claims."
+        ? "The outline is approach-oriented and avoids unverified personal claims."
         : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · compare it with your transcript on the right.`,
       checkCount
     );
@@ -268,7 +329,7 @@ function renderInferenceStatus() {
       "armed",
       "INFERENCE ARMED · LOCAL REFERENCES READY",
       "Waiting for the interviewer",
-      "An interviewer pause can produce a grounded first-person answer; your own speech stays in the transcript.",
+      "An interviewer pause can produce grounded shorthand beats; your own speech stays in the transcript.",
       checkCount
     );
   } else {
@@ -276,7 +337,7 @@ function renderInferenceStatus() {
       "general",
       "INFERENCE ARMED · GENERAL KNOWLEDGE",
       "No local supporting material",
-      "Interviewer moments can still produce clearly labeled approach-oriented answers.",
+      "Interviewer moments can still produce clearly labeled approach-oriented outlines.",
       checkCount
     );
   }
@@ -309,7 +370,7 @@ function renderSession(session) {
   const synthetic = session.source === "syntheticInterview";
   $("#behaviorName").textContent = session.behaviorName || "Answer mirror";
   $("#behaviorDetail").textContent = session.behaviorDetail
-    || "Draft a first-person answer when the interviewer pauses";
+    || "Show 3–5 shorthand beats when the interviewer pauses";
   $("#assistantToggle").checked = !session.suggestionsPaused;
   $("#assistantState").textContent = session.isPreparingSyntheticInterview
     ? "Generating interview from references"
@@ -427,44 +488,185 @@ function renderTranscript(transcript) {
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
 }
 
-function setGuidanceVisibility(visible) {
-  $("#listeningStrip").hidden = !visible;
-  $("#answerCard").hidden = !visible;
+function answerHistoryFor(assistant) {
+  const history = Array.isArray(assistant?.suggestionHistory)
+    ? [...assistant.suggestionHistory]
+    : [];
+  const current = assistant?.suggestion;
+  if (current && !history.some((item) => item.id === current.id)) {
+    history.unshift(current);
+  }
+  const unique = [];
+  history.forEach((item) => {
+    if (item && !unique.some((candidate) => candidate.id === item.id)) {
+      unique.push(item);
+    }
+  });
+  return unique.slice(0, 4);
+}
+
+function replaceAnswerBeats(container, beats) {
+  container.replaceChildren();
+  (beats || []).forEach((beat) => {
+    const item = document.createElement("li");
+    const label = document.createElement("strong");
+    label.textContent = beat.label;
+    const point = document.createElement("span");
+    point.textContent = beat.point;
+    item.append(label, point);
+    container.append(item);
+  });
+}
+
+function outlineText(suggestion) {
+  if (!suggestion) return "";
+  return [
+    suggestion.question,
+    ...(suggestion.beats || []).map((beat) => `${beat.label} — ${beat.point}`)
+  ].join("\n");
+}
+
+function groundingText(suggestion) {
+  const citationCount = (suggestion.citations || []).length;
+  const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
+  return usesGeneralKnowledge
+    ? "Approach-oriented · no personal claims added"
+    : `Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
+}
+
+function generationTimingText(suggestion) {
+  const modelTime = Number(suggestion.generationMilliseconds || 0).toLocaleString();
+  const totalTime = suggestion.totalLatencyMilliseconds;
+  return Number.isFinite(totalTime)
+    ? `model ${modelTime} ms · transcript→card ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
+    : `model ${modelTime} ms`;
+}
+
+function createHistoryCard(suggestion) {
+  const card = document.createElement("article");
+  const citationCount = (suggestion.citations || []).length;
+  const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
+  card.className = `answer-card history-card${usesGeneralKnowledge ? " uses-general-knowledge" : ""}`;
+  card.dataset.suggestionId = suggestion.id;
+
+  const header = document.createElement("header");
+  const title = document.createElement("div");
+  title.className = "history-card-title";
+  const eyebrow = document.createElement("small");
+  eyebrow.textContent = "PREVIOUS OUTLINE";
+  const question = document.createElement("strong");
+  question.textContent = suggestion.question;
+  title.append(eyebrow, question);
+  const copy = document.createElement("button");
+  copy.className = "history-copy-button";
+  copy.type = "button";
+  copy.dataset.copySuggestionId = suggestion.id;
+  copy.textContent = "Copy";
+  copy.setAttribute("aria-label", "Copy previous answer outline");
+  header.append(title, copy);
+
+  const beats = document.createElement("ul");
+  beats.className = "answer-beats compact-beats";
+  replaceAnswerBeats(beats, suggestion.beats);
+
+  const footer = document.createElement("footer");
+  const grounding = document.createElement("span");
+  grounding.textContent = groundingText(suggestion);
+  footer.append(grounding);
+  const citation = suggestion.citations?.[0];
+  if (citation) {
+    const source = document.createElement("button");
+    source.className = "source-citation compact-citation";
+    source.type = "button";
+    source.dataset.citationPath = citation.path;
+    source.textContent = `${citation.label} · ${citation.path}`;
+    footer.append(source);
+  }
+  const timing = document.createElement("span");
+  timing.className = "generation-time";
+  timing.textContent = generationTimingText(suggestion);
+  footer.append(timing);
+  card.append(header, beats, footer);
+  return card;
+}
+
+function renderSuggestionStack(assistant) {
+  const suggestions = answerHistoryFor(assistant);
+  const current = assistant?.suggestion || suggestions[0] || null;
+  state.visibleSuggestions = suggestions;
+  state.currentSuggestion = current;
+  $("#answerStack").hidden = !current;
+  if (!current) {
+    $("#answerHistory").hidden = true;
+    return null;
+  }
+
+  $("#answerQuestion").textContent = current.question;
+  $("#answerLead").textContent = "Key beats · not a script";
+  replaceAnswerBeats($("#answerBeats"), current.beats);
+  const citationCount = (current.citations || []).length;
+  const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
+  $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
+  $("#groundingNotice").hidden = !usesGeneralKnowledge;
+  $("#groundingLabel").lastChild.textContent = ` ${groundingText(current)}`;
+  $("#generationTime").textContent = generationTimingText(current);
+  const citation = current.citations?.[0];
+  state.currentCitationPath = citation?.path || "";
+  $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
+  $("#sourceCitation").hidden = !citation;
+  $("#pinButton").classList.toggle("is-active", assistant?.pinnedSuggestionID === current.id);
+
+  const previous = suggestions.filter((item) => item.id !== current.id);
+  $("#answerHistory").hidden = previous.length === 0;
+  $("#answerHistoryCount").textContent = `${previous.length} previous · newest first`;
+  const historyCards = $("#answerHistoryCards");
+  historyCards.replaceChildren(...previous.map(createHistoryCard));
+
+  if (state.renderedSuggestionID !== current.id) {
+    state.renderedSuggestionID = current.id;
+    $("#answerCard").animate(
+      [{ opacity: 0.45, transform: "translateY(-5px)" }, { opacity: 1, transform: "translateY(0)" }],
+      { duration: 260, easing: "ease-out" }
+    );
+  }
+  return current;
 }
 
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
   renderInferenceStatus();
   const empty = $("#pausedState");
+  const suggestion = renderSuggestionStack(assistant);
+  $("#listeningStrip").hidden = true;
+
   if (paused) {
-    setGuidanceVisibility(false);
-    empty.hidden = false;
-    $("#emptyStateSymbol").textContent = "Ⅱ";
-    $("#emptyStateTitle").textContent = "Live model answers paused";
-    $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume when you want comparison answers again.";
+    empty.hidden = Boolean(suggestion);
+    if (!suggestion) {
+      $("#emptyStateSymbol").textContent = "Ⅱ";
+      $("#emptyStateTitle").textContent = "Live answer outlines paused";
+      $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume when you want comparison outlines again.";
+    }
     return;
   }
 
   if (assistant?.phase === "working") {
-    setGuidanceVisibility(false);
     $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = `Drafting an answer from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
+    $("#questionText").textContent = `Drafting shorthand beats from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
     empty.hidden = true;
-    $("#assistantState").textContent = "Drafting a model answer";
+    $("#assistantState").textContent = "Drafting an answer outline";
     return;
   }
 
   if (assistant?.phase === "failed" || assistant?.phase === "unavailable") {
-    setGuidanceVisibility(false);
-    empty.hidden = false;
-    $("#emptyStateSymbol").textContent = "!";
-    $("#emptyStateTitle").textContent = assistant.phase === "unavailable" ? "Assistant setup needed" : "Assistant needs attention";
-    $("#emptyStateDetail").textContent = assistant.lastError || "The transcript continues while the assistant recovers.";
+    empty.hidden = Boolean(suggestion);
+    if (!suggestion) {
+      $("#emptyStateSymbol").textContent = "!";
+      $("#emptyStateTitle").textContent = assistant.phase === "unavailable" ? "Assistant setup needed" : "Assistant needs attention";
+      $("#emptyStateDetail").textContent = assistant.lastError || "The transcript continues while the assistant recovers.";
+    }
     return;
   }
 
-  const suggestion = assistant?.suggestion;
   if (!suggestion) {
-    setGuidanceVisibility(false);
     empty.hidden = false;
     const session = state.snapshot?.session;
     const reference = state.snapshot?.reference;
@@ -484,41 +686,20 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
         ? "Interviewer moment checked"
         : "Waiting for the interviewer";
       $("#emptyStateDetail").textContent = checkedWithoutGuidance
-        ? "The model ran but did not have a sufficiently clear question to answer."
+        ? "The model ran but did not have a sufficiently clear question to outline."
         : hasLocalReferences
-          ? "An interviewer pause can start a grounded model answer before turn finalization."
-          : "Interviewer pauses can produce clearly labeled approach-oriented answers.";
+          ? "An interviewer pause can start a grounded answer outline before turn finalization."
+          : "Interviewer pauses can produce clearly labeled approach-oriented outlines.";
     }
     return;
   }
 
   empty.hidden = true;
-  setGuidanceVisibility(true);
-  $("#questionText").textContent = suggestion.question;
-  $("#answerLead").textContent = "A plausible first-person response";
-  $("#modelAnswer").textContent = suggestion.answer;
-  $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
-  const citationCount = (suggestion.citations || []).length;
-  const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
-  $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
-  $("#groundingNotice").hidden = !usesGeneralKnowledge;
-  $("#groundingLabel").lastChild.textContent = usesGeneralKnowledge
-    ? " Approach-oriented answer · no personal claims added"
-    : ` Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
-  const modelTime = suggestion.generationMilliseconds.toLocaleString();
-  const totalTime = suggestion.totalLatencyMilliseconds;
-  $("#generationTime").textContent = Number.isFinite(totalTime)
-    ? `model ${modelTime} ms · transcript→card ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
-    : `model ${modelTime} ms`;
-  const citation = suggestion.citations?.[0];
-  state.currentCitationPath = citation?.path || "";
-  $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
-  $("#sourceCitation").hidden = !citation;
-  $("#pinButton").classList.toggle("is-active", assistant.pinnedSuggestionID === suggestion.id);
-  $("#answerCard").animate(
-    [{ opacity: 0.45, transform: "translateY(5px)" }, { opacity: 1, transform: "translateY(0)" }],
-    { duration: 260, easing: "ease-out" }
-  );
+  if (assistant?.phase === "ready") {
+    $("#listeningStrip").hidden = false;
+    $("#questionText").textContent = suggestion.question;
+    $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
+  }
 }
 
 function renderSnapshot(snapshot) {
@@ -596,6 +777,10 @@ function applyEnvelope(envelope) {
     case "assistant.suggestion":
       state.snapshot.assistant.phase = "ready";
       state.snapshot.assistant.suggestion = payload;
+      state.snapshot.assistant.suggestionHistory = [
+        payload,
+        ...(state.snapshot.assistant.suggestionHistory || []).filter((item) => item.id !== payload.id)
+      ].slice(0, 4);
       state.snapshot.assistant.lastError = null;
       state.snapshot.assistant.evaluatingSequence = null;
       state.snapshot.assistant.lastEvaluatedSequence = payload.basedOnSequence;
@@ -728,20 +913,42 @@ async function enterLiveMode() {
 
 function renderMockScenario(index) {
   const scenario = mockScenarios[index];
-  $("#questionText").textContent = scenario.question;
-  $("#answerLead").textContent = "A plausible first-person response";
-  $("#modelAnswer").textContent = scenario.answer;
-  $("#answerCard").classList.remove("uses-general-knowledge");
-  $("#groundingNotice").hidden = true;
-  $("#sourceCitation").hidden = false;
-  $("#sourceCitationText").textContent = scenario.citation;
-  state.currentCitationPath = scenario.citation;
-  setGuidanceVisibility(true);
-  $("#pausedState").hidden = true;
+  state.mockGeneration += 1;
+  $("#pinButton").classList.remove("is-active");
+  const suggestion = {
+    id: `mock-answer-${state.mockGeneration}`,
+    basedOnSequence: 2_487 + state.mockGeneration,
+    question: scenario.question,
+    beats: scenario.beats,
+    citations: [{ label: "Reference", path: scenario.citation }],
+    grounding: "localReferences",
+    confidence: "high",
+    generatedAt: new Date().toISOString(),
+    generationMilliseconds: 640,
+    trigger: "partialTranscript",
+    totalLatencyMilliseconds: 1_440
+  };
+  state.mockHistory = [suggestion, ...state.mockHistory].slice(0, 4);
+  $("#transcriptQuestion").textContent = scenario.question.replaceAll("“", "").replaceAll("”", "");
+  $("#partialWords").textContent = scenario.candidateStart;
+  renderMockHistory();
+}
+
+function renderMockHistory() {
+  renderAssistant({
+    phase: "ready",
+    suggestion: state.mockHistory[0] || null,
+    suggestionHistory: state.mockHistory,
+    pinnedSuggestionID: $("#pinButton").classList.contains("is-active")
+      ? state.mockHistory[0]?.id
+      : null
+  }, false);
 }
 
 function enterMockMode() {
   state.mode = "mock";
+  state.mockHistory = [];
+  state.mockGeneration = 0;
   $("#modeRibbon").textContent = "STANDALONE PREVIEW · simulated events (start the Swift app for live mode)";
   setConnectionStatus("connected", "Standalone preview", "SIMULATED");
   $("#nextMomentButton").hidden = false;
@@ -811,8 +1018,12 @@ function bindControls() {
       const result = await sendCommand(active ? "resumeSuggestions" : "pauseSuggestions");
       showToast(result.message);
       if (state.mode === "mock") {
-        if (active) renderMockScenario(state.mockIndex);
-        else renderAssistant(null, true);
+        if (active) renderMockHistory();
+        else renderAssistant({
+          phase: "ready",
+          suggestion: state.mockHistory[0] || null,
+          suggestionHistory: state.mockHistory
+        }, true);
       }
     } catch (error) {
       event.target.checked = !active;
@@ -823,7 +1034,7 @@ function bindControls() {
   $("#nextMomentButton").addEventListener("click", () => {
     state.mockIndex = (state.mockIndex + 1) % mockScenarios.length;
     renderMockScenario(state.mockIndex);
-    showToast("New simulated comparison answer");
+    showToast("New simulated answer outline");
   });
   document.addEventListener("keydown", (event) => {
     if (state.mode === "mock" && event.key.toLowerCase() === "n" && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -834,7 +1045,7 @@ function bindControls() {
   $("#pinButton").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const isPinned = button.classList.contains("is-active");
-    const suggestionID = state.snapshot?.assistant?.suggestion?.id;
+    const suggestionID = state.currentSuggestion?.id;
     try {
       const result = await sendCommand(isPinned ? "unpinSuggestion" : "pinSuggestion", suggestionID);
       if (result.applied) button.classList.toggle("is-active", !isPinned);
@@ -845,28 +1056,48 @@ function bindControls() {
   });
 
   $("#dismissButton").addEventListener("click", async () => {
-    const suggestionID = state.snapshot?.assistant?.suggestion?.id;
+    const suggestionID = state.currentSuggestion?.id;
     try {
       const result = await sendCommand("dismissSuggestion", suggestionID);
+      if (state.mode === "mock" && result.applied) {
+        state.mockHistory = state.mockHistory.filter((item) => item.id !== suggestionID);
+        renderMockHistory();
+      }
       showToast(result.message);
     } catch (error) {
       showToast(error.message);
     }
   });
 
-  $("#copyButton").addEventListener("click", async () => {
-    const answerParts = [$("#modelAnswer").textContent];
-    if ($("#answerCard").classList.contains("uses-general-knowledge")) {
-      answerParts.unshift(
-        "NO LOCAL SUPPORTING MATERIAL — This is an approach-oriented model answer and does not claim unverified personal experience."
-      );
+  async function copySuggestion(suggestion) {
+    if (!suggestion) return;
+    const answerParts = [outlineText(suggestion)];
+    if (suggestion.grounding === "generalKnowledge" || !(suggestion.citations || []).length) {
+      answerParts.unshift("NO LOCAL SUPPORTING MATERIAL — Approach-oriented outline; no unverified personal experience claimed.");
     }
-    const answer = answerParts.join("\n\n");
     try {
-      await navigator.clipboard.writeText(answer);
-      showToast("Copied answer");
+      await navigator.clipboard.writeText(answerParts.join("\n\n"));
+      showToast("Copied answer outline");
     } catch {
       showToast("Copy is unavailable in this browser");
+    }
+  }
+
+  $("#copyButton").addEventListener("click", async () => {
+    await copySuggestion(state.currentSuggestion);
+  });
+  $("#answerHistory").addEventListener("click", async (event) => {
+    const copyButton = event.target.closest("[data-copy-suggestion-id]");
+    if (copyButton) {
+      const suggestion = state.visibleSuggestions.find(
+        (item) => item.id === copyButton.dataset.copySuggestionId
+      );
+      await copySuggestion(suggestion);
+      return;
+    }
+    const citationButton = event.target.closest("[data-citation-path]");
+    if (citationButton) {
+      showToast(citationButton.dataset.citationPath);
     }
   });
   $("#sourceCitation").addEventListener("click", () => {

@@ -160,6 +160,41 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(snapshot.assistant.lastEvaluationLatencyMilliseconds, 1_700)
     }
 
+    func testAssistantKeepsNewestFourAnswersAndDismissRevealsPrevious() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        for index in 1...5 {
+            _ = await hub.assistantSuggested(
+                answerSuggestion(id: "answer-\(index)", sequence: index)
+            )
+        }
+
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-5")
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.id),
+            ["answer-5", "answer-4", "answer-3", "answer-2"]
+        )
+
+        _ = await hub.assistantFinishedWithoutSuggestion(basedOnSequence: 6)
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-5")
+        XCTAssertEqual(snapshot.assistant.suggestionHistory.count, 4)
+
+        _ = await hub.apply(
+            command: CompanionCommandRequest(
+                type: .dismissSuggestion,
+                suggestionID: "answer-5"
+            ),
+            idempotencyKey: "dismiss-current"
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-4")
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.id),
+            ["answer-4", "answer-3", "answer-2"]
+        )
+    }
+
     func testAssistantEvaluationPolicyStartsStablePartialsBeforeFinalTurns() {
         XCTAssertEqual(
             AssistantEvaluationPolicy.delayMilliseconds(for: .partialTranscript),
@@ -181,7 +216,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertFalse(AssistantEvaluationPolicy.shouldEvaluate(speaker: .you))
     }
 
-    func testSyntheticInterviewGenerationUsesReferencesAndBuildsThreeExchanges() throws {
+    func testSyntheticInterviewGenerationUsesReferencesAndBuildsFiveExchanges() throws {
         let references = referenceSnapshot()
         let requestData = try SyntheticInterviewGeneratorClient.requestBody(
             references: references
@@ -202,13 +237,22 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(
             developerPrompt.contains("must be grounded in this local material")
         )
+        XCTAssertTrue(developerPrompt.contains("deeply technical CUDA questions"))
+        XCTAssertTrue(developerPrompt.contains("Avoid corporate language"))
+        let userContent = try XCTUnwrap(
+            input[1]["content"] as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            userContent[0]["text"] as? String,
+            "Generate the five-exchange interview now."
+        )
         let text = try XCTUnwrap(request["text"] as? [String: Any])
         let format = try XCTUnwrap(text["format"] as? [String: Any])
         let schema = try XCTUnwrap(format["schema"] as? [String: Any])
         let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
         let exchanges = try XCTUnwrap(properties["exchanges"] as? [String: Any])
-        XCTAssertEqual(exchanges["minItems"] as? Int, 3)
-        XCTAssertEqual(exchanges["maxItems"] as? Int, 3)
+        XCTAssertEqual(exchanges["minItems"] as? Int, 5)
+        XCTAssertEqual(exchanges["maxItems"] as? Int, 5)
 
         let generatedAt = Date(timeIntervalSince1970: 200)
         let generation = try SyntheticInterviewGeneratorClient.parseResponse(
@@ -222,9 +266,10 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(scenario.referenceDocumentCount, 1)
         XCTAssertEqual(scenario.generatedAt, generatedAt)
         XCTAssertEqual(scenario.finalizationDelay, 3)
-        XCTAssertEqual(scenario.turns.count, 6)
+        XCTAssertEqual(scenario.turns.count, 10)
         XCTAssertEqual(scenario.turns.map(\.speaker), [
-            .other, .you, .other, .you, .other, .you
+            .other, .you, .other, .you, .other, .you, .other, .you,
+            .other, .you
         ])
         XCTAssertGreaterThan(
             scenario.turns[0].pauseAfterSpeech,
@@ -257,6 +302,20 @@ final class CompanionTests: XCTestCase {
             generation.scenario
         )
         XCTAssertNil(try store.load(referenceRevision: "changed-revision"))
+
+        let outdatedScenario = SyntheticInterviewScenario(
+            generationVersion: SyntheticInterviewScenario.generationVersion - 1,
+            name: generation.scenario.name,
+            referenceRevision: generation.scenario.referenceRevision,
+            referenceDocumentCount: generation.scenario.referenceDocumentCount,
+            generatedAt: generation.scenario.generatedAt,
+            finalizationDelay: generation.scenario.finalizationDelay,
+            turns: generation.scenario.turns
+        )
+        try store.save(outdatedScenario)
+        XCTAssertNil(
+            try store.load(referenceRevision: generation.scenario.referenceRevision)
+        )
     }
 
     func testSyntheticInterviewRejectsUnknownReferencePaths() throws {
@@ -301,7 +360,17 @@ final class CompanionTests: XCTestCase {
     func testWingmanRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
         XCTAssertTrue(
             InterviewWingmanClient.behaviorInstructions.contains(
-                "one coherent first-person answer"
+                "Use telegraphic fragments"
+            )
+        )
+        XCTAssertTrue(
+            InterviewWingmanClient.behaviorInstructions.contains(
+                "plain, conversational wording"
+            )
+        )
+        XCTAssertTrue(
+            InterviewWingmanClient.behaviorInstructions.contains(
+                "Avoid resume language"
             )
         )
         let plan = AssistantPromptPlan(
@@ -315,7 +384,7 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
         XCTAssertEqual(root["store"] as? Bool, false)
-        XCTAssertEqual(root["max_output_tokens"] as? Int, 500)
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
         XCTAssertEqual(reasoning["effort"], "none")
@@ -346,6 +415,9 @@ final class CompanionTests: XCTestCase {
             grounding["enum"] as? [String],
             ["localReferences", "generalKnowledge"]
         )
+        let beats = try XCTUnwrap(properties["beats"] as? [String: Any])
+        XCTAssertEqual(beats["minItems"] as? Int, 3)
+        XCTAssertEqual(beats["maxItems"] as? Int, 5)
     }
 
     func testWingmanResponseParsesUsageAndRejectsUnknownCitationPaths() throws {
@@ -353,7 +425,11 @@ final class CompanionTests: XCTestCase {
             "shouldShow": true,
             "grounding": "localReferences",
             "question": "What did you improve?",
-            "answer": "I traced the checkout path, removed an N+1 lookup, and validated a 41 percent p95 reduction under representative load.",
+            "beats": [
+                ["label": "Context", "point": "Checkout latency hurting conversion"],
+                ["label": "My move", "point": "Traced path; removed N+1 lookup"],
+                ["label": "Proof", "point": "41 percent lower p95 under load"]
+            ],
             "citations": [
                 ["label": "Project brief", "path": "Projects/Checkout.md"],
                 ["label": "Invented", "path": "not-indexed.txt"]
@@ -391,8 +467,22 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(generation.usage.reasoningTokens, 32)
         XCTAssertEqual(generation.suggestion?.basedOnSequence, 19)
         XCTAssertEqual(generation.suggestion?.grounding, .localReferences)
-        XCTAssertTrue(
-            generation.suggestion?.answer.contains("41 percent") == true
+        XCTAssertEqual(
+            generation.suggestion?.beats,
+            [
+                CompanionAnswerBeat(
+                    label: "Context",
+                    point: "Checkout latency hurting conversion"
+                ),
+                CompanionAnswerBeat(
+                    label: "My move",
+                    point: "Traced path; removed N+1 lookup"
+                ),
+                CompanionAnswerBeat(
+                    label: "Proof",
+                    point: "41 percent lower p95 under load"
+                )
+            ]
         )
         XCTAssertEqual(
             generation.suggestion?.citations,
@@ -430,6 +520,36 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(fallback.suggestion?.basedOnSequence, 20)
         XCTAssertEqual(fallback.suggestion?.grounding, .generalKnowledge)
         XCTAssertEqual(fallback.suggestion?.citations, [])
+
+        var tooShortOutput = generalOutput
+        let allBeats = try XCTUnwrap(
+            output["beats"] as? [[String: String]]
+        )
+        tooShortOutput["beats"] = Array(allBeats.prefix(2))
+        let tooShortData = try JSONSerialization.data(
+            withJSONObject: tooShortOutput
+        )
+        let tooShortText = try XCTUnwrap(
+            String(data: tooShortData, encoding: .utf8)
+        )
+        var tooShortResponse = response
+        tooShortResponse["output"] = [[
+            "type": "message",
+            "content": [["type": "output_text", "text": tooShortText]]
+        ]]
+        let invalidData = try JSONSerialization.data(
+            withJSONObject: tooShortResponse
+        )
+        XCTAssertThrowsError(
+            try InterviewWingmanClient.parseResponse(
+                invalidData,
+                allowedReferencePaths: [],
+                basedOnSequence: 21,
+                generationMilliseconds: 280
+            )
+        ) { error in
+            XCTAssertEqual(error as? InterviewWingmanError, .invalidResponse)
+        }
     }
 
     func testSnapshotAndCommandRoutesUseTheRealProtocolModels() async throws {
@@ -508,6 +628,30 @@ final class CompanionTests: XCTestCase {
         )
     }
 
+    private func answerSuggestion(
+        id: String,
+        sequence: Int
+    ) -> CompanionAssistantSuggestion {
+        CompanionAssistantSuggestion(
+            id: id,
+            basedOnSequence: sequence,
+            question: "Question \(sequence)?",
+            beats: [
+                CompanionAnswerBeat(label: "Context", point: "Relevant setting"),
+                CompanionAnswerBeat(label: "My move", point: "Specific action"),
+                CompanionAnswerBeat(label: "Proof", point: "Measured result")
+            ],
+            citations: [],
+            grounding: .generalKnowledge,
+            confidence: .high,
+            generatedAt: Date(timeIntervalSince1970: Double(sequence)),
+            generationMilliseconds: 250,
+            trigger: .partialTranscript,
+            triggeredAt: Date(timeIntervalSince1970: Double(sequence)),
+            totalLatencyMilliseconds: 1_050
+        )
+    }
+
     private func syntheticInterviewResponseData(
         sourcePaths: [String] = ["Resume.md"]
     ) throws -> Data {
@@ -527,6 +671,16 @@ final class CompanionTests: XCTestCase {
                 [
                     "question": "What tradeoff mattered most?",
                     "candidateAnswer": "I balanced response speed against stable, trustworthy output.",
+                    "sourcePaths": sourcePaths
+                ],
+                [
+                    "question": "Why can a high-occupancy CUDA kernel still be slow?",
+                    "candidateAnswer": "I would inspect memory throughput and warp stalls before treating occupancy as the answer.",
+                    "sourcePaths": sourcePaths
+                ],
+                [
+                    "question": "What can go wrong when a CUDA tile gets larger?",
+                    "candidateAnswer": "I would check shared-memory use, register spills, resident blocks, and bank conflicts.",
                     "sourcePaths": sourcePaths
                 ]
             ]

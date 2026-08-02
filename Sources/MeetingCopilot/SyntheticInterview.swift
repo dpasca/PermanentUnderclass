@@ -10,7 +10,7 @@ struct SyntheticInterviewTurn: Codable, Equatable, Sendable {
 
 struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
     static let launchArgument = "--synthetic-interview"
-    static let generationVersion = 1
+    static let generationVersion = 2
 
     let generationVersion: Int
     let name: String

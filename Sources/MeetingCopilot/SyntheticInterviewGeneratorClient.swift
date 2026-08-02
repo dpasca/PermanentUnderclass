@@ -45,7 +45,11 @@ struct SyntheticInterviewGeneratorClient: Sendable {
     static let endpoint = InterviewWingmanClient.endpoint
 
     static let behaviorInstructions = """
-    You create a three-question mock interview from the supplied local reference documents. Choose distinct, progressively deeper questions that an interviewer could ask about the roles, projects, skills, claims, or requirements in those documents. For each question, write one natural first-person candidate answer of roughly 45 to 75 words so an observer can compare it with a separate live model answer. Every personal claim, metric, employer, date, responsibility, and result must be supported by the cited documents. When the documents describe a role or subject rather than the candidate's history, write an honest approach-oriented or hypothetical answer instead of inventing experience. Do not mention the documents in the spoken question or answer. Return exact indexed paths in sourcePaths and use at least one path for every exchange.
+    You create a five-question mock interview from the supplied local reference documents. Choose distinct, progressively deeper questions that an interviewer could ask about the roles, projects, skills, claims, or requirements in those documents. Make the final two questions deeply technical CUDA questions when the references support CUDA as a subject. Probe concrete execution or performance-debugging details such as occupancy versus stalls, memory coalescing, divergence, shared-memory bank conflicts, register pressure, synchronization, or profiler evidence. If the references do not support CUDA as a subject, use the deepest technical topic they do support instead of inventing a CUDA background.
+
+    For each question, write one natural first-person candidate answer of roughly 35 to 60 words so an observer can compare it with a separate live model outline. Make it sound like a capable person thinking aloud, not a memorized ideal answer. Use plain, common wording and concrete details. A candid caveat, first check, uncertainty, or failed attempt is welcome when the references support it. Avoid corporate language, resume polish, tidy STAR arcs, and a perfect lesson at the end of every answer.
+
+    Every personal claim, metric, employer, date, responsibility, and result must be supported by the cited documents. When the documents describe a role or subject rather than the candidate's history, write an honest approach-oriented or hypothetical answer instead of inventing experience. Do not mention the documents in the spoken question or answer. Return exact indexed paths in sourcePaths and use at least one path for every exchange.
     """
 
     private let session: URLSession
@@ -113,7 +117,7 @@ struct SyntheticInterviewGeneratorClient: Sendable {
                     "role": "user",
                     "content": [[
                         "type": "input_text",
-                        "text": "Generate the three-exchange interview now."
+                        "text": "Generate the five-exchange interview now."
                     ]]
                 ]
             ],
@@ -177,7 +181,7 @@ struct SyntheticInterviewGeneratorClient: Sendable {
             SyntheticInterviewGeneratorOutput.self,
             from: outputData
         )
-        guard output.exchanges.count == 3 else {
+        guard output.exchanges.count == 5 else {
             throw SyntheticInterviewGeneratorError.invalidResponse
         }
 
@@ -292,8 +296,8 @@ struct SyntheticInterviewGeneratorClient: Sendable {
             "title": ["type": "string"],
             "exchanges": [
                 "type": "array",
-                "minItems": 3,
-                "maxItems": 3,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": [
                     "type": "object",
                     "additionalProperties": false,

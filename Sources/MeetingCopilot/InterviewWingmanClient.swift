@@ -38,7 +38,7 @@ private struct InterviewWingmanOutput: Decodable {
     let shouldShow: Bool
     let grounding: CompanionSuggestionGrounding
     let question: String
-    let answer: String
+    let beats: [CompanionAnswerBeat]
     let citations: [CompanionCitation]
     let confidence: CompanionSuggestionConfidence
 }
@@ -48,7 +48,13 @@ struct InterviewWingmanClient: Sendable {
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
 
     static let behaviorInstructions = """
-    You are Answer Mirror, a low-latency interview companion. The current response target is an interviewer moment captured after a speech pause or at turn finalization. When it contains a sufficiently clear question or prompt, write one coherent first-person answer the candidate could plausibly say and set shouldShow to true. Make the answer direct, natural aloud, and easy to compare with the candidate's own live transcript: normally 60 to 100 words in three to five short sentences. Treat a partial as potentially incomplete and do not invent its missing ending. Prefer the supplied local reference documents for personal and context-specific facts. When they support the answer, set grounding to localReferences and cite every document used by its exact path. When they do not support the question, you may still give an approach-oriented answer using general model knowledge, set grounding to generalKnowledge, return no citations, and avoid claiming the candidate actually performed work not established in the references. Never invent achievements, metrics, employers, dates, or responsibilities. Set shouldShow to false when the interviewer moment is not clear enough to answer. Return the interviewer question in question and the speakable comparison response in answer.
+    You are Answer Mirror, a low-latency interview companion. The current response target is an interviewer moment captured after a speech pause or at turn finalization. When it contains a sufficiently clear question or prompt, return a compact answer outline the candidate can compare with their own live response and set shouldShow to true.
+
+    Return three to five beats, ordered as they would be spoken. Each beat has a one-to-three-word label and one terse point of roughly four to twelve words. Use telegraphic fragments, not polished sentences or prose; omit filler, transitions, and marginal wording.
+
+    Make the outline feel like rough notes a capable person could actually say under pressure, not an idealized interview answer. Use plain, conversational wording and concrete technical nouns and verbs. Avoid resume language, corporate abstractions, slogans, tidy STAR-style arcs, and polished moral-of-the-story lessons. Do not make every beat sound optimized or impressive. When it is honest and relevant, include uncertainty, a caveat, a failed first try, or what the candidate would check next; do not invent flaws merely to sound casual. Prefer ordinary labels such as Short answer, What I saw, What I tried, Check, Catch, Result, Not sure, and Next step. Choose labels that fit the question instead of always forcing Context, My move, Proof, and Learning.
+
+    Treat a partial as potentially incomplete and do not invent its missing ending. Prefer the supplied local reference documents for personal and context-specific facts. When they support the outline, set grounding to localReferences and cite every document used by its exact path. When they do not support the question, you may still give an approach-oriented outline using general model knowledge, set grounding to generalKnowledge, return no citations, and avoid claiming the candidate actually performed work not established in the references. Never invent achievements, metrics, employers, dates, or responsibilities. Set shouldShow to false when the interviewer moment is not clear enough to answer. Return the interviewer question in question and the shorthand outline in beats.
     """
 
     private let session: URLSession
@@ -109,7 +115,7 @@ struct InterviewWingmanClient: Sendable {
         let request: [String: Any] = [
             "model": model,
             "store": false,
-            "max_output_tokens": 500,
+            "max_output_tokens": 350,
             "reasoning": ["effort": "none"],
             "input": [
                 [
@@ -197,10 +203,17 @@ struct InterviewWingmanClient: Sendable {
         let question = output.question.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        let answer = output.answer.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard !question.isEmpty, !answer.isEmpty else {
+        let beats = output.beats.map {
+            CompanionAnswerBeat(
+                label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
+                point: $0.point.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        guard
+            !question.isEmpty,
+            (3...5).contains(beats.count),
+            beats.allSatisfy({ !$0.label.isEmpty && !$0.point.isEmpty })
+        else {
             throw InterviewWingmanError.invalidResponse
         }
 
@@ -219,7 +232,7 @@ struct InterviewWingmanClient: Sendable {
             id: UUID().uuidString.lowercased(),
             basedOnSequence: basedOnSequence,
             question: question,
-            answer: answer,
+            beats: beats,
             citations: citations,
             grounding: output.grounding,
             confidence: output.confidence,
@@ -273,7 +286,20 @@ struct InterviewWingmanClient: Sendable {
                 "enum": ["localReferences", "generalKnowledge"]
             ],
             "question": ["type": "string"],
-            "answer": ["type": "string"],
+            "beats": [
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 5,
+                "items": [
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": [
+                        "label": ["type": "string"],
+                        "point": ["type": "string"]
+                    ],
+                    "required": ["label", "point"]
+                ]
+            ],
             "citations": [
                 "type": "array",
                 "items": [
@@ -295,7 +321,7 @@ struct InterviewWingmanClient: Sendable {
             "shouldShow",
             "grounding",
             "question",
-            "answer",
+            "beats",
             "citations",
             "confidence"
         ]
