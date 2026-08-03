@@ -200,6 +200,20 @@ show the current download/load phase and elapsed time. This warmup does not gate
 the selected cloud transcriber, and all local callers share the same in-flight
 preparation.
 
+## Headless mode
+
+Press the global shortcut **Control + Command + H** to enter headless
+mode. PUnderclass hides all of its windows, including the Quick Dictation
+preview, and removes itself from both the Dock and the application switcher.
+Capture, transcription, Quick Dictation, and the Live Assistant host continue
+running.
+
+Press the same shortcut again to restore the main window and Dock icon. The
+shortcut is registered independently of Quick Dictation and does not require
+Accessibility permission. There is deliberately no menu-bar fallback while
+headless; if the shortcut becomes unavailable, quit PUnderclass from Activity
+Monitor and relaunch it.
+
 ## Current scope
 
 The proof of concept includes:

@@ -342,8 +342,23 @@ final class QuickDictationOverlayController {
     private var state = QuickDictationPreviewState()
     private var dismissWorkItem: DispatchWorkItem?
     private var backgroundDismissWorkItem: DispatchWorkItem?
+    private var headlessModeObserver: NSObjectProtocol?
     private var isEnabled = true
+    private var isSuppressed = false
     private var visibilityGeneration = UUID()
+
+    init() {
+        headlessModeObserver = NotificationCenter.default.addObserver(
+            forName: .headlessModeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let isHeadless = HeadlessModeNotification.isHeadless(
+                notification
+            ) else { return }
+            self?.setSuppressed(isHeadless)
+        }
+    }
 
     private lazy var panel: NSPanel = {
         let panel = QuickDictationOverlayPanel(
@@ -378,6 +393,16 @@ final class QuickDictationOverlayController {
     func setEnabled(_ enabled: Bool) {
         isEnabled = enabled
         guard !enabled else { return }
+        dismissImmediately()
+    }
+
+    private func setSuppressed(_ suppressed: Bool) {
+        isSuppressed = suppressed
+        guard suppressed else { return }
+        dismissImmediately()
+    }
+
+    private func dismissImmediately() {
         dismissWorkItem?.cancel()
         dismissWorkItem = nil
         backgroundDismissWorkItem?.cancel()
@@ -389,7 +414,7 @@ final class QuickDictationOverlayController {
     }
 
     func handle(phase: DictationPhase) {
-        guard isEnabled else { return }
+        guard isEnabled, !isSuppressed else { return }
         let previousContent = state.content
         state.handle(phase: phase)
         model.content = state.content
@@ -425,12 +450,16 @@ final class QuickDictationOverlayController {
     }
 
     func update(telemetry: TrackTelemetry) {
-        guard isEnabled, state.content == .listening else { return }
+        guard
+            isEnabled,
+            !isSuppressed,
+            state.content == .listening
+        else { return }
         model.waveform = telemetry.waveform
     }
 
     func update(partialTranscript: String) {
-        guard isEnabled else { return }
+        guard isEnabled, !isSuppressed else { return }
         switch state.content {
         case .listening, .transcribing:
             model.partialTranscript = partialTranscript
@@ -441,7 +470,7 @@ final class QuickDictationOverlayController {
     }
 
     func show(result: String) {
-        guard isEnabled else { return }
+        guard isEnabled, !isSuppressed else { return }
         let isBackgroundResult = state.content == .listening
         state.show(result: result)
         model.content = state.content
@@ -486,7 +515,11 @@ final class QuickDictationOverlayController {
             completionHandler: { [weak self] in
                 guard let self else { return }
                 guard self.visibilityGeneration == generation else {
-                    if self.isEnabled, self.state.isVisible {
+                    if
+                        self.isEnabled,
+                        !self.isSuppressed,
+                        self.state.isVisible
+                    {
                         self.panel.alphaValue = 1
                         self.panel.orderFrontRegardless()
                     }
@@ -546,6 +579,9 @@ final class QuickDictationOverlayController {
     }
 
     deinit {
+        if let headlessModeObserver {
+            NotificationCenter.default.removeObserver(headlessModeObserver)
+        }
         dismissWorkItem?.cancel()
         backgroundDismissWorkItem?.cancel()
         panel.orderOut(nil)

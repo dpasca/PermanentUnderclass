@@ -5,12 +5,28 @@ import XCTest
 @testable import MeetingCopilot
 
 final class MeetingCopilotTests: XCTestCase {
-    func testAppTerminatesAfterItsLastWindowCloses() {
+    func testVisibleAppTerminatesAfterItsLastWindowCloses() {
         let delegate = MeetingCopilotAppDelegate()
 
         XCTAssertTrue(
             delegate.applicationShouldTerminateAfterLastWindowClosed(.shared)
         )
+    }
+
+    func testHeadlessModeUsesDocumentedShortcut() {
+        XCTAssertEqual(
+            HeadlessModeHotKey.displayName,
+            "Control + Command + H"
+        )
+    }
+
+    func testHeadlessModeNotificationReadsState() {
+        let notification = Notification(
+            name: .headlessModeDidChange,
+            userInfo: [HeadlessModeNotification.isHeadlessKey: true]
+        )
+
+        XCTAssertEqual(HeadlessModeNotification.isHeadless(notification), true)
     }
 
     func testSpeakerLabelsAreDeterministic() {

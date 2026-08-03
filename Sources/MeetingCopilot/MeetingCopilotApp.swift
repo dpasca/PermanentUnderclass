@@ -32,8 +32,20 @@ final class MeetingCopilotApplicationModel: ObservableObject {
 final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
     private var dictationSelfTest: DictationSelfTestRunner?
     private var meetingCaptureSelfTest: MeetingCaptureSelfTestRunner?
+    private var headlessModeController: HeadlessModeController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let headlessModeController = HeadlessModeController()
+        self.headlessModeController = headlessModeController
+        do {
+            try headlessModeController.start()
+        } catch {
+            NSLog(
+                "Headless-mode shortcut unavailable: %@",
+                error.localizedDescription
+            )
+        }
+
         if DictationSelfTestRunner.isRequested {
             let runner = DictationSelfTestRunner()
             dictationSelfTest = runner
@@ -45,9 +57,20 @@ final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        headlessModeController?.stop()
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        headlessModeController?.isHeadless != true
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {
-        true
+        headlessModeController?.isHeadless != true
     }
 }
