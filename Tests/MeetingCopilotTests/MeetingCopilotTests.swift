@@ -1203,6 +1203,54 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testGPTTranscribeActiveRequestHasABoundedTimeout() {
+        XCTAssertEqual(
+            RealtimeRefinementClient.requestTimeoutSeconds,
+            30
+        )
+    }
+
+    func testGPTTranscribeRequestWatchdogExpires() {
+        let queue = DispatchQueue(
+            label: "MeetingCopilotTests.RequestWatchdog"
+        )
+        let expired = expectation(description: "Request watchdog expired")
+        let watchdog = RealtimeRefinementRequestWatchdog(
+            queue: queue,
+            timeoutSeconds: 0.02
+        )
+
+        queue.sync {
+            watchdog.start(transcriptID: "stalled-dictation") { transcriptID in
+                XCTAssertEqual(transcriptID, "stalled-dictation")
+                expired.fulfill()
+            }
+        }
+
+        wait(for: [expired], timeout: 1)
+    }
+
+    func testGPTTranscribeRequestWatchdogCanBeCancelled() {
+        let queue = DispatchQueue(
+            label: "MeetingCopilotTests.CancelledRequestWatchdog"
+        )
+        let expired = expectation(description: "Cancelled watchdog expired")
+        expired.isInverted = true
+        let watchdog = RealtimeRefinementRequestWatchdog(
+            queue: queue,
+            timeoutSeconds: 0.02
+        )
+
+        queue.sync {
+            watchdog.start(transcriptID: "completed-dictation") { _ in
+                expired.fulfill()
+            }
+            watchdog.cancel()
+        }
+
+        wait(for: [expired], timeout: 0.1)
+    }
+
     func testQuickDictationPreviewTracksCaptureAndTranscription() {
         var state = QuickDictationPreviewState()
 
