@@ -329,6 +329,7 @@ final class HoldToDictateService {
     typealias PhaseHandler = (DictationPhase) -> Void
     typealias PermissionHandler = (DictationPermissionState) -> Void
     typealias RecordingHandler = (Bool) -> Void
+    typealias MicrophoneHandler = (String) -> Void
     typealias TelemetryHandler = (TrackTelemetry) -> Void
     typealias PartialHandler = (String) -> Void
     typealias ResultHandler = (String) -> Void
@@ -344,6 +345,7 @@ final class HoldToDictateService {
     private let phaseHandler: PhaseHandler
     private let permissionHandler: PermissionHandler
     private let recordingHandler: RecordingHandler
+    private let microphoneHandler: MicrophoneHandler
     private let telemetryHandler: TelemetryHandler
     private let partialHandler: PartialHandler
     private let resultHandler: ResultHandler
@@ -381,6 +383,7 @@ final class HoldToDictateService {
         onPhase: @escaping PhaseHandler,
         onPermissions: @escaping PermissionHandler,
         onRecording: @escaping RecordingHandler,
+        onMicrophone: @escaping MicrophoneHandler = { _ in },
         onTelemetry: @escaping TelemetryHandler,
         onPartial: @escaping PartialHandler = { _ in },
         onResult: @escaping ResultHandler,
@@ -395,6 +398,7 @@ final class HoldToDictateService {
         phaseHandler = onPhase
         permissionHandler = onPermissions
         recordingHandler = onRecording
+        microphoneHandler = onMicrophone
         telemetryHandler = onTelemetry
         partialHandler = onPartial
         resultHandler = onResult
@@ -764,7 +768,10 @@ final class HoldToDictateService {
                         capture?.stop()
                         return
                     }
-                    if case let .failure(error) = result {
+                    switch result {
+                    case let .success(microphoneName):
+                        self.microphoneHandler(microphoneName)
+                    case let .failure(error):
                         self.cancelRecording(nextPhase: .failed(error.localizedDescription))
                     }
                 }

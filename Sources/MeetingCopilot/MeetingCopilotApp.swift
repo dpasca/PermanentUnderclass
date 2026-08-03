@@ -25,18 +25,34 @@ final class MeetingCopilotApplicationModel: ObservableObject {
     init() {
         let isSelfTest = DictationSelfTestRunner.isRequested
             || MeetingCaptureSelfTestRunner.isRequested
-        controller = isSelfTest ? nil : MeetingController()
+        controller = isSelfTest || !ApplicationInstanceCoordinator.shared.isPrimary
+            ? nil
+            : MeetingController()
     }
 }
 
 final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
+    private let instanceCoordinator = ApplicationInstanceCoordinator.shared
     private var dictationSelfTest: DictationSelfTestRunner?
     private var meetingCaptureSelfTest: MeetingCaptureSelfTestRunner?
     private var headlessModeController: HeadlessModeController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard instanceCoordinator.isPrimary else {
+            if !instanceCoordinator.activatePrimary() {
+                NSLog(
+                    "The existing PUnderclass instance exited during launch. Please launch again."
+                )
+            }
+            NSApplication.shared.terminate(nil)
+            return
+        }
+
         let headlessModeController = HeadlessModeController()
         self.headlessModeController = headlessModeController
+        instanceCoordinator.setReopenHandler { [weak self] in
+            self?.requestApplicationRestore()
+        }
         do {
             try headlessModeController.start()
         } catch {
@@ -58,6 +74,7 @@ final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        instanceCoordinator.stop()
         headlessModeController?.stop()
     }
 
@@ -65,12 +82,19 @@ final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        headlessModeController?.isHeadless != true
+        requestApplicationRestore()
+        return false
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {
         headlessModeController?.isHeadless != true
+    }
+
+    private func requestApplicationRestore() {
+        DispatchQueue.main.async { [weak self] in
+            self?.headlessModeController?.showApplication()
+        }
     }
 }

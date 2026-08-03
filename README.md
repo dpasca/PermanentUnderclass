@@ -214,6 +214,12 @@ Accessibility permission. There is deliberately no menu-bar fallback while
 headless; if the shortcut becomes unavailable, quit PUnderclass from Activity
 Monitor and relaunch it.
 
+Launching PUnderclass again reuses the existing process instead of starting a
+second copy. If that process is headless, relaunching restores its main window
+and Dock icon. The development run script replaces an existing build, including
+one launched from another worktree, so the requested worktree is always the one
+being tested.
+
 ## Current scope
 
 The proof of concept includes:

@@ -201,35 +201,51 @@ final class HeadlessModeController {
         }
     }
 
+    func showApplication() {
+        if isHeadless {
+            leaveHeadlessMode()
+            return
+        }
+        restoreWindows([])
+    }
+
     private func enterHeadlessMode() {
         let restorableWindows = application.windows.filter {
             $0.isVisible && $0.canBecomeMain
         }
+        windowsToRestore = restorableWindows
+        isHeadless = true
         guard application.setActivationPolicy(.accessory) else {
+            windowsToRestore = []
+            isHeadless = false
             Self.logger.error("enter_failed reason=activation_policy")
             return
         }
 
-        windowsToRestore = restorableWindows
-        isHeadless = true
         publishState()
         application.windows.forEach { $0.orderOut(nil) }
         Self.logger.notice("entered")
     }
 
     private func leaveHeadlessMode() {
-        guard application.setActivationPolicy(.regular) else {
+        let isRegular = application.activationPolicy() == .regular
+        guard isRegular || application.setActivationPolicy(.regular) else {
             Self.logger.error("leave_failed reason=activation_policy")
             return
         }
 
         isHeadless = false
         publishState()
+        let restorableWindows = windowsToRestore
+        windowsToRestore = []
+        restoreWindows(restorableWindows)
+        Self.logger.notice("left")
+    }
+
+    private func restoreWindows(_ restorableWindows: [NSWindow]) {
         application.unhide(nil)
         application.activate(ignoringOtherApps: true)
 
-        let restorableWindows = windowsToRestore
-        windowsToRestore = []
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let windows = restorableWindows.isEmpty
@@ -243,7 +259,6 @@ final class HeadlessModeController {
             }
             windows.first?.makeKeyAndOrderFront(nil)
         }
-        Self.logger.notice("left")
     }
 
     private func publishState() {

@@ -1344,12 +1344,20 @@ final class MeetingController: ObservableObject {
                     guard let self else { return }
                     self.isDictating = recording
                     if recording {
+                        self.dictationOverlay.update(
+                            microphoneName: self.microphoneName
+                        )
                         self.dictationPartialTranscript = ""
                         self.dictationTelemetry = TrackTelemetry(
                             monitoringStartedAt: Date(),
                             sourceFormat: "Starting \(self.microphoneName)…"
                         )
                     }
+                },
+                onMicrophone: { [weak self] microphoneName in
+                    self?.dictationOverlay.update(
+                        microphoneName: microphoneName
+                    )
                 },
                 onTelemetry: { [weak self] telemetry in
                     self?.dictationTelemetry = telemetry
@@ -1898,6 +1906,9 @@ final class MeetingController: ObservableObject {
         selectedInputDeviceID = device?.id
         microphoneName = device?.name ?? "No input device"
         microphoneAvailable = device != nil
+        if !isDictating {
+            dictationOverlay.update(microphoneName: microphoneName)
+        }
 
         guard previousDeviceID != device?.id, isListening, let sessionID = activeSessionID else {
             return

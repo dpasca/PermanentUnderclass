@@ -142,7 +142,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
 
     func start(
         onBuffer: @escaping BufferHandler,
-        completion: @escaping (Result<Void, Error>) -> Void
+        completion: @escaping (Result<String, Error>) -> Void
     ) {
         stateLock.lock()
         isCancelled = false
@@ -191,7 +191,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
     }
 
     private func configureAndStart(
-        completion: @escaping (Result<Void, Error>) -> Void
+        completion: @escaping (Result<String, Error>) -> Void
     ) {
         sessionQueue.async { [weak self] in
             guard let self, !self.cancelled else { return }
@@ -226,7 +226,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                     throw MeetingCopilotError.audio("The microphone capture session did not start.")
                 }
                 DispatchQueue.main.async {
-                    completion(.success(()))
+                    completion(.success(device.localizedName))
                 }
             } catch {
                 if self.session.isRunning {

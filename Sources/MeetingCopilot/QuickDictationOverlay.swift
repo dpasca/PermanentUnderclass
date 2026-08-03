@@ -73,6 +73,7 @@ private final class QuickDictationOverlayModel: ObservableObject {
     @Published var backgroundContent: QuickDictationBackgroundContent?
     @Published var waveform: [Float] = Array(repeating: 0, count: 180)
     @Published var partialTranscript = ""
+    @Published var microphoneName = "System default microphone"
 }
 
 private struct QuickDictationOverlayView: View {
@@ -111,6 +112,21 @@ private struct QuickDictationOverlayView: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if model.content == .listening {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(model.microphoneName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Microphone")
+                    .accessibilityValue(model.microphoneName)
                 }
 
                 content
@@ -313,19 +329,20 @@ private struct QuickDictationOverlayView: View {
     private var accessibilityValue: String {
         switch model.content {
         case .hidden:
-            "Hidden"
+            return "Hidden"
         case .listening:
-            model.partialTranscript.isEmpty
+            let status = model.partialTranscript.isEmpty
                 ? "Listening. Release Command and Option to transcribe."
                 : "Listening. Live transcript: \(model.partialTranscript)"
+            return "\(status) Microphone: \(model.microphoneName)."
         case .transcribing:
-            model.partialTranscript.isEmpty
+            return model.partialTranscript.isEmpty
                 ? "Transcribing the recording."
                 : "Finishing transcription. Live transcript: \(model.partialTranscript)"
         case let .result(text):
-            text
+            return text
         case let .failure(message):
-            message
+            return message
         }
     }
 }
@@ -467,6 +484,15 @@ final class QuickDictationOverlayController {
         case .hidden, .result, .failure:
             break
         }
+    }
+
+    func update(microphoneName: String) {
+        let trimmedName = microphoneName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        model.microphoneName = trimmedName.isEmpty
+            ? "Unknown microphone"
+            : trimmedName
     }
 
     func show(result: String) {

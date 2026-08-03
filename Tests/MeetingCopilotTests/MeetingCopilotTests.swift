@@ -13,6 +13,17 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testAppDelegateHandlesReopenWithoutDefaultWindowCreation() {
+        let delegate = MeetingCopilotAppDelegate()
+
+        XCTAssertFalse(
+            delegate.applicationShouldHandleReopen(
+                .shared,
+                hasVisibleWindows: false
+            )
+        )
+    }
+
     func testHeadlessModeUsesDocumentedShortcut() {
         XCTAssertEqual(
             HeadlessModeHotKey.displayName,
