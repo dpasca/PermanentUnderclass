@@ -162,6 +162,7 @@ struct QuickDictationHistoryView: View {
     @ObservedObject var controller: MeetingController
     @State private var copiedEntryID: UUID?
     @State private var isConfirmingEraseAll = false
+    @State private var recoveryPendingDeletion: QuickDictationRecoveryEntry?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -170,6 +171,12 @@ struct QuickDictationHistoryView: View {
             QuickDictationControlPanel(controller: controller)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 14)
+
+            if !controller.recoverableDictations.isEmpty {
+                recoveryPanel
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 14)
+            }
 
             if let error = controller.errorMessage {
                 errorBanner(error)
@@ -210,7 +217,9 @@ struct QuickDictationHistoryView: View {
             }
 
             Divider()
-            Text("Final dictation text is saved locally on this Mac until you erase it. Audio is not retained.")
+            Text(
+                "Final text is saved locally until erased. Audio is retained only while a dictation is pending or recoverable, then removed after its text is safely saved or when you explicitly delete it."
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,6 +236,32 @@ struct QuickDictationHistoryView: View {
             }
         } message: {
             Text("This permanently removes every saved quick dictation from this Mac.")
+        }
+        .confirmationDialog(
+            "Delete retained recording?",
+            isPresented: Binding(
+                get: { recoveryPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        recoveryPendingDeletion = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {
+                recoveryPendingDeletion = nil
+            }
+            Button("Delete Recording", role: .destructive) {
+                if let recoveryPendingDeletion {
+                    controller.deleteQuickDictation(recoveryPendingDeletion)
+                }
+                recoveryPendingDeletion = nil
+            }
+        } message: {
+            Text(
+                "This permanently removes the retained WAV. It cannot be retried after deletion."
+            )
         }
     }
 
@@ -263,6 +298,94 @@ struct QuickDictationHistoryView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
+    }
+
+    private var recoveryPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Recovery", systemImage: "waveform.badge.exclamationmark")
+                    .font(.headline)
+                Text("\(controller.recoverableDictations.count) retained")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Choose a model in the transcription picker, then retry")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(controller.recoverableDictations) { recovery in
+                Divider()
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(
+                            recovery.createdAt.formatted(
+                                date: .abbreviated,
+                                time: .standard
+                            )
+                        )
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        Text(
+                            "\(recoveryDuration(recovery)) recording · "
+                                + "\(recovery.attemptCount) failed attempt"
+                                + (recovery.attemptCount == 1 ? "" : "s")
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Text(
+                            recovery.lastError
+                                ?? "Safely retained while transcription is pending."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(
+                            recovery.lastError == nil ? Color.secondary : Color.orange
+                        )
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Retry") {
+                        controller.retryQuickDictation(recovery)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(controller.isDictationBusy)
+
+                    Button {
+                        controller.revealQuickDictation(recovery)
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Reveal the retained WAV recording in Finder")
+                    .accessibilityLabel("Reveal retained dictation recording")
+
+                    Button(role: .destructive) {
+                        recoveryPendingDeletion = recovery
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(controller.isDictationBusy)
+                    .help("Permanently delete this retained recording")
+                    .accessibilityLabel("Delete retained dictation recording")
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+    }
+
+    private func recoveryDuration(
+        _ recovery: QuickDictationRecoveryEntry
+    ) -> String {
+        let seconds = max(1, Int(recovery.audioDurationSeconds.rounded()))
+        guard seconds >= 60 else { return "\(seconds)s" }
+        return "\(seconds / 60)m \(seconds % 60)s"
     }
 
     private func historyRow(_ entry: QuickDictationHistoryEntry) -> some View {

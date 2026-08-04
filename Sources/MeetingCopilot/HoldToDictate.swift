@@ -279,6 +279,30 @@ struct QuickDictationReconnectPolicy {
     }
 }
 
+enum QuickDictationFallbackPolicy {
+    /// OpenAI remains the preferred high-accuracy result. If it has not
+    /// completed promptly, the already-warmed local model races it without
+    /// cancelling or timing out either valid transcription.
+    static let hedgeDelaySeconds: TimeInterval = 4
+}
+
+enum QuickDictationTranscriberAvailability {
+    static func isReady(
+        primaryReady: Bool,
+        engine: TranscriptRefinementEngine,
+        fallbackState: SocketState
+    ) -> Bool {
+        if primaryReady {
+            return true
+        }
+        guard engine == .openAITranscribe else { return false }
+        if case .connected = fallbackState {
+            return true
+        }
+        return false
+    }
+}
+
 struct QuickDictationWorkState<Target> {
     private var targetsByTranscriptionID: [String: Target] = [:]
 
@@ -292,6 +316,10 @@ struct QuickDictationWorkState<Target> {
 
     mutating func submit(transcriptID: String, target: Target) {
         targetsByTranscriptionID[transcriptID] = target
+    }
+
+    func value(for transcriptID: String) -> Target? {
+        targetsByTranscriptionID[transcriptID]
     }
 
     @discardableResult
@@ -325,6 +353,12 @@ struct QuickDictationWorkState<Target> {
     }
 }
 
+private struct QuickDictationPendingTranscription {
+    let pasteTarget: QuickDictationPasteTarget?
+    let recovery: QuickDictationRecoveryEntry
+    let request: RealtimeRefinementRequest
+}
+
 final class HoldToDictateService {
     typealias PhaseHandler = (DictationPhase) -> Void
     typealias PermissionHandler = (DictationPermissionState) -> Void
@@ -332,8 +366,9 @@ final class HoldToDictateService {
     typealias MicrophoneHandler = (String) -> Void
     typealias TelemetryHandler = (TrackTelemetry) -> Void
     typealias PartialHandler = (String) -> Void
-    typealias ResultHandler = (String) -> Void
+    typealias ResultHandler = (String) -> Bool
     typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
+    typealias RecoveriesHandler = ([QuickDictationRecoveryEntry]) -> Void
 
     private static let logger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
@@ -350,6 +385,8 @@ final class HoldToDictateService {
     private let partialHandler: PartialHandler
     private let resultHandler: ResultHandler
     private let usageHandler: UsageHandler
+    private let recoveriesHandler: RecoveriesHandler
+    private let recoveryStore: QuickDictationRecoveryStore
     private let transcribesAfterRecording: Bool
     private let transcriptionEngine: TranscriptRefinementEngine
     private let apiKey: String
@@ -363,7 +400,14 @@ final class HoldToDictateService {
     private var recordingID: UUID?
     private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
-    private var workState = QuickDictationWorkState<QuickDictationPasteTarget>()
+    private var fallbackTranscriber: TranscriptRefining?
+    private var fallbackTranscriberState: SocketState = .idle
+    private var fallbackTranscriptionIDs: Set<String> = []
+    private var primaryFailureMessages: [String: String] = [:]
+    private var fallbackFailureMessages: [String: String] = [:]
+    private var fallbackHedgeWorkItems: [String: DispatchWorkItem] = [:]
+    private var activeRecoveryIDs: Set<UUID> = []
+    private var workState = QuickDictationWorkState<QuickDictationPendingTranscription>()
     private var transcriptionStartUptimes: [String: UInt64] = [:]
     private let pasteInjector = PasteInjector()
     private var activeLivePreviewID: String?
@@ -389,6 +433,8 @@ final class HoldToDictateService {
         onPartial: @escaping PartialHandler = { _ in },
         onResult: @escaping ResultHandler,
         onUsage: @escaping UsageHandler = { _ in },
+        onRecoveries: @escaping RecoveriesHandler = { _ in },
+        recoveryStore: QuickDictationRecoveryStore = .applicationSupport(),
         transcriptionEngine: TranscriptRefinementEngine = .localParakeet,
         apiKey: String = "",
         transcribesAfterRecording: Bool = true
@@ -404,6 +450,8 @@ final class HoldToDictateService {
         partialHandler = onPartial
         resultHandler = onResult
         usageHandler = onUsage
+        recoveriesHandler = onRecoveries
+        self.recoveryStore = recoveryStore
         self.transcriptionEngine = transcriptionEngine
         self.apiKey = apiKey
         self.transcribesAfterRecording = transcribesAfterRecording
@@ -449,6 +497,8 @@ final class HoldToDictateService {
             reconnectWorkItem = nil
             generation = UUID()
             connectTranscriber(generation: generation)
+            connectFallbackTranscriberIfNeeded()
+            publishRecoveries()
             return true
         } catch {
             phaseHandler(.failed(error.localizedDescription))
@@ -477,6 +527,15 @@ final class HoldToDictateService {
         pasteInjector.cancel()
         transcriber?.disconnect()
         transcriber = nil
+        fallbackTranscriber?.disconnect()
+        fallbackTranscriber = nil
+        fallbackTranscriberState = .idle
+        fallbackHedgeWorkItems.values.forEach { $0.cancel() }
+        fallbackHedgeWorkItems.removeAll()
+        fallbackTranscriptionIDs.removeAll()
+        primaryFailureMessages.removeAll()
+        fallbackFailureMessages.removeAll()
+        activeRecoveryIDs.removeAll()
         workState.reset()
         transcriptionStartUptimes.removeAll()
         transcriberState = .idle
@@ -498,6 +557,76 @@ final class HoldToDictateService {
             return
         }
         scheduleLivePreview(recordingID: recordingID)
+    }
+
+    @discardableResult
+    func retryRecovery(_ recovery: QuickDictationRecoveryEntry) -> Bool {
+        guard isRunning else {
+            phaseHandler(.failed("Enable Quick Dictation before retrying this recording."))
+            return false
+        }
+        guard isAnyFinalTranscriberReady else {
+            phaseHandler(.preparing(transcriptionEngine))
+            return false
+        }
+        guard activeRecoveryIDs.insert(recovery.id).inserted else {
+            phaseHandler(.transcribing)
+            return false
+        }
+        guard let transcriber else {
+            activeRecoveryIDs.remove(recovery.id)
+            retainRecovery(
+                recovery,
+                message: "The selected Quick Dictation model is unavailable."
+            )
+            return false
+        }
+
+        let audio: Data
+        do {
+            audio = try recoveryStore.pcm16Audio(for: recovery)
+        } catch {
+            activeRecoveryIDs.remove(recovery.id)
+            retainRecovery(
+                recovery,
+                message: "The retained recording could not be read: \(error.localizedDescription)"
+            )
+            return false
+        }
+
+        let transcriptID = "dictation-recovery-\(recovery.id.uuidString)"
+        let languages = recovery.languages.isEmpty
+            ? expectedLanguages()
+            : recovery.languages
+        let request = RealtimeRefinementRequest(
+            transcriptID: transcriptID,
+            speaker: .you,
+            pcm16Audio: audio,
+            context: TranscriptionContext(
+                prompt: "",
+                keywords: [],
+                languages: languages,
+                delay: .medium
+            ),
+            recentTranscript: ""
+        )
+        workState.submit(
+            transcriptID: transcriptID,
+            target: QuickDictationPendingTranscription(
+                pasteTarget: nil,
+                recovery: recovery,
+                request: request
+            )
+        )
+        transcriptionStartUptimes[transcriptID] =
+            DispatchTime.now().uptimeNanoseconds
+        phaseHandler(currentWorkPhase())
+        Self.logger.notice(
+            "transcription_retry_started recovery_id=\(recovery.id.uuidString, privacy: .public) pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
+        )
+        transcriber.refine(request)
+        scheduleFallbackHedge(transcriptID: transcriptID)
+        return true
     }
 
     static func currentPermissions() -> DictationPermissionState {
@@ -580,6 +709,35 @@ final class HoldToDictateService {
         transcriber.connect()
     }
 
+    private func connectFallbackTranscriberIfNeeded() {
+        guard
+            transcriptionEngine == .openAITranscribe,
+            fallbackTranscriber == nil
+        else {
+            return
+        }
+        let fallback = ParakeetRefinementClient(
+            onState: { [weak self] state in
+                self?.handleFallbackTranscriberState(state)
+            },
+            onRefined: { [weak self] transcriptID, text in
+                self?.handleFallbackTranscription(
+                    transcriptID: transcriptID,
+                    text: text
+                )
+            },
+            onFailure: { [weak self] transcriptID, message in
+                self?.handleFallbackTranscriptionFailure(
+                    transcriptID: transcriptID,
+                    message: message
+                )
+            }
+        )
+        fallbackTranscriber = fallback
+        fallbackTranscriberState = .connecting
+        fallback.connect()
+    }
+
     private func handleTranscriberState(
         _ state: SocketState,
         generation: UUID
@@ -594,12 +752,16 @@ final class HoldToDictateService {
         case .idle:
             isModelReady = false
             if recordingID == nil, !workState.hasPendingTranscriptions {
-                phaseHandler(.preparing(transcriptionEngine))
+                phaseHandler(
+                    isFallbackReady ? .ready : .preparing(transcriptionEngine)
+                )
             }
         case .connecting:
             isModelReady = false
             if recordingID == nil, !workState.hasPendingTranscriptions {
-                phaseHandler(.preparing(transcriptionEngine))
+                phaseHandler(
+                    isFallbackReady ? .ready : .preparing(transcriptionEngine)
+                )
             }
         case .connected:
             reconnectWorkItem?.cancel()
@@ -610,12 +772,13 @@ final class HoldToDictateService {
             }
         case let .failed(message):
             isModelReady = false
-            if recordingID == nil {
-                phaseHandler(.failed(message))
+            if recordingID == nil, !workState.hasPendingTranscriptions {
+                phaseHandler(isFallbackReady ? .ready : .failed(message))
             } else {
                 Self.logger.error(
-                    "transcriber_failed_while_recording error=\(message, privacy: .public)"
+                    "transcriber_failed_with_active_capture_or_recovery error=\(message, privacy: .public)"
                 )
+                phaseHandler(currentWorkPhase())
             }
         }
         if let reconnectDelay {
@@ -624,6 +787,26 @@ final class HoldToDictateService {
                 generation: generation
             )
         }
+    }
+
+    private func handleFallbackTranscriberState(_ state: SocketState) {
+        fallbackTranscriberState = state
+        if case let .failed(message) = state {
+            Self.logger.error(
+                "fallback_transcriber_unavailable error=\(message, privacy: .public)"
+            )
+        }
+        guard
+            transcriptionEngine == .openAITranscribe,
+            !isModelReady,
+            recordingID == nil,
+            !workState.hasPendingTranscriptions,
+            isFallbackReady
+        else {
+            return
+        }
+        Self.logger.notice("fallback_transcriber_ready_while_cloud_unavailable")
+        phaseHandler(.ready)
     }
 
     private func scheduleTranscriberReconnect(
@@ -687,7 +870,7 @@ final class HoldToDictateService {
         initialApplication: NSRunningApplication?
     ) {
         guard isRunning, recordingID == nil else { return }
-        guard isModelReady else {
+        guard isAnyFinalTranscriberReady else {
             if transcriptionEngine == .openAITranscribe,
                transcriberState != .connecting {
                 restartTranscriber()
@@ -820,37 +1003,63 @@ final class HoldToDictateService {
 
         let languages = expectedLanguages()
         let transcriptID = "dictation-\(UUID().uuidString)"
-        guard let transcriber else {
-            phaseHandler(.failed("The selected Quick Dictation model is unavailable."))
-            return
-        }
-        guard let pasteTarget else {
+        let recovery: QuickDictationRecoveryEntry
+        do {
+            recovery = try recoveryStore.preserve(
+                pcm16Audio: audio,
+                languages: languages
+            )
+            publishRecoveries()
+            Self.logger.notice(
+                "recording_retained recovery_id=\(recovery.id.uuidString, privacy: .public)"
+            )
+        } catch {
+            Self.logger.fault(
+                "recording_retention_failed error=\(error.localizedDescription, privacy: .public)"
+            )
             phaseHandler(
-                .failed("Quick Dictation lost the original app target before transcription began.")
+                .failed(
+                    "Quick Dictation could not safely retain this recording: \(error.localizedDescription)"
+                )
             )
             return
         }
-        workState.submit(transcriptID: transcriptID, target: pasteTarget)
+        guard let transcriber else {
+            retainRecovery(
+                recovery,
+                message: "The selected Quick Dictation model is unavailable."
+            )
+            return
+        }
+        let request = RealtimeRefinementRequest(
+            transcriptID: transcriptID,
+            speaker: .you,
+            pcm16Audio: audio,
+            context: TranscriptionContext(
+                prompt: "",
+                keywords: [],
+                languages: languages,
+                delay: .medium
+            ),
+            recentTranscript: ""
+        )
+        workState.submit(
+            transcriptID: transcriptID,
+            target: QuickDictationPendingTranscription(
+                pasteTarget: pasteTarget,
+                recovery: recovery,
+                request: request
+            )
+        )
+        activeRecoveryIDs.insert(recovery.id)
         transcriptionStartUptimes[transcriptID] =
             DispatchTime.now().uptimeNanoseconds
         phaseHandler(currentWorkPhase())
         Self.logger.notice(
             "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
         )
-        transcriber.refine(
-            RealtimeRefinementRequest(
-                transcriptID: transcriptID,
-                speaker: .you,
-                pcm16Audio: audio,
-                context: TranscriptionContext(
-                    prompt: "",
-                    keywords: [],
-                    languages: languages,
-                    delay: .medium
-                ),
-                recentTranscript: ""
-            )
-        )
+        transcriber.refine(request)
+        scheduleFallbackHedge(transcriptID: transcriptID)
     }
 
     private func handleTranscription(
@@ -870,9 +1079,22 @@ final class HoldToDictateService {
             return
         }
 
-        guard let pasteTarget = workState.complete(transcriptID: transcriptID) else {
+        completeFinalTranscription(transcriptID: transcriptID, text: text)
+    }
+
+    private func completeFinalTranscription(
+        transcriptID: String,
+        text: String
+    ) {
+        guard isRunning else { return }
+        guard let pending = workState.complete(transcriptID: transcriptID) else {
             return
         }
+        activeRecoveryIDs.remove(pending.recovery.id)
+        cancelFallbackHedge(transcriptID: transcriptID)
+        fallbackTranscriptionIDs.remove(transcriptID)
+        primaryFailureMessages.removeValue(forKey: transcriptID)
+        fallbackFailureMessages.removeValue(forKey: transcriptID)
         if let latencyMilliseconds = takeTranscriptionLatencyMilliseconds(
             transcriptID: transcriptID
         ) {
@@ -883,25 +1105,39 @@ final class HoldToDictateService {
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else {
             Self.logger.error("transcription_empty")
-            publishTranscriptionFailure(
-                "\(transcriptionEngine.title) returned no dictation text."
+            retainRecovery(
+                pending.recovery,
+                message: "\(transcriptionEngine.title) returned no dictation text."
             )
             return
         }
-        pasteInjector.paste(result, into: pasteTarget) { [weak self] pasteResult in
-            guard
-                let self,
-                self.generation == generation,
-                self.isRunning
-            else {
-                return
+
+        let textWasSaved = resultHandler(result)
+        if textWasSaved {
+            removeRecovery(pending.recovery)
+        } else {
+            retainRecovery(
+                pending.recovery,
+                message: "The transcript completed, but its text could not be saved to history."
+            )
+        }
+
+        guard let pasteTarget = pending.pasteTarget else {
+            Self.logger.notice(
+                "transcription_recovered characters=\(result.count, privacy: .public)"
+            )
+            if recordingID == nil {
+                phaseHandler(currentWorkPhase())
             }
+            return
+        }
+        pasteInjector.paste(result, into: pasteTarget) { [weak self] pasteResult in
+            guard let self, self.isRunning else { return }
             switch pasteResult {
             case let .success(delivery):
                 Self.logger.notice(
                     "transcription_completed characters=\(result.count, privacy: .public) paste_delivery=\(delivery.rawValue, privacy: .public)"
                 )
-                self.resultHandler(result)
                 if self.recordingID == nil {
                     self.phaseHandler(self.currentWorkPhase())
                 }
@@ -909,10 +1145,63 @@ final class HoldToDictateService {
                 Self.logger.error(
                     "paste_failed error=\(error.localizedDescription, privacy: .public)"
                 )
-                self.resultHandler(result)
                 self.publishTranscriptionFailure(error.localizedDescription)
             }
         }
+    }
+
+    private func scheduleFallbackHedge(transcriptID: String) {
+        guard
+            transcriptionEngine == .openAITranscribe,
+            fallbackTranscriber != nil
+        else {
+            return
+        }
+        cancelFallbackHedge(transcriptID: transcriptID)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.fallbackHedgeWorkItems.removeValue(forKey: transcriptID)
+            _ = self.startFallback(
+                transcriptID: transcriptID,
+                reason: "cloud_slow"
+            )
+        }
+        fallbackHedgeWorkItems[transcriptID] = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + QuickDictationFallbackPolicy.hedgeDelaySeconds,
+            execute: workItem
+        )
+    }
+
+    @discardableResult
+    private func startFallback(
+        transcriptID: String,
+        reason: String
+    ) -> Bool {
+        cancelFallbackHedge(transcriptID: transcriptID)
+        guard
+            isRunning,
+            let pending = workState.value(for: transcriptID),
+            let fallbackTranscriber,
+            fallbackFailureMessages[transcriptID] == nil,
+            fallbackTranscriptionIDs.insert(transcriptID).inserted
+        else {
+            return false
+        }
+        Self.logger.notice(
+            "transcription_fallback_started provider=LocalParakeet reason=\(reason, privacy: .public) recovery_id=\(pending.recovery.id.uuidString, privacy: .public)"
+        )
+        if case .failed = fallbackTranscriberState {
+            Self.logger.notice("transcription_fallback_reconnecting provider=LocalParakeet")
+            fallbackTranscriberState = .connecting
+            fallbackTranscriber.connect()
+        }
+        fallbackTranscriber.refine(pending.request)
+        return true
+    }
+
+    private func cancelFallbackHedge(transcriptID: String) {
+        fallbackHedgeWorkItems.removeValue(forKey: transcriptID)?.cancel()
     }
 
     private func handleTranscriptionFailure(
@@ -932,9 +1221,133 @@ final class HoldToDictateService {
             return
         }
 
-        guard workState.complete(transcriptID: transcriptID) != nil else {
+        guard workState.value(for: transcriptID) != nil else {
             return
         }
+        if let latencyMilliseconds = transcriptionLatencyMilliseconds(
+            transcriptID: transcriptID
+        ) {
+            Self.logger.error(
+                "primary_transcription_failed latency_ms=\(latencyMilliseconds, privacy: .public) error=\(message, privacy: .public)"
+            )
+        } else {
+            Self.logger.error(
+                "primary_transcription_failed error=\(message, privacy: .public)"
+            )
+        }
+        guard transcriptionEngine == .openAITranscribe else {
+            finalizeTranscriptionFailure(
+                transcriptID: transcriptID,
+                message: message
+            )
+            return
+        }
+
+        primaryFailureMessages[transcriptID] = message
+        cancelFallbackHedge(transcriptID: transcriptID)
+        if fallbackTranscriptionIDs.contains(transcriptID) {
+            Self.logger.notice(
+                "transcription_waiting_for_active_fallback provider=LocalParakeet"
+            )
+            return
+        }
+        if let fallbackMessage = fallbackFailureMessages[transcriptID] {
+            finalizeTranscriptionFailure(
+                transcriptID: transcriptID,
+                message: combinedProviderFailureMessage(
+                    primary: message,
+                    fallback: fallbackMessage
+                )
+            )
+            return
+        }
+        guard startFallback(
+            transcriptID: transcriptID,
+            reason: "cloud_failed"
+        ) else {
+            finalizeTranscriptionFailure(
+                transcriptID: transcriptID,
+                message: message
+            )
+            return
+        }
+    }
+
+    private func handleFallbackTranscription(
+        transcriptID: String,
+        text: String
+    ) {
+        guard
+            isRunning,
+            fallbackTranscriptionIDs.remove(transcriptID) != nil
+        else {
+            return
+        }
+        Self.logger.notice(
+            "transcription_fallback_completed provider=LocalParakeet"
+        )
+        completeFinalTranscription(transcriptID: transcriptID, text: text)
+        resetCloudTranscriberAfterFallbackIfIdle()
+    }
+
+    private func handleFallbackTranscriptionFailure(
+        transcriptID: String,
+        message: String
+    ) {
+        guard
+            isRunning,
+            fallbackTranscriptionIDs.remove(transcriptID) != nil
+        else {
+            return
+        }
+        fallbackFailureMessages[transcriptID] = message
+        guard let primaryMessage = primaryFailureMessages[transcriptID] else {
+            Self.logger.error(
+                "transcription_fallback_failed_primary_continues error=\(message, privacy: .public)"
+            )
+            return
+        }
+        finalizeTranscriptionFailure(
+            transcriptID: transcriptID,
+            message: combinedProviderFailureMessage(
+                primary: primaryMessage,
+                fallback: message
+            )
+        )
+    }
+
+    private func combinedProviderFailureMessage(
+        primary: String,
+        fallback: String
+    ) -> String {
+        "OpenAI: \(primary) Local fallback: \(fallback)"
+    }
+
+    private func resetCloudTranscriberAfterFallbackIfIdle() {
+        guard
+            transcriptionEngine == .openAITranscribe,
+            isRunning,
+            recordingID == nil,
+            !workState.hasPendingTranscriptions
+        else {
+            return
+        }
+        Self.logger.notice("cloud_transcriber_reset_after_fallback")
+        restartTranscriber()
+    }
+
+    private func finalizeTranscriptionFailure(
+        transcriptID: String,
+        message: String
+    ) {
+        guard let pending = workState.complete(transcriptID: transcriptID) else {
+            return
+        }
+        activeRecoveryIDs.remove(pending.recovery.id)
+        cancelFallbackHedge(transcriptID: transcriptID)
+        fallbackTranscriptionIDs.remove(transcriptID)
+        primaryFailureMessages.removeValue(forKey: transcriptID)
+        fallbackFailureMessages.removeValue(forKey: transcriptID)
         if let latencyMilliseconds = takeTranscriptionLatencyMilliseconds(
             transcriptID: transcriptID
         ) {
@@ -946,7 +1359,18 @@ final class HoldToDictateService {
                 "transcription_failed error=\(message, privacy: .public)"
             )
         }
-        publishTranscriptionFailure(message)
+        retainRecovery(pending.recovery, message: message)
+    }
+
+    private func transcriptionLatencyMilliseconds(
+        transcriptID: String
+    ) -> UInt64? {
+        guard let start = transcriptionStartUptimes[transcriptID] else {
+            return nil
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now >= start else { return 0 }
+        return (now - start) / 1_000_000
     }
 
     private func takeTranscriptionLatencyMilliseconds(
@@ -960,6 +1384,58 @@ final class HoldToDictateService {
         let now = DispatchTime.now().uptimeNanoseconds
         guard now >= start else { return 0 }
         return (now - start) / 1_000_000
+    }
+
+    private func retainRecovery(
+        _ recovery: QuickDictationRecoveryEntry,
+        message: String
+    ) {
+        let retainedMessage: String
+        do {
+            let updated = try recoveryStore.recordFailure(
+                for: recovery,
+                message: message
+            )
+            retainedMessage =
+                "\(message) The recording is saved in Quick Dictation Recovery "
+                + "(attempt \(updated.attemptCount))."
+            Self.logger.notice(
+                "recording_recovery_available recovery_id=\(updated.id.uuidString, privacy: .public) attempts=\(updated.attemptCount, privacy: .public)"
+            )
+        } catch {
+            retainedMessage =
+                "\(message) The recording package is still on disk, but its "
+                + "recovery status could not be updated: \(error.localizedDescription)"
+            Self.logger.fault(
+                "recording_recovery_update_failed recovery_id=\(recovery.id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+        publishRecoveries()
+        publishTranscriptionFailure(retainedMessage)
+    }
+
+    private func removeRecovery(_ recovery: QuickDictationRecoveryEntry) {
+        do {
+            try recoveryStore.remove(recovery)
+            Self.logger.notice(
+                "recording_recovery_removed recovery_id=\(recovery.id.uuidString, privacy: .public) reason=text_saved"
+            )
+        } catch {
+            Self.logger.error(
+                "recording_recovery_remove_failed recovery_id=\(recovery.id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+        publishRecoveries()
+    }
+
+    private func publishRecoveries() {
+        do {
+            recoveriesHandler(try recoveryStore.load())
+        } catch {
+            Self.logger.error(
+                "recording_recovery_load_failed error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     private func publishTranscriptionFailure(_ message: String) {
@@ -976,9 +1452,24 @@ final class HoldToDictateService {
         workState.phase(
             isRunning: isRunning,
             isRecording: recordingID != nil,
-            isModelReady: isModelReady,
+            isModelReady: isAnyFinalTranscriberReady,
             engine: transcriptionEngine
         )
+    }
+
+    private var isAnyFinalTranscriberReady: Bool {
+        QuickDictationTranscriberAvailability.isReady(
+            primaryReady: isModelReady,
+            engine: transcriptionEngine,
+            fallbackState: fallbackTranscriberState
+        )
+    }
+
+    private var isFallbackReady: Bool {
+        if case .connected = fallbackTranscriberState {
+            return true
+        }
+        return false
     }
 
     private func cancelRecording(nextPhase: DictationPhase? = nil) {

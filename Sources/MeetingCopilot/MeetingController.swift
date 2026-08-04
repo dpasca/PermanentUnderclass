@@ -36,6 +36,7 @@ final class MeetingController: ObservableObject {
     @Published var dictationTelemetry = TrackTelemetry()
     @Published var lastDictation = ""
     @Published private(set) var quickDictationHistory: [QuickDictationHistoryEntry] = []
+    @Published private(set) var recoverableDictations: [QuickDictationRecoveryEntry] = []
     @Published private(set) var parakeetPreparation = ParakeetPreparationState()
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
@@ -75,6 +76,7 @@ final class MeetingController: ObservableObject {
     private var syntheticInterviewReferences: ReferenceLibrarySnapshot?
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
+    private let quickDictationRecoveryStore: QuickDictationRecoveryStore
     private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
 
     private static let dictationEnabledDefaultsKey =
@@ -90,10 +92,12 @@ final class MeetingController: ObservableObject {
 
     init(
         quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport(),
+        quickDictationRecoveryStore: QuickDictationRecoveryStore = .applicationSupport(),
         syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore =
             .applicationSupport()
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
+        self.quickDictationRecoveryStore = quickDictationRecoveryStore
         self.syntheticInterviewScenarioStore = syntheticInterviewScenarioStore
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
@@ -109,6 +113,7 @@ final class MeetingController: ObservableObject {
             errorMessage = "Quick Dictation history could not be loaded: \(error.localizedDescription)"
             statusMessage = "Quick Dictation history needs attention"
         }
+        reloadQuickDictationRecoveries()
         refreshAudioDevices()
         refreshProcesses()
 
@@ -613,6 +618,44 @@ final class MeetingController: ObservableObject {
             statusMessage = "Quick Dictation history erased"
         } catch {
             presentQuickDictationHistoryError(action: "erased", error: error)
+        }
+    }
+
+    func retryQuickDictation(_ recovery: QuickDictationRecoveryEntry) {
+        guard !isDictationBusy else { return }
+        guard dictationEnabled else {
+            errorMessage = "Enable Quick Dictation before retrying a retained recording."
+            statusMessage = "Quick Dictation recovery is waiting"
+            return
+        }
+        if dictationService == nil {
+            startDictationService(requestAccess: false)
+        }
+        guard let dictationService else {
+            errorMessage = "Quick Dictation could not start the selected transcription provider."
+            statusMessage = "Recovery retry needs attention"
+            return
+        }
+        if dictationService.retryRecovery(recovery) {
+            statusMessage = "Retrying retained quick dictation…"
+        }
+    }
+
+    func revealQuickDictation(_ recovery: QuickDictationRecoveryEntry) {
+        NSWorkspace.shared.activateFileViewerSelecting([
+            quickDictationRecoveryStore.audioURL(for: recovery)
+        ])
+    }
+
+    func deleteQuickDictation(_ recovery: QuickDictationRecoveryEntry) {
+        do {
+            try quickDictationRecoveryStore.remove(recovery)
+            reloadQuickDictationRecoveries()
+            statusMessage = "Retained dictation recording deleted"
+        } catch {
+            errorMessage =
+                "The retained recording could not be deleted: \(error.localizedDescription)"
+            statusMessage = "Quick Dictation recovery needs attention"
         }
     }
 
@@ -1368,18 +1411,23 @@ final class MeetingController: ObservableObject {
                     self?.dictationOverlay.update(partialTranscript: text)
                 },
                 onResult: { [weak self] text in
-                    guard let self else { return }
-                    self.recordQuickDictation(text)
+                    guard let self else { return false }
+                    let textWasSaved = self.recordQuickDictation(text)
                     if self.isDictating {
                         self.dictationOverlay.show(result: text)
-                        return
+                        return textWasSaved
                     }
                     self.dictationPartialTranscript = text
                     self.dictationOverlay.show(result: text)
+                    return textWasSaved
                 },
                 onUsage: { [weak self] usage in
                     self?.recordOpenAIUsage(usage)
                 },
+                onRecoveries: { [weak self] recoveries in
+                    self?.recoverableDictations = recoveries
+                },
+                recoveryStore: quickDictationRecoveryStore,
                 transcriptionEngine: refinementEngine,
                 apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             )
@@ -1402,14 +1450,28 @@ final class MeetingController: ObservableObject {
         publishCompanionUsage()
     }
 
-    private func recordQuickDictation(_ text: String) {
+    @discardableResult
+    private func recordQuickDictation(_ text: String) -> Bool {
         let entry = QuickDictationHistoryEntry(text: text)
-        quickDictationHistory.insert(entry, at: 0)
-        lastDictation = text
+        let updatedHistory = [entry] + quickDictationHistory
         do {
-            try quickDictationHistoryStore.save(quickDictationHistory)
+            try quickDictationHistoryStore.save(updatedHistory)
+            quickDictationHistory = updatedHistory
+            lastDictation = text
+            return true
         } catch {
             presentQuickDictationHistoryError(action: "saved", error: error)
+            return false
+        }
+    }
+
+    private func reloadQuickDictationRecoveries() {
+        do {
+            recoverableDictations = try quickDictationRecoveryStore.load()
+        } catch {
+            errorMessage =
+                "Quick Dictation recoveries could not be loaded: \(error.localizedDescription)"
+            statusMessage = "Quick Dictation recovery needs attention"
         }
     }
 
