@@ -860,6 +860,41 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testITermPasteDeliveryDoesNotUseExactAccessibilityVerification() {
+        let bundleIdentifier =
+            QuickDictationPasteVerificationPolicy.iTermBundleIdentifier
+
+        XCTAssertFalse(
+            QuickDictationPasteVerificationPolicy.shouldVerify(
+                bundleIdentifier: bundleIdentifier
+            )
+        )
+        XCTAssertEqual(
+            QuickDictationPasteVerificationPolicy
+                .unverifiedDeliveryDelaySeconds(
+                    bundleIdentifier: bundleIdentifier
+                ),
+            0.25
+        )
+    }
+
+    func testOrdinaryTextTargetsKeepExactPasteVerification() {
+        let bundleIdentifier = "com.apple.TextEdit"
+
+        XCTAssertTrue(
+            QuickDictationPasteVerificationPolicy.shouldVerify(
+                bundleIdentifier: bundleIdentifier
+            )
+        )
+        XCTAssertEqual(
+            QuickDictationPasteVerificationPolicy
+                .unverifiedDeliveryDelaySeconds(
+                    bundleIdentifier: bundleIdentifier
+                ),
+            2
+        )
+    }
+
     func testClipboardRestoresOnlyAfterVerifiedUnchangedDelivery() {
         XCTAssertTrue(
             QuickDictationClipboardRestorationPolicy.shouldRestore(

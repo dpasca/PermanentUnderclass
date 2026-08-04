@@ -364,6 +364,7 @@ final class HoldToDictateService {
     private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
     private var workState = QuickDictationWorkState<QuickDictationPasteTarget>()
+    private var transcriptionStartUptimes: [String: UInt64] = [:]
     private let pasteInjector = PasteInjector()
     private var activeLivePreviewID: String?
     private var livePreviewWorkItem: DispatchWorkItem?
@@ -477,6 +478,7 @@ final class HoldToDictateService {
         transcriber?.disconnect()
         transcriber = nil
         workState.reset()
+        transcriptionStartUptimes.removeAll()
         transcriberState = .idle
         isModelReady = false
         isRunning = false
@@ -829,6 +831,8 @@ final class HoldToDictateService {
             return
         }
         workState.submit(transcriptID: transcriptID, target: pasteTarget)
+        transcriptionStartUptimes[transcriptID] =
+            DispatchTime.now().uptimeNanoseconds
         phaseHandler(currentWorkPhase())
         Self.logger.notice(
             "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
@@ -868,6 +872,13 @@ final class HoldToDictateService {
 
         guard let pasteTarget = workState.complete(transcriptID: transcriptID) else {
             return
+        }
+        if let latencyMilliseconds = takeTranscriptionLatencyMilliseconds(
+            transcriptID: transcriptID
+        ) {
+            Self.logger.notice(
+                "transcription_received latency_ms=\(latencyMilliseconds, privacy: .public) characters=\(text.count, privacy: .public)"
+            )
         }
         let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else {
@@ -924,10 +935,31 @@ final class HoldToDictateService {
         guard workState.complete(transcriptID: transcriptID) != nil else {
             return
         }
-        Self.logger.error(
-            "transcription_failed error=\(message, privacy: .public)"
-        )
+        if let latencyMilliseconds = takeTranscriptionLatencyMilliseconds(
+            transcriptID: transcriptID
+        ) {
+            Self.logger.error(
+                "transcription_failed latency_ms=\(latencyMilliseconds, privacy: .public) error=\(message, privacy: .public)"
+            )
+        } else {
+            Self.logger.error(
+                "transcription_failed error=\(message, privacy: .public)"
+            )
+        }
         publishTranscriptionFailure(message)
+    }
+
+    private func takeTranscriptionLatencyMilliseconds(
+        transcriptID: String
+    ) -> UInt64? {
+        guard let start = transcriptionStartUptimes.removeValue(
+            forKey: transcriptID
+        ) else {
+            return nil
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now >= start else { return 0 }
+        return (now - start) / 1_000_000
     }
 
     private func publishTranscriptionFailure(_ message: String) {
@@ -1145,6 +1177,23 @@ struct QuickDictationPasteVerification {
     }
 }
 
+enum QuickDictationPasteVerificationPolicy {
+    static let iTermBundleIdentifier = "com.googlecode.iterm2"
+
+    static func shouldVerify(bundleIdentifier: String?) -> Bool {
+        // iTerm exposes terminal contents through Accessibility, but not as
+        // the editable value/range model used by ordinary text fields. The
+        // paste succeeds while exact value comparison consistently fails.
+        bundleIdentifier != iTermBundleIdentifier
+    }
+
+    static func unverifiedDeliveryDelaySeconds(
+        bundleIdentifier: String?
+    ) -> TimeInterval {
+        bundleIdentifier == iTermBundleIdentifier ? 0.25 : 2
+    }
+}
+
 enum QuickDictationClipboardRestorationPolicy {
     static func shouldRestore(
         deliveryWasVerified: Bool,
@@ -1167,6 +1216,10 @@ final class QuickDictationPasteTarget {
         runningApplication.localizedName
             ?? runningApplication.bundleIdentifier
             ?? "the original application"
+    }
+
+    var applicationBundleIdentifier: String? {
+        runningApplication.bundleIdentifier
     }
 
     var isAvailable: Bool {
@@ -1240,6 +1293,9 @@ final class QuickDictationPasteTarget {
         inserting text: String
     ) -> QuickDictationPasteVerification? {
         guard
+            QuickDictationPasteVerificationPolicy.shouldVerify(
+                bundleIdentifier: applicationBundleIdentifier
+            ),
             let focusedElement,
             let originalValue = Self.copyString(
                 attribute: kAXValueAttribute as CFString,
@@ -1455,7 +1511,6 @@ final class PasteInjector {
     private static let maximumFocusAttempts = 20
     private static let verificationRetryDelay = DispatchTimeInterval.milliseconds(50)
     private static let maximumVerificationAttempts = 40
-    private static let unverifiedDeliveryDelay = DispatchTimeInterval.seconds(2)
     private static let pasteSerializationDelay = DispatchTimeInterval.milliseconds(650)
 
     private var queuedRequests: [Request] = []
@@ -1572,7 +1627,7 @@ final class PasteInjector {
         guard let verification = attempt.verification else {
             scheduleUnverifiedCompletion(
                 generation: generation,
-                applicationName: request.target.applicationName
+                target: request.target
             )
             return
         }
@@ -1625,13 +1680,17 @@ final class PasteInjector {
 
     private func scheduleUnverifiedCompletion(
         generation: UUID,
-        applicationName: String
+        target: QuickDictationPasteTarget
     ) {
+        let delaySeconds =
+            QuickDictationPasteVerificationPolicy.unverifiedDeliveryDelaySeconds(
+                bundleIdentifier: target.applicationBundleIdentifier
+            )
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.generation == generation else { return }
             self.scheduledWorkItem = nil
             Self.logger.notice(
-                "paste_delivery_unverifiable target=\(applicationName, privacy: .public) clipboard_retained=true"
+                "paste_delivery_unverifiable target=\(target.applicationName, privacy: .public) clipboard_retained=true"
             )
             self.finishActiveRequest(
                 with: .success(.unverified),
@@ -1641,7 +1700,7 @@ final class PasteInjector {
         }
         scheduledWorkItem = workItem
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.unverifiedDeliveryDelay,
+            deadline: .now() + delaySeconds,
             execute: workItem
         )
     }
