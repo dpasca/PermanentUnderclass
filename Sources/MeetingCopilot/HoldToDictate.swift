@@ -205,17 +205,20 @@ struct DictationTranscriberCallbacks {
     let onRefined: (_ transcriptID: String, _ text: String) -> Void
     let onFailure: (_ transcriptID: String, _ message: String) -> Void
     let onUsage: (OpenAITranscriptionUsageRecord) -> Void
+    let onCommitted: (_ transcriptID: String) -> Void
 
     init(
         onState: @escaping (SocketState) -> Void,
         onRefined: @escaping (_ transcriptID: String, _ text: String) -> Void,
         onFailure: @escaping (_ transcriptID: String, _ message: String) -> Void,
-        onUsage: @escaping (OpenAITranscriptionUsageRecord) -> Void = { _ in }
+        onUsage: @escaping (OpenAITranscriptionUsageRecord) -> Void = { _ in },
+        onCommitted: @escaping (_ transcriptID: String) -> Void = { _ in }
     ) {
         self.onState = onState
         self.onRefined = onRefined
         self.onFailure = onFailure
         self.onUsage = onUsage
+        self.onCommitted = onCommitted
     }
 }
 
@@ -223,9 +226,16 @@ enum QuickDictationTranscriberFactory {
     static func make(
         engine: TranscriptRefinementEngine,
         apiKey: String,
+        label: String = "QuickDictation",
         callbacks: DictationTranscriberCallbacks
     ) -> TranscriptRefining {
         switch engine {
+        case .localWhisper:
+            WhisperRefinementClient(
+                onState: callbacks.onState,
+                onRefined: callbacks.onRefined,
+                onFailure: callbacks.onFailure
+            )
         case .localParakeet:
             ParakeetRefinementClient(
                 onState: callbacks.onState,
@@ -235,11 +245,12 @@ enum QuickDictationTranscriberFactory {
         case .openAITranscribe:
             RealtimeRefinementClient(
                 apiKey: apiKey,
-                label: "QuickDictation",
+                label: label,
                 onState: callbacks.onState,
                 onRefined: callbacks.onRefined,
                 onFailure: callbacks.onFailure,
-                onUsage: callbacks.onUsage
+                onUsage: callbacks.onUsage,
+                onCommitted: callbacks.onCommitted
             )
         }
     }
@@ -280,10 +291,34 @@ struct QuickDictationReconnectPolicy {
 }
 
 enum QuickDictationFallbackPolicy {
-    /// OpenAI remains the preferred high-accuracy result. If it has not
-    /// completed promptly, the already-warmed local model races it without
-    /// cancelling or timing out either valid transcription.
-    static let hedgeDelaySeconds: TimeInterval = 4
+    /// The watchdog starts only after the complete final recording has been
+    /// uploaded to OpenAI. Recording and upload duration are deliberately not
+    /// bounded, so long dictations continue while audio is still flowing.
+    static let responseWatchdogSeconds: TimeInterval = 30
+}
+
+enum QuickDictationContextPolicy {
+    static let cleanupInstruction = """
+        Quick Dictation output requirements: Preserve the speaker's meaning and wording. \
+        Omit hesitation fillers, abandoned false starts, and immediate accidental repetitions. \
+        Do not summarize, answer, or add information. Preserve technical terms, code identifiers, \
+        punctuation, and the language or languages spoken.
+        """
+
+    static func context(
+        from base: TranscriptionContext,
+        cleanDictation: Bool,
+        delay: TranscriptionDelay,
+        languages: [String]? = nil
+    ) -> TranscriptionContext {
+        return TranscriptionContext(
+            prompt: base.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            keywords: base.keywords,
+            languages: languages ?? base.languages,
+            delay: delay,
+            outputStyle: cleanDictation ? .cleanDictation : .verbatim
+        )
+    }
 }
 
 enum QuickDictationTranscriberAvailability {
@@ -369,6 +404,7 @@ final class HoldToDictateService {
     typealias ResultHandler = (String) -> Bool
     typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
     typealias RecoveriesHandler = ([QuickDictationRecoveryEntry]) -> Void
+    typealias ContextProvider = () throws -> TranscriptionContext
 
     private static let logger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
@@ -376,7 +412,9 @@ final class HoldToDictateService {
     )
     private let canRecord: () -> Bool
     private let expectedLanguages: () -> [String]
+    private let contextProvider: ContextProvider
     private let shouldProduceLivePreview: () -> Bool
+    private let shouldCleanDictation: () -> Bool
     private let phaseHandler: PhaseHandler
     private let permissionHandler: PermissionHandler
     private let recordingHandler: RecordingHandler
@@ -400,12 +438,17 @@ final class HoldToDictateService {
     private var recordingID: UUID?
     private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
+    private var previewTranscriber: TranscriptRefining?
+    private var previewTranscriberState: SocketState = .idle
+    private var previewGeneration = UUID()
+    private var previewReconnectPolicy = QuickDictationReconnectPolicy()
+    private var previewReconnectWorkItem: DispatchWorkItem?
     private var fallbackTranscriber: TranscriptRefining?
     private var fallbackTranscriberState: SocketState = .idle
     private var fallbackTranscriptionIDs: Set<String> = []
     private var primaryFailureMessages: [String: String] = [:]
     private var fallbackFailureMessages: [String: String] = [:]
-    private var fallbackHedgeWorkItems: [String: DispatchWorkItem] = [:]
+    private var fallbackWatchdogWorkItems: [String: DispatchWorkItem] = [:]
     private var activeRecoveryIDs: Set<UUID> = []
     private var workState = QuickDictationWorkState<QuickDictationPendingTranscription>()
     private var transcriptionStartUptimes: [String: UInt64] = [:]
@@ -424,7 +467,9 @@ final class HoldToDictateService {
     init(
         canRecord: @escaping () -> Bool,
         expectedLanguages: @escaping () -> [String],
+        transcriptionContext: ContextProvider? = nil,
         shouldProduceLivePreview: @escaping () -> Bool = { true },
+        shouldCleanDictation: @escaping () -> Bool = { true },
         onPhase: @escaping PhaseHandler,
         onPermissions: @escaping PermissionHandler,
         onRecording: @escaping RecordingHandler,
@@ -435,13 +480,22 @@ final class HoldToDictateService {
         onUsage: @escaping UsageHandler = { _ in },
         onRecoveries: @escaping RecoveriesHandler = { _ in },
         recoveryStore: QuickDictationRecoveryStore = .applicationSupport(),
-        transcriptionEngine: TranscriptRefinementEngine = .localParakeet,
+        transcriptionEngine: TranscriptRefinementEngine = .localWhisper,
         apiKey: String = "",
         transcribesAfterRecording: Bool = true
     ) {
         self.canRecord = canRecord
         self.expectedLanguages = expectedLanguages
+        contextProvider = transcriptionContext ?? {
+            TranscriptionContext(
+                prompt: "",
+                keywords: [],
+                languages: expectedLanguages(),
+                delay: .medium
+            )
+        }
         self.shouldProduceLivePreview = shouldProduceLivePreview
+        self.shouldCleanDictation = shouldCleanDictation
         phaseHandler = onPhase
         permissionHandler = onPermissions
         recordingHandler = onRecording
@@ -496,7 +550,12 @@ final class HoldToDictateService {
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             generation = UUID()
+            previewGeneration = UUID()
+            previewReconnectPolicy.reset()
+            previewReconnectWorkItem?.cancel()
+            previewReconnectWorkItem = nil
             connectTranscriber(generation: generation)
+            connectPreviewTranscriberIfNeeded(generation: previewGeneration)
             connectFallbackTranscriberIfNeeded()
             publishRecoveries()
             return true
@@ -511,27 +570,36 @@ final class HoldToDictateService {
             || isRunning
             || recordingID != nil
             || transcriber != nil
+            || previewTranscriber != nil
             || workState.hasPendingTranscriptions
             || activeLivePreviewID != nil
             || livePreviewWorkItem != nil
             || reconnectWorkItem != nil
+            || previewReconnectWorkItem != nil
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
+        previewGeneration = UUID()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         reconnectPolicy.reset()
+        previewReconnectWorkItem?.cancel()
+        previewReconnectWorkItem = nil
+        previewReconnectPolicy.reset()
         monitor.stop()
         stopLivePreview()
         cancelRecording(nextPhase: .off)
         pasteInjector.cancel()
         transcriber?.disconnect()
         transcriber = nil
+        previewTranscriber?.disconnect()
+        previewTranscriber = nil
+        previewTranscriberState = .idle
         fallbackTranscriber?.disconnect()
         fallbackTranscriber = nil
         fallbackTranscriberState = .idle
-        fallbackHedgeWorkItems.values.forEach { $0.cancel() }
-        fallbackHedgeWorkItems.removeAll()
+        fallbackWatchdogWorkItems.values.forEach { $0.cancel() }
+        fallbackWatchdogWorkItems.removeAll()
         fallbackTranscriptionIDs.removeAll()
         primaryFailureMessages.removeAll()
         fallbackFailureMessages.removeAll()
@@ -547,8 +615,10 @@ final class HoldToDictateService {
         guard transcribesAfterRecording else { return }
         guard enabled else {
             stopLivePreview()
+            disconnectPreviewTranscriber()
             return
         }
+        connectPreviewTranscriberIfNeeded(generation: previewGeneration)
         guard
             let recordingID,
             activeLivePreviewID == nil,
@@ -598,16 +668,22 @@ final class HoldToDictateService {
         let languages = recovery.languages.isEmpty
             ? expectedLanguages()
             : recovery.languages
+        let context: TranscriptionContext
+        do {
+            context = try makeTranscriptionContext(
+                delay: .medium,
+                languages: languages
+            )
+        } catch {
+            activeRecoveryIDs.remove(recovery.id)
+            retainRecovery(recovery, message: error.localizedDescription)
+            return false
+        }
         let request = RealtimeRefinementRequest(
             transcriptID: transcriptID,
             speaker: .you,
             pcm16Audio: audio,
-            context: TranscriptionContext(
-                prompt: "",
-                keywords: [],
-                languages: languages,
-                delay: .medium
-            ),
+            context: context,
             recentTranscript: ""
         )
         workState.submit(
@@ -625,7 +701,6 @@ final class HoldToDictateService {
             "transcription_retry_started recovery_id=\(recovery.id.uuidString, privacy: .public) pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
         )
         transcriber.refine(request)
-        scheduleFallbackHedge(transcriptID: transcriptID)
         return true
     }
 
@@ -698,6 +773,12 @@ final class HoldToDictateService {
             },
             onUsage: { [usageHandler] usage in
                 usageHandler(usage)
+            },
+            onCommitted: { [weak self] transcriptID in
+                self?.handlePrimaryTranscriptionCommitted(
+                    transcriptID: transcriptID,
+                    generation: generation
+                )
             }
         )
         let transcriber = QuickDictationTranscriberFactory.make(
@@ -709,6 +790,136 @@ final class HoldToDictateService {
         transcriber.connect()
     }
 
+    private func connectPreviewTranscriberIfNeeded(generation: UUID) {
+        guard
+            isRunning,
+            transcribesAfterRecording,
+            transcriptionEngine == .openAITranscribe,
+            shouldProduceLivePreview(),
+            previewTranscriber == nil
+        else {
+            return
+        }
+
+        previewTranscriberState = .connecting
+        let callbacks = DictationTranscriberCallbacks(
+            onState: { [weak self] state in
+                self?.handlePreviewTranscriberState(
+                    state,
+                    generation: generation
+                )
+            },
+            onRefined: { [weak self] transcriptID, text in
+                self?.handleLivePreviewTranscription(
+                    transcriptID: transcriptID,
+                    text: text,
+                    generation: generation
+                )
+            },
+            onFailure: { [weak self] transcriptID, message in
+                self?.handleLivePreviewFailure(
+                    transcriptID: transcriptID,
+                    message: message,
+                    generation: generation
+                )
+            },
+            onUsage: { [usageHandler] usage in
+                usageHandler(usage)
+            }
+        )
+        let transcriber = QuickDictationTranscriberFactory.make(
+            engine: .openAITranscribe,
+            apiKey: apiKey,
+            label: "QuickDictationPreview",
+            callbacks: callbacks
+        )
+        previewTranscriber = transcriber
+        transcriber.connect()
+    }
+
+    private func handlePreviewTranscriberState(
+        _ state: SocketState,
+        generation: UUID
+    ) {
+        guard
+            self.previewGeneration == generation,
+            isRunning,
+            shouldProduceLivePreview()
+        else {
+            return
+        }
+        previewTranscriberState = state
+        let reconnectDelay = previewReconnectPolicy.reconnectDelay(
+            after: state,
+            engine: .openAITranscribe
+        )
+        if case let .failed(message) = state {
+            Self.logger.error(
+                "live_preview_transcriber_failed error=\(message, privacy: .public)"
+            )
+        }
+        if let reconnectDelay {
+            schedulePreviewTranscriberReconnect(
+                after: reconnectDelay,
+                generation: generation
+            )
+        }
+    }
+
+    private func schedulePreviewTranscriberReconnect(
+        after delay: TimeInterval,
+        generation: UUID
+    ) {
+        previewReconnectWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard
+                let self,
+                self.isRunning,
+                self.previewGeneration == generation,
+                self.shouldProduceLivePreview()
+            else {
+                return
+            }
+            self.previewReconnectWorkItem = nil
+            self.restartPreviewTranscriber()
+        }
+        previewReconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + delay,
+            execute: workItem
+        )
+    }
+
+    private func restartPreviewTranscriber() {
+        guard
+            isRunning,
+            transcriptionEngine == .openAITranscribe,
+            shouldProduceLivePreview()
+        else {
+            return
+        }
+        previewReconnectWorkItem?.cancel()
+        previewReconnectWorkItem = nil
+        let previousTranscriber = previewTranscriber
+        let nextGeneration = UUID()
+        previewGeneration = nextGeneration
+        previewTranscriber = nil
+        previewTranscriberState = .connecting
+        previousTranscriber?.disconnect()
+        Self.logger.notice("live_preview_transcriber_reconnecting")
+        connectPreviewTranscriberIfNeeded(generation: nextGeneration)
+    }
+
+    private func disconnectPreviewTranscriber() {
+        previewGeneration = UUID()
+        previewReconnectWorkItem?.cancel()
+        previewReconnectWorkItem = nil
+        previewReconnectPolicy.reset()
+        previewTranscriber?.disconnect()
+        previewTranscriber = nil
+        previewTranscriberState = .idle
+    }
+
     private func connectFallbackTranscriberIfNeeded() {
         guard
             transcriptionEngine == .openAITranscribe,
@@ -716,7 +927,7 @@ final class HoldToDictateService {
         else {
             return
         }
-        let fallback = ParakeetRefinementClient(
+        let fallback = WhisperRefinementClient(
             onState: { [weak self] state in
                 self?.handleFallbackTranscriberState(state)
             },
@@ -1031,16 +1242,21 @@ final class HoldToDictateService {
             )
             return
         }
+        let context: TranscriptionContext
+        do {
+            context = try makeTranscriptionContext(
+                delay: .medium,
+                languages: languages
+            )
+        } catch {
+            retainRecovery(recovery, message: error.localizedDescription)
+            return
+        }
         let request = RealtimeRefinementRequest(
             transcriptID: transcriptID,
             speaker: .you,
             pcm16Audio: audio,
-            context: TranscriptionContext(
-                prompt: "",
-                keywords: [],
-                languages: languages,
-                delay: .medium
-            ),
+            context: context,
             recentTranscript: ""
         )
         workState.submit(
@@ -1059,7 +1275,6 @@ final class HoldToDictateService {
             "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
         )
         transcriber.refine(request)
-        scheduleFallbackHedge(transcriptID: transcriptID)
     }
 
     private func handleTranscription(
@@ -1082,6 +1297,48 @@ final class HoldToDictateService {
         completeFinalTranscription(transcriptID: transcriptID, text: text)
     }
 
+    private func handleLivePreviewTranscription(
+        transcriptID: String,
+        text: String,
+        generation: UUID
+    ) {
+        guard
+            previewGeneration == generation,
+            isRunning,
+            activeLivePreviewID == transcriptID
+        else {
+            return
+        }
+        activeLivePreviewID = nil
+        guard let recordingID else { return }
+        let partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !partial.isEmpty {
+            partialHandler(partial)
+        }
+        scheduleLivePreview(recordingID: recordingID)
+    }
+
+    private func handleLivePreviewFailure(
+        transcriptID: String,
+        message: String,
+        generation: UUID
+    ) {
+        guard
+            previewGeneration == generation,
+            isRunning,
+            activeLivePreviewID == transcriptID
+        else {
+            return
+        }
+        activeLivePreviewID = nil
+        Self.logger.error(
+            "live_preview_failed error=\(message, privacy: .public)"
+        )
+        if let recordingID {
+            scheduleLivePreview(recordingID: recordingID)
+        }
+    }
+
     private func completeFinalTranscription(
         transcriptID: String,
         text: String
@@ -1091,7 +1348,7 @@ final class HoldToDictateService {
             return
         }
         activeRecoveryIDs.remove(pending.recovery.id)
-        cancelFallbackHedge(transcriptID: transcriptID)
+        cancelFallbackWatchdog(transcriptID: transcriptID)
         fallbackTranscriptionIDs.remove(transcriptID)
         primaryFailureMessages.removeValue(forKey: transcriptID)
         fallbackFailureMessages.removeValue(forKey: transcriptID)
@@ -1150,25 +1407,42 @@ final class HoldToDictateService {
         }
     }
 
-    private func scheduleFallbackHedge(transcriptID: String) {
+    private func handlePrimaryTranscriptionCommitted(
+        transcriptID: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            workState.value(for: transcriptID) != nil
+        else {
+            return
+        }
+        Self.logger.notice(
+            "primary_audio_committed fallback_watchdog_ms=\(Int(QuickDictationFallbackPolicy.responseWatchdogSeconds * 1_000), privacy: .public)"
+        )
+        scheduleFallbackWatchdog(transcriptID: transcriptID)
+    }
+
+    private func scheduleFallbackWatchdog(transcriptID: String) {
         guard
             transcriptionEngine == .openAITranscribe,
             fallbackTranscriber != nil
         else {
             return
         }
-        cancelFallbackHedge(transcriptID: transcriptID)
+        cancelFallbackWatchdog(transcriptID: transcriptID)
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.fallbackHedgeWorkItems.removeValue(forKey: transcriptID)
+            self.fallbackWatchdogWorkItems.removeValue(forKey: transcriptID)
             _ = self.startFallback(
                 transcriptID: transcriptID,
-                reason: "cloud_slow"
+                reason: "cloud_unresponsive_after_commit"
             )
         }
-        fallbackHedgeWorkItems[transcriptID] = workItem
+        fallbackWatchdogWorkItems[transcriptID] = workItem
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + QuickDictationFallbackPolicy.hedgeDelaySeconds,
+            deadline: .now() + QuickDictationFallbackPolicy.responseWatchdogSeconds,
             execute: workItem
         )
     }
@@ -1178,7 +1452,7 @@ final class HoldToDictateService {
         transcriptID: String,
         reason: String
     ) -> Bool {
-        cancelFallbackHedge(transcriptID: transcriptID)
+        cancelFallbackWatchdog(transcriptID: transcriptID)
         guard
             isRunning,
             let pending = workState.value(for: transcriptID),
@@ -1189,10 +1463,10 @@ final class HoldToDictateService {
             return false
         }
         Self.logger.notice(
-            "transcription_fallback_started provider=LocalParakeet reason=\(reason, privacy: .public) recovery_id=\(pending.recovery.id.uuidString, privacy: .public)"
+            "transcription_fallback_started provider=LocalWhisper reason=\(reason, privacy: .public) recovery_id=\(pending.recovery.id.uuidString, privacy: .public)"
         )
         if case .failed = fallbackTranscriberState {
-            Self.logger.notice("transcription_fallback_reconnecting provider=LocalParakeet")
+            Self.logger.notice("transcription_fallback_reconnecting provider=LocalWhisper")
             fallbackTranscriberState = .connecting
             fallbackTranscriber.connect()
         }
@@ -1200,8 +1474,8 @@ final class HoldToDictateService {
         return true
     }
 
-    private func cancelFallbackHedge(transcriptID: String) {
-        fallbackHedgeWorkItems.removeValue(forKey: transcriptID)?.cancel()
+    private func cancelFallbackWatchdog(transcriptID: String) {
+        fallbackWatchdogWorkItems.removeValue(forKey: transcriptID)?.cancel()
     }
 
     private func handleTranscriptionFailure(
@@ -1244,10 +1518,10 @@ final class HoldToDictateService {
         }
 
         primaryFailureMessages[transcriptID] = message
-        cancelFallbackHedge(transcriptID: transcriptID)
+        cancelFallbackWatchdog(transcriptID: transcriptID)
         if fallbackTranscriptionIDs.contains(transcriptID) {
             Self.logger.notice(
-                "transcription_waiting_for_active_fallback provider=LocalParakeet"
+                "transcription_waiting_for_active_fallback provider=LocalWhisper"
             )
             return
         }
@@ -1284,7 +1558,7 @@ final class HoldToDictateService {
             return
         }
         Self.logger.notice(
-            "transcription_fallback_completed provider=LocalParakeet"
+            "transcription_fallback_completed provider=LocalWhisper"
         )
         completeFinalTranscription(transcriptID: transcriptID, text: text)
         resetCloudTranscriberAfterFallbackIfIdle()
@@ -1320,7 +1594,7 @@ final class HoldToDictateService {
         primary: String,
         fallback: String
     ) -> String {
-        "OpenAI: \(primary) Local fallback: \(fallback)"
+        "OpenAI: \(primary) Local Whisper: \(fallback)"
     }
 
     private func resetCloudTranscriberAfterFallbackIfIdle() {
@@ -1344,7 +1618,7 @@ final class HoldToDictateService {
             return
         }
         activeRecoveryIDs.remove(pending.recovery.id)
-        cancelFallbackHedge(transcriptID: transcriptID)
+        cancelFallbackWatchdog(transcriptID: transcriptID)
         fallbackTranscriptionIDs.remove(transcriptID)
         primaryFailureMessages.removeValue(forKey: transcriptID)
         fallbackFailureMessages.removeValue(forKey: transcriptID)
@@ -1472,6 +1746,18 @@ final class HoldToDictateService {
         return false
     }
 
+    private func makeTranscriptionContext(
+        delay: TranscriptionDelay,
+        languages: [String]? = nil
+    ) throws -> TranscriptionContext {
+        QuickDictationContextPolicy.context(
+            from: try contextProvider(),
+            cleanDictation: shouldCleanDictation(),
+            delay: delay,
+            languages: languages
+        )
+    }
+
     private func cancelRecording(nextPhase: DictationPhase? = nil) {
         stopLivePreview()
         microphoneCapture?.stop()
@@ -1527,24 +1813,32 @@ final class HoldToDictateService {
 
         lastLivePreviewByteCount = bufferedAudio.count
         let audio = QuickDictationLivePreviewPolicy.previewAudio(from: bufferedAudio)
-        let languages = expectedLanguages()
-        guard let transcriber else {
+        let context: TranscriptionContext
+        do {
+            context = try makeTranscriptionContext(delay: .minimal)
+        } catch {
+            Self.logger.error(
+                "live_preview_context_failed error=\(error.localizedDescription, privacy: .public)"
+            )
+            scheduleLivePreview(recordingID: recordingID)
+            return
+        }
+        let selectedPreviewTranscriber = transcriptionEngine == .openAITranscribe
+            ? previewTranscriber
+            : transcriber
+        guard let selectedPreviewTranscriber else {
+            connectPreviewTranscriberIfNeeded(generation: previewGeneration)
             scheduleLivePreview(recordingID: recordingID)
             return
         }
         let transcriptID = "dictation-preview-\(UUID().uuidString)"
         activeLivePreviewID = transcriptID
-        transcriber.refine(
+        selectedPreviewTranscriber.refine(
             RealtimeRefinementRequest(
                 transcriptID: transcriptID,
                 speaker: .you,
                 pcm16Audio: audio,
-                context: TranscriptionContext(
-                    prompt: "",
-                    keywords: [],
-                    languages: languages,
-                    delay: .minimal
-                ),
+                context: context,
                 recentTranscript: ""
             )
         )

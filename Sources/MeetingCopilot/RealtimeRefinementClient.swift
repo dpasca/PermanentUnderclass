@@ -91,6 +91,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     typealias RefinedHandler = (_ transcriptID: String, _ text: String) -> Void
     typealias FailureHandler = (_ transcriptID: String, _ message: String) -> Void
     typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
+    typealias CommittedHandler = (_ transcriptID: String) -> Void
 
     static let model = "gpt-transcribe"
     static let webSocketURL = URL(
@@ -110,6 +111,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private let refinedHandler: RefinedHandler
     private let failureHandler: FailureHandler
     private let usageHandler: UsageHandler
+    private let committedHandler: CommittedHandler
     private let socketQueue: DispatchQueue
 
     private var session: URLSession?
@@ -134,13 +136,15 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         onState: @escaping StateHandler,
         onRefined: @escaping RefinedHandler,
         onFailure: @escaping FailureHandler,
-        onUsage: @escaping UsageHandler = { _ in }
+        onUsage: @escaping UsageHandler = { _ in },
+        onCommitted: @escaping CommittedHandler = { _ in }
     ) {
         self.apiKey = apiKey
         stateHandler = onState
         refinedHandler = onRefined
         failureHandler = onFailure
         usageHandler = onUsage
+        committedHandler = onCommitted
         let socketQueue = DispatchQueue(
             label: "MeetingCopilot.GPTTranscribe.\(label)",
             qos: .userInitiated
@@ -275,6 +279,9 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         if !meetingContext.isEmpty {
             sections.append(meetingContext)
         }
+        if request.context.outputStyle == .cleanDictation {
+            sections.append(QuickDictationContextPolicy.cleanupInstruction)
+        }
 
         let recentTranscript = request.recentTranscript
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -407,8 +414,17 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
             }
             task.send(.string(text)) { [weak self] error in
                 self?.socketQueue.async {
-                    guard let self, let error else { return }
-                    self.failConnection(error.localizedDescription)
+                    guard
+                        let self,
+                        self.activeRequest?.transcriptID == transcriptID
+                    else {
+                        return
+                    }
+                    if let error {
+                        self.failConnection(error.localizedDescription)
+                        return
+                    }
+                    self.publishCommitted(transcriptID: transcriptID)
                 }
             }
         } catch {
@@ -720,6 +736,12 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private func publishUsage(_ usage: OpenAITranscriptionUsageRecord) {
         DispatchQueue.main.async { [usageHandler] in
             usageHandler(usage)
+        }
+    }
+
+    private func publishCommitted(transcriptID: String) {
+        DispatchQueue.main.async { [committedHandler] in
+            committedHandler(transcriptID)
         }
     }
 }

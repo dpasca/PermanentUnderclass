@@ -37,9 +37,11 @@ final class MeetingController: ObservableObject {
     @Published var lastDictation = ""
     @Published private(set) var quickDictationHistory: [QuickDictationHistoryEntry] = []
     @Published private(set) var recoverableDictations: [QuickDictationRecoveryEntry] = []
+    @Published private(set) var whisperPreparation = WhisperPreparationState()
     @Published private(set) var parakeetPreparation = ParakeetPreparationState()
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
+    @Published var dictationCleanupEnabled = true
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
     @Published private(set) var companionGatewayStatus = "Starting companion display…"
@@ -60,6 +62,7 @@ final class MeetingController: ObservableObject {
     private var microphoneRestartWorkItem: DispatchWorkItem?
     private var microphoneCaptureGeneration: UUID?
     private var dictationService: HoldToDictateService?
+    private var whisperWarmupTask: Task<Void, Never>?
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
     private let companionGateway = CompanionGateway()
@@ -83,6 +86,8 @@ final class MeetingController: ObservableObject {
         "MeetingCopilot.HoldToDictateEnabled"
     private static let dictationPreviewEnabledDefaultsKey =
         "MeetingCopilot.QuickDictationPreviewEnabled"
+    private static let dictationCleanupEnabledDefaultsKey =
+        "MeetingCopilot.QuickDictationCleanupEnabled"
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
     private static let liveAssistantLogger = Logger(
@@ -104,6 +109,9 @@ final class MeetingController: ObservableObject {
             ?? ""
         dictationPreviewEnabled = UserDefaults.standard.object(
             forKey: Self.dictationPreviewEnabledDefaultsKey
+        ) as? Bool ?? true
+        dictationCleanupEnabled = UserDefaults.standard.object(
+            forKey: Self.dictationCleanupEnabledDefaultsKey
         ) as? Bool ?? true
         dictationOverlay.setEnabled(dictationPreviewEnabled)
         do {
@@ -137,7 +145,7 @@ final class MeetingController: ObservableObject {
             present(error)
         }
 
-        startParakeetWarmup()
+        startWhisperWarmup()
         configureReferenceLibrary()
         startCompanionGateway()
         publishCompanionSession()
@@ -325,6 +333,20 @@ final class MeetingController: ObservableObject {
             }
             refinementStates = [.you: .connecting, .other: .connecting]
             switch refinementEngine {
+            case .localWhisper:
+                let client = WhisperRefinementClient(
+                    onState: { [weak self] state in
+                        self?.handleRefinementState(
+                            state,
+                            speaker: nil,
+                            sessionID: sessionID
+                        )
+                    },
+                    onRefined: refinedHandler,
+                    onFailure: failureHandler
+                )
+                refinementClients = [.you: client, .other: client]
+
             case .localParakeet:
                 let client = ParakeetRefinementClient(
                     onState: { [weak self] state in
@@ -474,7 +496,9 @@ final class MeetingController: ObservableObject {
     func selectRefinementEngine(_ engine: TranscriptRefinementEngine) {
         guard !isListening, !isDictationBusy, refinementEngine != engine else { return }
         refinementEngine = engine
-        if engine == .localParakeet, parakeetPreparation.isFailed {
+        if engine == .localWhisper {
+            startWhisperWarmup()
+        } else if engine == .localParakeet {
             startParakeetWarmup()
         }
         if dictationEnabled {
@@ -510,6 +534,14 @@ final class MeetingController: ObservableObject {
             dictationOverlay.update(telemetry: dictationTelemetry)
             dictationOverlay.update(partialTranscript: dictationPartialTranscript)
         }
+    }
+
+    func setDictationCleanupEnabled(_ enabled: Bool) {
+        dictationCleanupEnabled = enabled
+        UserDefaults.standard.set(
+            enabled,
+            forKey: Self.dictationCleanupEnabledDefaultsKey
+        )
     }
 
     func requestDictationPermissions() {
@@ -1359,7 +1391,9 @@ final class MeetingController: ObservableObject {
     }
 
     private func startDictationService(requestAccess: Bool) {
-        if refinementEngine == .localParakeet, parakeetPreparation.isFailed {
+        if refinementEngine == .localWhisper || refinementEngine == .openAITranscribe {
+            startWhisperWarmup()
+        } else if refinementEngine == .localParakeet {
             startParakeetWarmup()
         }
         let service: HoldToDictateService
@@ -1373,8 +1407,22 @@ final class MeetingController: ObservableObject {
                 expectedLanguages: { [weak self] in
                     self?.dictationLanguages() ?? ["en"]
                 },
+                transcriptionContext: { [weak self] in
+                    guard let self else {
+                        return TranscriptionContext(
+                            prompt: "",
+                            keywords: [],
+                            languages: ["en"],
+                            delay: .medium
+                        )
+                    }
+                    return try self.quickDictationContext()
+                },
                 shouldProduceLivePreview: { [weak self] in
                     self?.dictationPreviewEnabled == true
+                },
+                shouldCleanDictation: { [weak self] in
+                    self?.dictationCleanupEnabled ?? true
                 },
                 onPhase: { [weak self] phase in
                     self?.dictationPhase = phase
@@ -1860,6 +1908,82 @@ final class MeetingController: ObservableObject {
         publishCompanionUsage()
     }
 
+    private func startWhisperWarmup() {
+        guard
+            whisperWarmupTask == nil,
+            !whisperPreparation.isInProgress,
+            !whisperPreparation.isReady
+        else {
+            return
+        }
+
+        let startedAt = Date()
+        whisperPreparation = WhisperPreparationState(
+            stage: .checkingCache,
+            startedAt: startedAt
+        )
+        let progressRelay = WhisperPreparationProgressRelay { [weak self] event in
+            self?.handleWhisperPreparationEvent(
+                event,
+                startedAt: startedAt
+            )
+        }
+        whisperWarmupTask = Task(priority: .utility) { [weak self] in
+            do {
+                try await WhisperTranscriber.shared.prepare { event in
+                    progressRelay.send(event)
+                }
+                await MainActor.run { [weak self] in
+                    guard self?.whisperPreparation.startedAt == startedAt else { return }
+                    self?.whisperWarmupTask = nil
+                    self?.whisperPreparation = WhisperPreparationState(
+                        stage: .ready,
+                        startedAt: startedAt,
+                        finishedAt: Date()
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard self?.whisperPreparation.startedAt == startedAt else { return }
+                    self?.whisperWarmupTask = nil
+                    self?.whisperPreparation = WhisperPreparationState(
+                        stage: .failed(error.localizedDescription),
+                        startedAt: startedAt,
+                        finishedAt: Date()
+                    )
+                }
+            }
+        }
+    }
+
+    private func handleWhisperPreparationEvent(
+        _ event: WhisperPreparationEvent,
+        startedAt: Date
+    ) {
+        guard
+            whisperPreparation.startedAt == startedAt,
+            whisperPreparation.isInProgress
+        else {
+            return
+        }
+
+        let stage: WhisperPreparationStage
+        switch event {
+        case .checkingCache:
+            stage = .checkingCache
+        case let .downloading(fractionCompleted):
+            stage = .downloading(fractionCompleted: fractionCompleted)
+        case let .loading(component):
+            stage = .loading(component: component)
+        }
+        whisperPreparation = WhisperPreparationState(
+            stage: stage,
+            startedAt: startedAt
+        )
+    }
+
     private func startParakeetWarmup() {
         guard
             parakeetWarmupTask == nil,
@@ -1943,6 +2067,16 @@ final class MeetingController: ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return languages.isEmpty ? ["en"] : languages
+    }
+
+    private func quickDictationContext() throws -> TranscriptionContext {
+        let sharedContext = try transcriptionContext()
+        return TranscriptionContext(
+            prompt: "",
+            keywords: sharedContext.keywords,
+            languages: sharedContext.languages,
+            delay: .medium
+        )
     }
 
     private func refreshSelection(
@@ -2136,6 +2270,7 @@ final class MeetingController: ObservableObject {
 
     deinit {
         assistantGenerationTask?.cancel()
+        whisperWarmupTask?.cancel()
         parakeetWarmupTask?.cancel()
         referenceLibraryService?.stop()
         dictationOverlay.setEnabled(false)
@@ -2164,6 +2299,20 @@ private final class ParakeetPreparationProgressRelay: @unchecked Sendable {
     }
 
     func send(_ event: ParakeetPreparationEvent) {
+        DispatchQueue.main.async { [handler] in
+            handler(event)
+        }
+    }
+}
+
+private final class WhisperPreparationProgressRelay: @unchecked Sendable {
+    private let handler: (WhisperPreparationEvent) -> Void
+
+    init(handler: @escaping (WhisperPreparationEvent) -> Void) {
+        self.handler = handler
+    }
+
+    func send(_ event: WhisperPreparationEvent) {
         DispatchQueue.main.async { [handler] in
             handler(event)
         }

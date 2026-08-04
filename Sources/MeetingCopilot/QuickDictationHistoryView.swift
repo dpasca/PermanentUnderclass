@@ -39,6 +39,7 @@ struct QuickDictationControlPanel: View {
             }
 
             QuickDictationPreviewControl(controller: controller)
+            QuickDictationCleanupControl(controller: controller)
 
             HStack(alignment: .center, spacing: 8) {
                 TranscriptionStageCard(

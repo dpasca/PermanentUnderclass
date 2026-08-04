@@ -575,6 +575,30 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(capturedSizes.allSatisfy { $0 == 960 })
     }
 
+    func testWhisperAudioConversionResamplesPCM16WithoutLosingSignal() throws {
+        let inputSamples = (0..<24_000).map { frame in
+            Int16(sin(Double(frame) * 0.04) * 12_000)
+        }
+        let pcm16Audio = inputSamples.withUnsafeBufferPointer { samples in
+            Data(
+                bytes: samples.baseAddress!,
+                count: samples.count * MemoryLayout<Int16>.size
+            )
+        }
+
+        let outputSamples = try WhisperTranscriber.audioSamples(
+            from: pcm16Audio
+        )
+        let peak = outputSamples.map(abs).max() ?? 0
+
+        XCTAssertGreaterThanOrEqual(outputSamples.count, 15_990)
+        XCTAssertLessThanOrEqual(outputSamples.count, 16_010)
+        XCTAssertGreaterThan(peak, 0.3)
+        XCTAssertThrowsError(
+            try WhisperTranscriber.audioSamples(from: Data([0]))
+        )
+    }
+
     func testDefaultInputMonitorPublishesTheCurrentDevice() throws {
         guard let expectedDevice = CoreAudioUtilities.defaultInputDevice() else {
             throw XCTSkip("This Mac currently has no default input device.")
@@ -928,7 +952,12 @@ final class MeetingCopilotTests: XCTestCase {
             onFailure: { _, _ in }
         )
 
-        let local = QuickDictationTranscriberFactory.make(
+        let whisper = QuickDictationTranscriberFactory.make(
+            engine: .localWhisper,
+            apiKey: "",
+            callbacks: callbacks
+        )
+        let parakeet = QuickDictationTranscriberFactory.make(
             engine: .localParakeet,
             apiKey: "",
             callbacks: callbacks
@@ -939,8 +968,67 @@ final class MeetingCopilotTests: XCTestCase {
             callbacks: callbacks
         )
 
-        XCTAssertTrue(local is ParakeetRefinementClient)
+        XCTAssertTrue(whisper is WhisperRefinementClient)
+        XCTAssertTrue(parakeet is ParakeetRefinementClient)
         XCTAssertTrue(cloud is RealtimeRefinementClient)
+    }
+
+    func testQuickDictationContextSharesTerminologyLanguagesAndCleanupStyle() {
+        let base = TranscriptionContext(
+            prompt: "  ",
+            keywords: ["WhisperKit", "AVAudioConverter"],
+            languages: ["en", "ja"],
+            delay: .high
+        )
+
+        let context = QuickDictationContextPolicy.context(
+            from: base,
+            cleanDictation: true,
+            delay: .medium
+        )
+
+        XCTAssertEqual(context.prompt, "")
+        XCTAssertEqual(context.keywords, ["WhisperKit", "AVAudioConverter"])
+        XCTAssertEqual(context.languages, ["en", "ja"])
+        XCTAssertEqual(context.delay, .medium)
+        XCTAssertEqual(context.outputStyle, .cleanDictation)
+    }
+
+    func testCleanDictationInstructionIsSentToGPTTranscribe() {
+        let context = TranscriptionContext(
+            prompt: "Technical dictation.",
+            keywords: ["WhisperKit"],
+            languages: ["en"],
+            delay: .medium,
+            outputStyle: .cleanDictation
+        )
+        let request = RealtimeRefinementRequest(
+            transcriptID: "clean-dictation",
+            speaker: .you,
+            pcm16Audio: Data([0, 1]),
+            context: context,
+            recentTranscript: ""
+        )
+
+        XCTAssertTrue(
+            RealtimeRefinementClient.transcriptionPrompt(for: request)
+                .contains("Omit hesitation fillers")
+        )
+    }
+
+    func testWhisperUsesOneLanguageHintOrAutomaticMultilingualDetection() {
+        XCTAssertEqual(
+            WhisperTranscriber.singleLanguageHint(from: ["EN-us", "en"]),
+            "en"
+        )
+        XCTAssertNil(
+            WhisperTranscriber.singleLanguageHint(from: ["en", "ja"])
+        )
+        XCTAssertNil(WhisperTranscriber.singleLanguageHint(from: []))
+        XCTAssertEqual(
+            WhisperTranscriber.modelVariant,
+            "large-v3-v20240930_626MB"
+        )
     }
 
     func testQuickDictationHistoryPersistsNewestFirst() throws {
@@ -1181,6 +1269,30 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertFalse(ready.isInProgress)
     }
 
+    func testWhisperWarmupHintReportsProgressAndElapsedTime() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let downloading = WhisperPreparationState(
+            stage: .downloading(fractionCompleted: 0.625),
+            startedAt: startedAt
+        )
+        XCTAssertEqual(downloading.downloadFraction, 0.625)
+        XCTAssertEqual(
+            downloading.hint(at: startedAt.addingTimeInterval(65)),
+            "Background Whisper warmup · downloading 63% · 1m 5s"
+        )
+
+        let ready = WhisperPreparationState(
+            stage: .ready,
+            startedAt: startedAt,
+            finishedAt: startedAt.addingTimeInterval(11)
+        )
+        XCTAssertEqual(
+            ready.hint(at: startedAt.addingTimeInterval(30)),
+            "Local Whisper ready · initialized in 11s"
+        )
+        XCTAssertTrue(ready.isReady)
+    }
+
     func testParakeetEncoderAvoidsCrashProneMetalBackend() {
         XCTAssertEqual(
             ParakeetTranscriber.encoderComputeUnits,
@@ -1189,6 +1301,13 @@ final class MeetingCopilotTests: XCTestCase {
     }
 
     func testLoadingDictationStateNamesTheSelectedModel() {
+        let whisper = DictationPhase.preparing(.localWhisper)
+        XCTAssertEqual(whisper.label, "Loading Whisper…")
+        XCTAssertEqual(
+            whisper.detail,
+            "Whisper is still loading. Release the shortcut and wait for Ready before dictating."
+        )
+
         let local = DictationPhase.preparing(.localParakeet)
         XCTAssertEqual(local.label, "Loading Parakeet…")
         XCTAssertEqual(
@@ -1213,6 +1332,9 @@ final class MeetingCopilotTests: XCTestCase {
         )
         XCTAssertNil(
             policy.reconnectDelay(after: .idle, engine: .localParakeet)
+        )
+        XCTAssertNil(
+            policy.reconnectDelay(after: .idle, engine: .localWhisper)
         )
     }
 
@@ -1322,10 +1444,10 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
-    func testSlowCloudDictationStartsANonDestructiveLocalHedge() {
+    func testCloudWatchdogStartsOnlyAfterCommitAndAllowsProviderTime() {
         XCTAssertEqual(
-            QuickDictationFallbackPolicy.hedgeDelaySeconds,
-            4
+            QuickDictationFallbackPolicy.responseWatchdogSeconds,
+            30
         )
     }
 
@@ -1340,7 +1462,7 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertFalse(
             QuickDictationTranscriberAvailability.isReady(
                 primaryReady: false,
-                engine: .localParakeet,
+                engine: .localWhisper,
                 fallbackState: .connected
             )
         )
