@@ -895,24 +895,15 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
-    func testClipboardRestoresOnlyAfterVerifiedUnchangedDelivery() {
+    func testClipboardRestoresAfterUnchangedPaste() {
         XCTAssertTrue(
             QuickDictationClipboardRestorationPolicy.shouldRestore(
-                deliveryWasVerified: true,
                 insertedChangeCount: 12,
                 currentChangeCount: 12
             )
         )
         XCTAssertFalse(
             QuickDictationClipboardRestorationPolicy.shouldRestore(
-                deliveryWasVerified: false,
-                insertedChangeCount: 12,
-                currentChangeCount: 12
-            )
-        )
-        XCTAssertFalse(
-            QuickDictationClipboardRestorationPolicy.shouldRestore(
-                deliveryWasVerified: true,
                 insertedChangeCount: 12,
                 currentChangeCount: 13
             )

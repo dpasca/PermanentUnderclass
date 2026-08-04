@@ -1196,11 +1196,10 @@ enum QuickDictationPasteVerificationPolicy {
 
 enum QuickDictationClipboardRestorationPolicy {
     static func shouldRestore(
-        deliveryWasVerified: Bool,
         insertedChangeCount: Int,
         currentChangeCount: Int
     ) -> Bool {
-        deliveryWasVerified && insertedChangeCount == currentChangeCount
+        insertedChangeCount == currentChangeCount
     }
 }
 
@@ -1515,6 +1514,7 @@ final class PasteInjector {
 
     private var queuedRequests: [Request] = []
     private var activeRequest: Request?
+    private var activePasteAttempt: PasteAttempt?
     private var scheduledWorkItem: DispatchWorkItem?
     private var generation = UUID()
 
@@ -1533,6 +1533,7 @@ final class PasteInjector {
         generation = UUID()
         scheduledWorkItem?.cancel()
         scheduledWorkItem = nil
+        restoreActiveClipboardIfUnchanged()
         queuedRequests.removeAll()
         activeRequest = nil
     }
@@ -1573,6 +1574,7 @@ final class PasteInjector {
                     request.text,
                     into: request.target
                 )
+                activePasteAttempt = attempt
                 awaitPasteDelivery(
                     attempt,
                     remainingAttempts: Self.maximumVerificationAttempts,
@@ -1632,10 +1634,6 @@ final class PasteInjector {
             return
         }
         if request.target.verifyPaste(verification) {
-            Self.restoreClipboardIfAppropriate(
-                after: attempt,
-                deliveryWasVerified: true
-            )
             Self.logger.notice(
                 "paste_delivery_verified target=\(request.target.applicationName, privacy: .public)"
             )
@@ -1648,12 +1646,12 @@ final class PasteInjector {
         }
         guard remainingAttempts > 1 else {
             Self.logger.error(
-                "paste_delivery_unconfirmed target=\(request.target.applicationName, privacy: .public) clipboard_retained=true"
+                "paste_delivery_unconfirmed target=\(request.target.applicationName, privacy: .public)"
             )
             finishActiveRequest(
                 with: .failure(
                     MeetingCopilotError.audio(
-                        "Quick Dictation sent the paste to \(request.target.applicationName) but could not confirm that the text was inserted. The completed text remains on the clipboard."
+                        "Quick Dictation sent the paste to \(request.target.applicationName) but could not confirm that the text was inserted. The completed text was saved in Quick Dictation history."
                     )
                 ),
                 delayBeforeNextRequest: Self.pasteSerializationDelay,
@@ -1690,7 +1688,7 @@ final class PasteInjector {
             guard let self, self.generation == generation else { return }
             self.scheduledWorkItem = nil
             Self.logger.notice(
-                "paste_delivery_unverifiable target=\(target.applicationName, privacy: .public) clipboard_retained=true"
+                "paste_delivery_unverifiable target=\(target.applicationName, privacy: .public)"
             )
             self.finishActiveRequest(
                 with: .success(.unverified),
@@ -1716,6 +1714,8 @@ final class PasteInjector {
         else {
             return
         }
+
+        restoreActiveClipboardIfUnchanged()
 
         if let delayBeforeNextRequest {
             let workItem = DispatchWorkItem { [weak self] in
@@ -1792,19 +1792,28 @@ final class PasteInjector {
         )
     }
 
-    private static func restoreClipboardIfAppropriate(
-        after attempt: PasteAttempt,
-        deliveryWasVerified: Bool
-    ) {
+    private func restoreActiveClipboardIfUnchanged() {
+        guard let attempt = activePasteAttempt else { return }
+        activePasteAttempt = nil
+
+        let restored = Self.restoreClipboardIfUnchanged(after: attempt)
+        Self.logger.notice(
+            "clipboard_restore restored=\(restored, privacy: .public)"
+        )
+    }
+
+    private static func restoreClipboardIfUnchanged(
+        after attempt: PasteAttempt
+    ) -> Bool {
         let pasteboard = NSPasteboard.general
         guard QuickDictationClipboardRestorationPolicy.shouldRestore(
-            deliveryWasVerified: deliveryWasVerified,
             insertedChangeCount: attempt.insertedChangeCount,
             currentChangeCount: pasteboard.changeCount
         ) else {
-            return
+            return false
         }
         restore(items: attempt.previousClipboardItems, to: pasteboard)
+        return true
     }
 
     private static func restore(

@@ -178,11 +178,11 @@ feedback. The pipeline's **Screen preview (optional stage)** switch directly
 controls the snapshot stage and overlay. Turning it off does not disable the
 required final transcription that runs when the shortcut is released.
 
-The system clipboard is used briefly for the paste. When the target exposes its
-text through Accessibility, the previous clipboard is restored only after the
-expected insertion is confirmed and only if no other application changed the
-clipboard. If insertion cannot be verified, the new dictation remains on the
-clipboard instead of restoring older text that a delayed paste might consume.
+The system clipboard is used briefly for the paste. Quick Dictation snapshots
+all of its available contents and restores them after the target consumes the
+paste, whether or not the target exposes enough Accessibility information to
+verify the insertion. If another application changes the clipboard during that
+brief interval, Quick Dictation leaves the newer clipboard contents untouched.
 If the original target closes or can no longer be focused, Quick Dictation saves
 the completed text in history instead of pasting it into a different window.
 Quick Dictation is paused while meeting capture is using the microphone.

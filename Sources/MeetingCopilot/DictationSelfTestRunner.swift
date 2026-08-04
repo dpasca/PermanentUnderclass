@@ -211,8 +211,8 @@ final class DictationSelfTestRunner {
                         return
                     }
 
-                    // Allow the verified paste transaction to restore the
-                    // original clipboard before checking the final state.
+                    // Allow the paste transaction to restore the original
+                    // clipboard before checking the final state.
                     DispatchQueue.main.asyncAfter(
                         deadline: .now() + 0.75
                     ) { [weak self, weak textView, weak distractionView] in
