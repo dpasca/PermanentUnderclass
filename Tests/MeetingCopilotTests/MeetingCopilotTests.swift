@@ -921,7 +921,7 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(PCM16SignalGate.containsAudibleSignal(audible))
     }
 
-    func testQuickDictationUsesOnlyTheSelectedTranscriber() {
+    func testQuickDictationFactoryBuildsTheSelectedPrimaryTranscriber() {
         let callbacks = DictationTranscriberCallbacks(
             onState: { _ in },
             onRefined: { _, _ in },
@@ -989,6 +989,99 @@ final class MeetingCopilotTests: XCTestCase {
 
         try store.save([])
         XCTAssertEqual(try store.load(), [])
+    }
+
+    func testQuickDictationRecoveryWaveFileRoundTripsPCM16Audio() throws {
+        let audio = Data((0..<4_800).map { UInt8($0 % 251) })
+
+        let waveData = try PCM16WaveFile.encode(audio)
+
+        XCTAssertEqual(String(data: waveData[0..<4], encoding: .ascii), "RIFF")
+        XCTAssertEqual(String(data: waveData[8..<12], encoding: .ascii), "WAVE")
+        XCTAssertEqual(try PCM16WaveFile.decode(waveData), audio)
+    }
+
+    func testQuickDictationRecoverySurvivesStoreRecreationUntilRemoved() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let audio = Data(repeating: 7, count: PCM16WaveFile.bytesPerSecond * 2)
+        let createdAt = Date(timeIntervalSince1970: 10_000)
+        let firstStore = QuickDictationRecoveryStore(directoryURL: folder)
+
+        let retained = try firstStore.preserve(
+            pcm16Audio: audio,
+            languages: ["en", "ja"],
+            createdAt: createdAt
+        )
+        let failed = try firstStore.recordFailure(
+            for: retained,
+            message: "Provider unavailable"
+        )
+
+        let relaunchedStore = QuickDictationRecoveryStore(directoryURL: folder)
+        XCTAssertEqual(try relaunchedStore.load(), [failed])
+        XCTAssertEqual(try relaunchedStore.pcm16Audio(for: failed), audio)
+        XCTAssertEqual(failed.audioDurationSeconds, 2, accuracy: 0.001)
+        XCTAssertEqual(failed.attemptCount, 1)
+        XCTAssertEqual(failed.lastError, "Provider unavailable")
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: relaunchedStore.audioURL(for: failed).path
+            )
+        )
+
+        try relaunchedStore.remove(failed)
+        XCTAssertEqual(try relaunchedStore.load(), [])
+    }
+
+    func testQuickDictationRecoveryPreservesTheFailedLongRecordingSize() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = QuickDictationRecoveryStore(directoryURL: folder)
+        let audio = Data(repeating: 19, count: 3_959_040)
+
+        let retained = try store.preserve(
+            pcm16Audio: audio,
+            languages: ["en"]
+        )
+
+        XCTAssertEqual(retained.audioDurationSeconds, 82.48, accuracy: 0.001)
+        XCTAssertEqual(try store.pcm16Audio(for: retained), audio)
+    }
+
+    func testQuickDictationRecoveryUsesPackageIdentityWhenMetadataIsDamaged() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = QuickDictationRecoveryStore(directoryURL: folder)
+        let audio = Data(repeating: 11, count: PCM16WaveFile.bytesPerSecond)
+        let retained = try store.preserve(
+            pcm16Audio: audio,
+            languages: ["en"]
+        )
+        let mismatchedMetadata = QuickDictationRecoveryEntry(
+            audioByteCount: audio.count,
+            languages: ["en"]
+        )
+        let metadataURL = store.audioURL(for: retained)
+            .deletingLastPathComponent()
+            .appendingPathComponent("metadata.json")
+        try JSONEncoder().encode(mismatchedMetadata).write(
+            to: metadataURL,
+            options: .atomic
+        )
+
+        let recovered = try XCTUnwrap(store.load().first)
+
+        XCTAssertEqual(recovered.id, retained.id)
+        XCTAssertEqual(recovered.audioByteCount, audio.count)
+        XCTAssertEqual(try store.pcm16Audio(for: recovered), audio)
+        XCTAssertEqual(
+            recovered.lastError,
+            "Recovery metadata was damaged, but the recording was retained."
+        )
     }
 
     func testLiveDictationPreviewWaitsForEnoughNewAudio() {
@@ -1229,52 +1322,28 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
-    func testGPTTranscribeActiveRequestHasABoundedTimeout() {
+    func testSlowCloudDictationStartsANonDestructiveLocalHedge() {
         XCTAssertEqual(
-            RealtimeRefinementClient.requestTimeoutSeconds,
-            30
+            QuickDictationFallbackPolicy.hedgeDelaySeconds,
+            4
         )
     }
 
-    func testGPTTranscribeRequestWatchdogExpires() {
-        let queue = DispatchQueue(
-            label: "MeetingCopilotTests.RequestWatchdog"
+    func testReadyLocalFallbackKeepsCloudDictationAvailable() {
+        XCTAssertTrue(
+            QuickDictationTranscriberAvailability.isReady(
+                primaryReady: false,
+                engine: .openAITranscribe,
+                fallbackState: .connected
+            )
         )
-        let expired = expectation(description: "Request watchdog expired")
-        let watchdog = RealtimeRefinementRequestWatchdog(
-            queue: queue,
-            timeoutSeconds: 0.02
+        XCTAssertFalse(
+            QuickDictationTranscriberAvailability.isReady(
+                primaryReady: false,
+                engine: .localParakeet,
+                fallbackState: .connected
+            )
         )
-
-        queue.sync {
-            watchdog.start(transcriptID: "stalled-dictation") { transcriptID in
-                XCTAssertEqual(transcriptID, "stalled-dictation")
-                expired.fulfill()
-            }
-        }
-
-        wait(for: [expired], timeout: 1)
-    }
-
-    func testGPTTranscribeRequestWatchdogCanBeCancelled() {
-        let queue = DispatchQueue(
-            label: "MeetingCopilotTests.CancelledRequestWatchdog"
-        )
-        let expired = expectation(description: "Cancelled watchdog expired")
-        expired.isInverted = true
-        let watchdog = RealtimeRefinementRequestWatchdog(
-            queue: queue,
-            timeoutSeconds: 0.02
-        )
-
-        queue.sync {
-            watchdog.start(transcriptID: "completed-dictation") { _ in
-                expired.fulfill()
-            }
-            watchdog.cancel()
-        }
-
-        wait(for: [expired], timeout: 0.1)
     }
 
     func testQuickDictationPreviewTracksCaptureAndTranscription() {

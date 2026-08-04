@@ -166,10 +166,16 @@ bottom of the current screen. It displays the live microphone waveform while
 recording and periodically sends bounded snapshots to the same selected model
 to update the preview text. Quick Dictation does not use the Meeting-only
 `gpt-live-transcribe` model. After release, the selected model transcribes the
-complete recording once for the pasted and saved result.
+complete recording once for the pasted and saved result. Final transcription
+has no recording-duration deadline. If OpenAI has not completed after four
+seconds, the already-warmed Local Parakeet model starts in parallel; the first
+successful result wins without cancelling valid work merely because it is slow.
+Once Local Parakeet is ready, Quick Dictation also remains usable while the
+OpenAI connection is unavailable or reconnecting.
 That final transcription runs in the background, so another Quick Dictation can
-start immediately. Completed recordings remain queued in capture order so their
-text is pasted in the same order it was spoken.
+start immediately. Each completed recording retains the app and field that were
+focused when its capture began, even while provider work overlaps in the
+background.
 While recording overlaps an earlier final pass, the overlay keeps the live
 waveform in its own card and shows the background transcription in a second card
 above it. The app's synthesized paste event does not cancel the active recording.
@@ -192,7 +198,11 @@ preview, live microphone, and history controls. Completed text appears there in
 newest-first order. Each entry can be copied back to the clipboard or deleted,
 and **Erase All** clears the complete history after confirmation. This text is
 stored locally in the current user's Application Support folder until it is
-erased; dictation audio is never retained in the history.
+erased. Before a provider request begins, each completed recording is written as
+a standard WAV file in Application Support. It is removed only after transcript
+text is safely saved. A provider failure or app restart leaves the WAV in the
+Quick Dictation **Recovery** panel, where it can be retried with the selected
+provider, revealed in Finder, or explicitly deleted.
 
 PUnderclass speculatively prepares Local Parakeet in the background at launch,
 even when GPT-Transcribe is selected. The model pipeline and shared settings
@@ -283,11 +293,11 @@ The proof of concept includes:
   modifier-only Command-Option monitoring, and automatic paste into the app,
   window, and control that were focused when recording began.
 
-Audio and meeting transcripts remain in memory. Quick Dictation final text is
-the exception: it is stored locally for the history tab until the user erases
-it. Per-turn PCM is retained only long enough to perform the second pass.
-Diagnostic audio recording is not implemented and no meeting or dictation
-audio is written to disk.
+Meeting audio and transcripts remain in memory. Quick Dictation final text is
+stored locally for the history tab until the user erases it. Quick Dictation WAV
+audio is also stored temporarily while transcription is pending or recoverable;
+it is removed after text is safely saved or the user explicitly deletes it.
+Continuous meeting or diagnostic audio recording is not implemented.
 
 FluidAudio is Apache-2.0 licensed. NVIDIA Parakeet TDT 0.6B v3 is available
 under CC BY 4.0. Distribution attribution is recorded in

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum RealtimeRefinementServerEvent: Equatable {
     case sessionCreated
@@ -85,46 +86,6 @@ enum RealtimeRefinementServerEvent: Equatable {
     }
 }
 
-/// Bounds work after a refinement request becomes active. Calls must be made
-/// from `queue`, which keeps cancellation ordered with socket state changes.
-final class RealtimeRefinementRequestWatchdog {
-    private let queue: DispatchQueue
-    private let timeoutSeconds: TimeInterval
-    private var activeToken: UUID?
-    private var timeoutWorkItem: DispatchWorkItem?
-
-    init(queue: DispatchQueue, timeoutSeconds: TimeInterval) {
-        self.queue = queue
-        self.timeoutSeconds = timeoutSeconds
-    }
-
-    func start(
-        transcriptID: String,
-        onTimeout: @escaping (_ transcriptID: String) -> Void
-    ) {
-        cancel()
-        let token = UUID()
-        activeToken = token
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.activeToken == token else { return }
-            self.activeToken = nil
-            self.timeoutWorkItem = nil
-            onTimeout(transcriptID)
-        }
-        timeoutWorkItem = workItem
-        queue.asyncAfter(
-            deadline: .now() + timeoutSeconds,
-            execute: workItem
-        )
-    }
-
-    func cancel() {
-        activeToken = nil
-        timeoutWorkItem?.cancel()
-        timeoutWorkItem = nil
-    }
-}
-
 final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     typealias StateHandler = (SocketState) -> Void
     typealias RefinedHandler = (_ transcriptID: String, _ text: String) -> Void
@@ -139,7 +100,10 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private static let maximumAppendBytes = 1_048_576
     private static let pcm16BytesPerSecond = 24_000 * MemoryLayout<Int16>.size
     static let connectionTimeoutSeconds: TimeInterval = 30
-    static let requestTimeoutSeconds: TimeInterval = 30
+    private static let logger = Logger(
+        subsystem: "com.permanentunderclass.meetingcopilot",
+        category: "GPTTranscribe"
+    )
 
     private let apiKey: String
     private let stateHandler: StateHandler
@@ -147,7 +111,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private let failureHandler: FailureHandler
     private let usageHandler: UsageHandler
     private let socketQueue: DispatchQueue
-    private let requestWatchdog: RealtimeRefinementRequestWatchdog
 
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -159,6 +122,9 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private var queuedRequests: [RealtimeRefinementRequest] = []
     private var activeRequest: RealtimeRefinementRequest?
     private var activeItemID: String?
+    private var activeRequestStartUptime: UInt64?
+    private var activeCommitDispatchUptime: UInt64?
+    private var didLogFirstTranscriptionDelta = false
     private var disconnectWhenIdle = false
     private var connectionTimeoutWorkItem: DispatchWorkItem?
 
@@ -180,10 +146,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
             qos: .userInitiated
         )
         self.socketQueue = socketQueue
-        requestWatchdog = RealtimeRefinementRequestWatchdog(
-            queue: socketQueue,
-            timeoutSeconds: Self.requestTimeoutSeconds
-        )
         super.init()
     }
 
@@ -337,26 +299,13 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         let request = queuedRequests.removeFirst()
         activeRequest = request
         activeItemID = nil
-        scheduleRequestTimeout(for: request)
+        activeRequestStartUptime = DispatchTime.now().uptimeNanoseconds
+        activeCommitDispatchUptime = nil
+        didLogFirstTranscriptionDelta = false
+        Self.logger.notice(
+            "request_started transcript_id=\(request.transcriptID, privacy: .public) audio_bytes=\(request.pcm16Audio.count, privacy: .public)"
+        )
         sendConfiguration(for: request)
-    }
-
-    private func scheduleRequestTimeout(
-        for request: RealtimeRefinementRequest
-    ) {
-        requestWatchdog.start(
-            transcriptID: request.transcriptID
-        ) { [weak self] transcriptID in
-            guard
-                let self,
-                self.activeRequest?.transcriptID == transcriptID
-            else {
-                return
-            }
-            self.failConnection(
-                "GPT-Transcribe did not finish this transcription within \(Int(Self.requestTimeoutSeconds)) seconds. Please try again."
-            )
-        }
     }
 
     private func sendConfiguration(for request: RealtimeRefinementRequest) {
@@ -439,6 +388,16 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         task: URLSessionWebSocketTask
     ) {
         guard activeRequest?.transcriptID == transcriptID else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        activeCommitDispatchUptime = now
+        if let elapsed = elapsedMilliseconds(
+            from: activeRequestStartUptime,
+            to: now
+        ) {
+            Self.logger.notice(
+                "audio_commit_dispatched transcript_id=\(transcriptID, privacy: .public) client_prepare_ms=\(elapsed, privacy: .public)"
+            )
+        }
         do {
             let data = try Self.inputAudioCommitJSON()
             guard let text = String(data: data, encoding: .utf8) else {
@@ -513,9 +472,34 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
         case let .audioCommitted(itemID):
             guard activeRequest != nil else { return }
             activeItemID = itemID
+            if
+                let request = activeRequest,
+                let elapsed = elapsedMilliseconds(
+                    from: activeCommitDispatchUptime,
+                    to: DispatchTime.now().uptimeNanoseconds
+                )
+            {
+                Self.logger.notice(
+                    "audio_commit_acknowledged transcript_id=\(request.transcriptID, privacy: .public) server_ack_ms=\(elapsed, privacy: .public)"
+                )
+            }
 
-        case .transcriptionDelta:
-            break
+        case let .transcriptionDelta(itemID, _):
+            guard activeItemID == itemID, !didLogFirstTranscriptionDelta else {
+                return
+            }
+            didLogFirstTranscriptionDelta = true
+            if
+                let request = activeRequest,
+                let elapsed = elapsedMilliseconds(
+                    from: activeCommitDispatchUptime,
+                    to: DispatchTime.now().uptimeNanoseconds
+                )
+            {
+                Self.logger.notice(
+                    "first_transcription_delta transcript_id=\(request.transcriptID, privacy: .public) provider_wait_ms=\(elapsed, privacy: .public)"
+                )
+            }
 
         case let .transcriptionCompleted(itemID, transcript, _):
             guard activeItemID == itemID else { return }
@@ -554,6 +538,10 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
     private func completeActiveRequest(with transcript: String) {
         guard let request = activeRequest else { return }
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        logRequestFinished(
+            transcriptID: request.transcriptID,
+            outcome: "completed"
+        )
         resetActiveRequest()
 
         guard !text.isEmpty else {
@@ -568,15 +556,44 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
     private func failActiveRequest(_ message: String) {
         guard let request = activeRequest else { return }
+        logRequestFinished(
+            transcriptID: request.transcriptID,
+            outcome: "failed"
+        )
         resetActiveRequest()
         publishFailure(transcriptID: request.transcriptID, message: message)
     }
 
     private func resetActiveRequest() {
-        requestWatchdog.cancel()
         activeRequest = nil
         activeItemID = nil
+        activeRequestStartUptime = nil
+        activeCommitDispatchUptime = nil
+        didLogFirstTranscriptionDelta = false
         isAwaitingRequestConfiguration = false
+    }
+
+    private func logRequestFinished(
+        transcriptID: String,
+        outcome: String
+    ) {
+        guard let elapsed = elapsedMilliseconds(
+            from: activeRequestStartUptime,
+            to: DispatchTime.now().uptimeNanoseconds
+        ) else {
+            return
+        }
+        Self.logger.notice(
+            "request_finished transcript_id=\(transcriptID, privacy: .public) outcome=\(outcome, privacy: .public) total_ms=\(elapsed, privacy: .public)"
+        )
+    }
+
+    private func elapsedMilliseconds(
+        from start: UInt64?,
+        to end: UInt64
+    ) -> UInt64? {
+        guard let start, end >= start else { return nil }
+        return (end - start) / 1_000_000
     }
 
     private func failQueuedRequests(_ message: String) {
@@ -589,7 +606,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
     private func failConnection(_ message: String) {
         cancelConnectionTimeout()
-        requestWatchdog.cancel()
         failActiveRequest(message)
         failQueuedRequests(message)
         acceptsRequests = false
@@ -617,7 +633,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining {
 
     private func disconnectNow() {
         cancelConnectionTimeout()
-        requestWatchdog.cancel()
         acceptsRequests = false
         if unavailableMessage == nil {
             unavailableMessage = "The GPT-Transcribe connection is closed."
@@ -731,7 +746,6 @@ extension RealtimeRefinementClient: URLSessionWebSocketDelegate {
         socketQueue.async { [weak self] in
             guard let self, webSocketTask == self.task else { return }
             self.cancelConnectionTimeout()
-            self.requestWatchdog.cancel()
             self.acceptsRequests = false
             if self.unavailableMessage == nil {
                 self.unavailableMessage = "The GPT-Transcribe connection is closed."

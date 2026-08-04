@@ -62,6 +62,7 @@ final class DictationSelfTestRunner {
             },
             onResult: { [weak self] text in
                 self?.log("unexpected_transcription=\(text)")
+                return true
             },
             transcribesAfterRecording: false
         )
