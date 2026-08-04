@@ -36,6 +36,12 @@ if [[ -f "$hummingbird_license" ]]; then
         "$hummingbird_license" "$contents_dir/Resources/Hummingbird-LICENSE.txt"
 fi
 
+argmax_license="$project_dir/.build/checkouts/argmax-oss-swift/LICENSE"
+if [[ -f "$argmax_license" ]]; then
+    /usr/bin/install -m 0644 \
+        "$argmax_license" "$contents_dir/Resources/ArgmaxOSS-LICENSE.txt"
+fi
+
 if [[ -z "$signing_identity" ]]; then
     signing_identity="$(
         security find-identity -v -p codesigning 2>/dev/null \

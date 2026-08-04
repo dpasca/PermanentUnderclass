@@ -8,15 +8,16 @@ tracks and transcribes them in real time:
 
 Each track is sent to its own OpenAI Realtime transcription session, so speaker
 labels come from the audio route rather than diarization guesses. Completed
-turns are finalized by `gpt-transcribe` by default. An embedded local Parakeet
-model remains available as an offline fallback and evaluation baseline. The
-local engine runs directly inside PUnderclass and does not use the
-MacParakeet application, process, settings, microphone handling, or database.
+turns are finalized by `gpt-transcribe` by default. A compressed Whisper Large
+v3 model is the high-accuracy on-device option and cloud emergency fallback;
+Parakeet remains available as a faster, lighter evaluation baseline. Both local
+engines run directly inside PUnderclass and do not use another application's
+process, settings, microphone handling, or database.
 
 ## Requirements
 
 - macOS 14.2 or newer.
-- Apple Silicon when using the local Parakeet finalizer.
+- Apple Silicon when using either local finalizer.
 - Xcode command-line tools.
 - Wired or USB headphones during the proof of concept.
 - An OpenAI API key with access to `gpt-live-transcribe`. The optional OpenAI
@@ -156,22 +157,27 @@ while speaking and release either modifier to transcribe with the currently
 selected final-pass and Quick Dictation model. Quick Dictation captures the
 focused application, window, and control when recording begins, then returns
 to that original target before pasting—even if another process takes focus
-while recording or transcribing. Local Parakeet keeps dictation audio on this
-Mac; GPT-Transcribe sends the captured dictation audio to OpenAI. Pressing
+while recording or transcribing. Local Whisper and Local Parakeet keep
+dictation audio on this Mac; GPT-Transcribe sends the captured dictation audio
+to OpenAI. Pressing
 another keyboard key while the chord is down cancels the recording, so normal
 Command-Option shortcuts do not become dictations.
 
 By default, Quick Dictation shows a small, non-activating preview near the
 bottom of the current screen. It displays the live microphone waveform while
-recording and periodically sends bounded snapshots to the same selected model
-to update the preview text. Quick Dictation does not use the Meeting-only
-`gpt-live-transcribe` model. After release, the selected model transcribes the
-complete recording once for the pasted and saved result. Final transcription
-has no recording-duration deadline. If OpenAI has not completed after four
-seconds, the already-warmed Local Parakeet model starts in parallel; the first
-successful result wins without cancelling valid work merely because it is slow.
-Once Local Parakeet is ready, Quick Dictation also remains usable while the
-OpenAI connection is unavailable or reconnecting.
+recording and periodically sends bounded snapshots to the selected model to
+update the preview text. With GPT-Transcribe selected, preview and final work use
+independent connections, so a slow preview cannot queue in front of the final
+recording. Quick Dictation does not use the Meeting-only `gpt-live-transcribe`
+model. After release, the selected model transcribes the complete recording once
+for the pasted and saved result. Neither recording nor local transcription has
+a duration deadline. For cloud transcription, the response watchdog starts only
+after every audio byte and the commit have been sent. An explicit OpenAI failure
+starts Local Whisper immediately; otherwise, Local Whisper starts after 30
+seconds without a response. The first successful result wins without cancelling
+valid work merely because it is slow. Once Local Whisper is ready, Quick
+Dictation also remains usable while the OpenAI connection is unavailable or
+reconnecting.
 That final transcription runs in the background, so another Quick Dictation can
 start immediately. Each completed recording retains the app and field that were
 focused when its capture began, even while provider work overlaps in the
@@ -183,12 +189,20 @@ The waveform uses adaptive visual gain so quiet microphones still provide clear
 feedback. The pipeline's **Screen preview (optional stage)** switch directly
 controls the snapshot stage and overlay. Turning it off does not disable the
 required final transcription that runs when the shortcut is released.
+The **Clean final dictation** switch gives GPT-Transcribe an explicit instruction
+to omit hesitation fillers, abandoned starts, and immediate repetitions while
+preserving meaning and technical terms. Local fallback always prefers returning
+its safest transcript over failing because that optional style could not be
+applied.
 
 The system clipboard is used briefly for the paste. When the target exposes its
 text through Accessibility, the previous clipboard is restored only after the
 expected insertion is confirmed and only if no other application changed the
 clipboard. If insertion cannot be verified, the new dictation remains on the
 clipboard instead of restoring older text that a delayed paste might consume.
+Because iTerm does not expose its terminal buffer as an ordinary editable
+Accessibility value, its successful paste is treated as intentionally
+unverifiable instead of generating a false failure warning.
 If the original target closes or can no longer be focused, Quick Dictation saves
 the completed text in history instead of pasting it into a different window.
 Quick Dictation is paused while meeting capture is using the microphone.
@@ -204,11 +218,13 @@ text is safely saved. A provider failure or app restart leaves the WAV in the
 Quick Dictation **Recovery** panel, where it can be retried with the selected
 provider, revealed in Finder, or explicitly deleted.
 
-PUnderclass speculatively prepares Local Parakeet in the background at launch,
+PUnderclass speculatively prepares Local Whisper in the background at launch,
 even when GPT-Transcribe is selected. The model pipeline and shared settings
 show the current download/load phase and elapsed time. This warmup does not gate
 the selected cloud transcriber, and all local callers share the same in-flight
-preparation.
+preparation. The first run after the download—or after macOS invalidates its
+Core ML cache—can spend additional time specializing the model for the Mac;
+later launches reuse that cached specialization.
 
 ## Headless mode
 
@@ -246,10 +262,15 @@ The proof of concept includes:
   popover explains every stage, execution location, transition, and optional
   preview pass; each workflow repeats its own compact stage sequence.
 - A selectable final-pass and Quick Dictation engine:
+  - **Local Whisper** embeds Argmax WhisperKit and the compressed OpenAI Whisper
+    Large v3 Core ML model recommended by Argmax for maximum multilingual
+    accuracy. The first use downloads roughly 626 MB. Long recordings use VAD
+    chunking; one expected language pins decoding while multiple expected
+    languages enable automatic language detection. It preserves a verbatim
+    transcript as the already-warmed emergency fallback for GPT-Transcribe.
   - **Local Parakeet** embeds FluidAudio and NVIDIA Parakeet TDT 0.6B v3 using
-    Core ML. On macOS the large encoder uses the GPU to avoid slow or stalled
-    Neural Engine preparation while retaining the same model and recognition
-    quality. The first use downloads roughly 483 MB to FluidAudio's
+    Core ML. On macOS the large encoder uses the CPU to avoid a crash-prone
+    asynchronous Metal tensor bridge. The first use downloads roughly 483 MB to FluidAudio's
     application-support cache. Each fresh app process warms the cached Core ML
     models and their first inference in the background so later local use does
     not pay the cold-start cost.
@@ -271,7 +292,10 @@ The proof of concept includes:
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt
-  and terminology hints improve both OpenAI transcription passes.
+  and terminology hints improve both OpenAI transcription passes. Quick
+  Dictation shares the literal terminology and expected-language settings;
+  Local Whisper uses the expected-language setting and otherwise decodes
+  verbatim so a failed cloud cleanup cannot discard spoken content.
 - Per-track waveform, levels, packet/drop counters, live partial text, and a
   combined final transcript. Each finalized turn is labeled **Refining**,
   **Refined**, or **Live only**; when refinement changes the wording, the
@@ -279,7 +303,7 @@ The proof of concept includes:
 - An always-visible OpenAI API estimate with a per-model breakdown. It prefers
   server-reported transcription duration and falls back to the submitted PCM
   duration, separates live and final passes, includes cloud Quick Dictation,
-  and shows Local Parakeet as zero API cost.
+  and shows both local engines as zero API cost.
 - A host-side reference folder that is restored and scanned at launch, watched
   recursively for changes, and converted into a stable content revision and
   cache-friendly assistant prompt prefix. The display client receives only
@@ -299,8 +323,9 @@ audio is also stored temporarily while transcription is pending or recoverable;
 it is removed after text is safely saved or the user explicitly deletes it.
 Continuous meeting or diagnostic audio recording is not implemented.
 
-FluidAudio is Apache-2.0 licensed. NVIDIA Parakeet TDT 0.6B v3 is available
-under CC BY 4.0. Distribution attribution is recorded in
+FluidAudio is Apache-2.0 licensed, Argmax OSS and OpenAI Whisper are MIT
+licensed, and NVIDIA Parakeet TDT 0.6B v3 is available under CC BY 4.0.
+Distribution attribution is recorded in
 `AppBundle/THIRD_PARTY_NOTICES.md` and included in the built application.
 
 ## Security note

@@ -23,6 +23,7 @@ enum TranscriptRefinementState: Equatable {
 }
 
 enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
+    case localWhisper
     case localParakeet
     case openAITranscribe
 
@@ -30,6 +31,8 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .localWhisper:
+            "Local Whisper"
         case .localParakeet:
             "Local Parakeet"
         case .openAITranscribe:
@@ -39,6 +42,8 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
 
     var modelName: String {
         switch self {
+        case .localWhisper:
+            WhisperRefinementClient.modelDescription
         case .localParakeet:
             ParakeetRefinementClient.modelDescription
         case .openAITranscribe:
@@ -48,7 +53,7 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .localParakeet:
+        case .localWhisper, .localParakeet:
             "desktopcomputer"
         case .openAITranscribe:
             "cloud"
@@ -57,7 +62,7 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
 
     var purpose: String {
         switch self {
-        case .localParakeet:
+        case .localWhisper, .localParakeet:
             "Finalizes meeting turns and runs Quick Dictation privately on this Mac."
         case .openAITranscribe:
             "Finalizes meeting turns and runs Quick Dictation in the cloud."
@@ -66,11 +71,74 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
+        case .localWhisper:
+            "Compressed Whisper Large v3 runs on this Mac with multilingual decoding and preserves a verbatim fallback."
         case .localParakeet:
-            "Parakeet TDT v3 runs directly inside PUnderclass through Core ML."
+            "Parakeet TDT v3 is the faster, lighter local option and runs through Core ML."
         case .openAITranscribe:
             "Each bounded turn is transcribed again by the high-accuracy GPT-Transcribe model."
         }
+    }
+}
+
+enum WhisperPreparationStage: Equatable, Sendable {
+    case idle
+    case checkingCache
+    case downloading(fractionCompleted: Double)
+    case loading(component: String)
+    case ready
+    case failed(String)
+}
+
+struct WhisperPreparationState: Equatable, Sendable {
+    var stage: WhisperPreparationStage = .idle
+    var startedAt: Date?
+    var finishedAt: Date?
+
+    var isInProgress: Bool {
+        switch stage {
+        case .checkingCache, .downloading, .loading:
+            true
+        case .idle, .ready, .failed:
+            false
+        }
+    }
+
+    var isReady: Bool {
+        stage == .ready
+    }
+
+    var isFailed: Bool {
+        if case .failed = stage { return true }
+        return false
+    }
+
+    var downloadFraction: Double? {
+        guard case let .downloading(fractionCompleted) = stage else { return nil }
+        return fractionCompleted
+    }
+
+    func hint(at now: Date) -> String? {
+        switch stage {
+        case .idle:
+            nil
+        case .checkingCache:
+            "Background Whisper warmup · checking cache · \(elapsedText(at: now))"
+        case let .downloading(fractionCompleted):
+            "Background Whisper warmup · downloading \(Int((fractionCompleted * 100).rounded()))% · \(elapsedText(at: now))"
+        case let .loading(component):
+            "Background Whisper warmup · loading \(component) · \(elapsedText(at: now))"
+        case .ready:
+            "Local Whisper ready · initialized in \(elapsedText(at: finishedAt ?? now))"
+        case let .failed(message):
+            "Whisper warmup failed after \(elapsedText(at: finishedAt ?? now)): \(message)"
+        }
+    }
+
+    private func elapsedText(at date: Date) -> String {
+        let elapsed = max(0, Int(date.timeIntervalSince(startedAt ?? date)))
+        guard elapsed >= 60 else { return "\(elapsed)s" }
+        return "\(elapsed / 60)m \(elapsed % 60)s"
     }
 }
 
@@ -463,6 +531,8 @@ enum DictationPhase: Equatable {
             "Needs permission"
         case let .preparing(engine):
             switch engine {
+            case .localWhisper:
+                "Loading Whisper…"
             case .localParakeet:
                 "Loading Parakeet…"
             case .openAITranscribe:
@@ -483,6 +553,8 @@ enum DictationPhase: Equatable {
         switch self {
         case let .preparing(engine):
             switch engine {
+            case .localWhisper:
+                return "Whisper is still loading. Release the shortcut and wait for Ready before dictating."
             case .localParakeet:
                 return "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
             case .openAITranscribe:
@@ -511,6 +583,12 @@ struct TranscriptionContext: Equatable {
     var keywords: [String]
     var languages: [String]
     var delay: TranscriptionDelay
+    var outputStyle: TranscriptionOutputStyle = .verbatim
+}
+
+enum TranscriptionOutputStyle: Equatable {
+    case verbatim
+    case cleanDictation
 }
 
 enum MeetingCopilotError: LocalizedError {

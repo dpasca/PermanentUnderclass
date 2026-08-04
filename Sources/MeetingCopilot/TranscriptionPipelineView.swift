@@ -101,7 +101,7 @@ struct QuickDictationPreviewControl: View {
                 Text("Screen preview (optional stage)")
                     .font(.callout.weight(.semibold))
                 Text(
-                    "While held, periodically runs \(controller.refinementEngine.title) to update the floating waveform and text. Final transcription still runs when this is off."
+                    "While held, periodically runs \(controller.refinementEngine.title) to update the floating waveform and text. Cloud preview uses its own connection so it cannot hold up the final pass."
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -135,6 +135,50 @@ struct QuickDictationPreviewControl: View {
     }
 }
 
+struct QuickDictationCleanupControl: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .foregroundStyle(.purple)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Clean final dictation")
+                    .font(.callout.weight(.semibold))
+                Text(
+                    "Asks GPT-Transcribe to omit hesitation fillers, abandoned starts, and immediate repetitions without changing meaning. Local models keep their safest raw result if they cannot apply that style."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("Clean dictation", isOn: cleanupEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.purple.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(Color.purple.opacity(0.22), lineWidth: 1)
+        }
+    }
+
+    private var cleanupEnabled: Binding<Bool> {
+        Binding(
+            get: { controller.dictationCleanupEnabled },
+            set: controller.setDictationCleanupEnabled
+        )
+    }
+}
+
 struct SelectableTranscriptionModelPicker: View {
     @ObservedObject var controller: MeetingController
 
@@ -160,38 +204,61 @@ struct SelectableTranscriptionModelPicker: View {
             }
 
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                parakeetPreparationHint(at: timeline.date)
+                localPreparationHints(at: timeline.date)
             }
         }
     }
 
     @ViewBuilder
-    private func parakeetPreparationHint(at date: Date) -> some View {
-        if let hint = controller.parakeetPreparation.hint(at: date) {
-            HStack(spacing: 6) {
-                if let fraction = controller.parakeetPreparation.downloadFraction {
-                    ProgressView(value: fraction)
-                        .frame(width: 54)
-                } else if controller.parakeetPreparation.isInProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if controller.parakeetPreparation.isReady {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                Text(hint)
-                    .lineLimit(2)
-                Spacer()
-            }
-            .font(.callout)
-            .foregroundStyle(
-                controller.parakeetPreparation.isFailed ? Color.orange : Color.secondary
+    private func localPreparationHints(at date: Date) -> some View {
+        if let hint = controller.whisperPreparation.hint(at: date) {
+            preparationHint(
+                hint,
+                downloadFraction: controller.whisperPreparation.downloadFraction,
+                isInProgress: controller.whisperPreparation.isInProgress,
+                isReady: controller.whisperPreparation.isReady,
+                isFailed: controller.whisperPreparation.isFailed
             )
-            .help(hint)
         }
+        if let hint = controller.parakeetPreparation.hint(at: date) {
+            preparationHint(
+                hint,
+                downloadFraction: controller.parakeetPreparation.downloadFraction,
+                isInProgress: controller.parakeetPreparation.isInProgress,
+                isReady: controller.parakeetPreparation.isReady,
+                isFailed: controller.parakeetPreparation.isFailed
+            )
+        }
+    }
+
+    private func preparationHint(
+        _ hint: String,
+        downloadFraction: Double?,
+        isInProgress: Bool,
+        isReady: Bool,
+        isFailed: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            if let downloadFraction {
+                ProgressView(value: downloadFraction)
+                    .frame(width: 54)
+            } else if isInProgress {
+                ProgressView()
+                    .controlSize(.small)
+            } else if isReady {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            Text(hint)
+                .lineLimit(2)
+            Spacer()
+        }
+        .font(.callout)
+        .foregroundStyle(isFailed ? Color.orange : Color.secondary)
+        .help(hint)
     }
 }
 
@@ -244,6 +311,7 @@ struct TranscriptionPipelinePopover: View {
                     detail: "The selected model is reused; Meeting’s live model is not involved."
                 )
                 QuickDictationPreviewControl(controller: controller)
+                QuickDictationCleanupControl(controller: controller)
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
                         stage: "OPTIONAL STAGE · WHILE HELD",
@@ -287,7 +355,7 @@ struct TranscriptionPipelinePopover: View {
 
     private var selectedLocationBadge: String {
         switch controller.refinementEngine {
-        case .localParakeet:
+        case .localWhisper, .localParakeet:
             "SELECTED · ON DEVICE"
         case .openAITranscribe:
             "SELECTED · CLOUD"

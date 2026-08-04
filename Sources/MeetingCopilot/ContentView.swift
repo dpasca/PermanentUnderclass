@@ -587,7 +587,7 @@ struct ContentView: View {
                 }
 
                 HStack {
-                    Text("Expected languages and the API key are shared with Quick Dictation.")
+                    Text("Terminology and the API key are shared with cloud Quick Dictation; expected languages also guide Local Whisper.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("Shared Settings…") {
@@ -888,8 +888,14 @@ private struct APIExpensePopover: View {
                     .foregroundStyle(.secondary)
             }
             expenseRow(
-                title: "Local Parakeet",
+                title: "Local Whisper Large v3",
                 detail: "Runs on this Mac",
+                cost: 0,
+                color: .green
+            )
+            expenseRow(
+                title: "Local Parakeet",
+                detail: "Faster lightweight local option",
                 cost: 0,
                 color: .green
             )

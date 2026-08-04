@@ -16,6 +16,10 @@ let package = Package(
             exact: "0.15.4"
         ),
         .package(
+            url: "https://github.com/argmaxinc/argmax-oss-swift",
+            exact: "1.0.0"
+        ),
+        .package(
             url: "https://github.com/hummingbird-project/hummingbird.git",
             exact: "2.22.0"
         )
@@ -25,7 +29,8 @@ let package = Package(
             name: "MeetingCopilot",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
-                .product(name: "Hummingbird", package: "hummingbird")
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift")
             ],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
