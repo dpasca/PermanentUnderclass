@@ -12,33 +12,34 @@ The standalone server automatically falls back to mock data and makes no model
 request. The page labels that state prominently so simulated answers cannot be
 mistaken for live inference.
 
-This is deliberately a thin display. The behavior and reference-folder status
-are read-only projections from the Mac host. The Mac ingests documents, calls
-the assistant model, and sends complete cards and
-citation metadata; source files, prompts, audio, and credentials do not cross
-into the display client.
+This is deliberately a thin, teleprompter-style display. The Mac ingests
+documents, calls the assistant model, and sends complete suggestion data;
+source files, prompts, audio, and credentials do not cross into the display
+client. The display reduces that data to a connection light and a stack of
+conversation rounds. The current question and its first-person cues stay large
+at the top; up to three earlier questions and their cues remain below at a
+smaller, quieter scale so a back-and-forth remains easy to follow. Each new
+suggestion resets the teleprompter to the new current round, even if the
+previous cue had been scrolled.
 
 Useful interactions:
 
-- **Next mock answer** appears only in standalone mode and cycles six sample
-  comparisons, including two CUDA performance-debugging questions.
-- **Test reconnect** closes the real SSE stream in live mode and resumes from
-  its composite cursor; in standalone mode it runs a visual simulation.
-- The connection chip shows stream health and protocol details.
-- The session estimate opens a cost breakdown.
-- Answer outlines can be paused, pinned, copied, or dismissed. The newest card
-  stays on top, with up to three previous cards below it; host snapshots retain
-  that history across reloads and reconnects.
-- The inference panel distinguishes preview-only, blocked, paused, armed,
-  working, checked-without-answer, ready, and failed states.
+- **Next example** appears only in standalone mode and cycles six sample cues,
+  including two CUDA performance-debugging questions.
+- The corner light is green only for a live host connection and red when the
+  display is disconnected or reconnecting. Clicking it reveals transport
+  diagnostics and the reconnect test.
+- The host still retains suggestion history, citations, inference state, and
+  usage diagnostics. The focused display uses history to keep earlier rounds
+  readable below the active cue without bringing back answer cards or metadata.
 - An `Other` interviewer pause or final turn is eligible for the host model's
-  structured outline decision. Each outline contains three to five labeled,
-  conversational beats rather than polished corporate phrasing. `You` turns
-  remain visible for comparison and do not
-  replace it. The browser itself never decides via text matching.
-- File-backed outlines show their citations. Approach-oriented outlines based on
-  the live discussion and general model knowledge remain available when local
-  files do not support the topic, with a **NO LOCAL SUPPORTING MATERIAL** prefix.
+  structured outline decision. Each outline contains three to five concise,
+  first-person cues that can be read aloud without visible labels or a context
+  card. `You` turns do not replace it. The browser itself never decides via text
+  matching.
+- Approach-oriented cues remain available when local files do not support the
+  topic, but they use hypothetical phrasing such as "I would…" rather than
+  inventing personal history.
 
 The transport and recovery decision is documented in
 [`Docs/live-assistant-architecture.md`](../../Docs/live-assistant-architecture.md).

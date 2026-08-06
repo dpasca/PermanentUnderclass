@@ -20,10 +20,10 @@ const mockScenarios = [
     question: "“Tell me about a time you improved the performance of a critical system.”",
     candidateStart: "Yeah—the clearest one is probably our checkout path...",
     beats: [
-      { label: "What I saw", point: "The checkout path was just too slow" },
-      { label: "What I tried", point: "Profiled it; found the same inventory lookup repeating" },
-      { label: "Check", point: "Replayed traffic and watched p95, not just averages" },
-      { label: "Afterward", point: "Put a latency alert on that path" }
+      { label: "What I saw", point: "I inherited a checkout path that had become noticeably slow." },
+      { label: "What I tried", point: "I profiled it and found repeated inventory lookups." },
+      { label: "Check", point: "I replayed real traffic and watched p95, not just averages." },
+      { label: "Afterward", point: "I added a latency alert so the regression could not return quietly." }
     ],
     citation: "Projects/Checkout.md"
   },
@@ -31,10 +31,10 @@ const mockScenarios = [
     question: "“What did you learn when that launch did not go to plan?”",
     candidateStart: "Honestly, that first rollout was messier than I expected...",
     beats: [
-      { label: "What broke", point: "I had really planned for the happy path" },
-      { label: "First move", point: "Paused the rollout and added a compatibility layer" },
-      { label: "Messy bit", point: "Two teams were debugging from different timelines" },
-      { label: "Now", point: "I rehearse rollback and mixed-version cases first" }
+      { label: "What broke", point: "I had planned too much around the happy path." },
+      { label: "First move", point: "I paused the rollout and added a compatibility layer." },
+      { label: "Messy bit", point: "I got both teams debugging from the same timeline." },
+      { label: "Now", point: "I now rehearse rollback and mixed-version cases before launch." }
     ],
     citation: "Projects/Rollout-retro.md"
   },
@@ -42,10 +42,10 @@ const mockScenarios = [
     question: "“How do you decide when a low-latency system is ready to ship?”",
     candidateStart: "I start with what delay a person can actually feel...",
     beats: [
-      { label: "Start", point: "Pick a delay people can actually notice" },
-      { label: "Break it down", point: "Time capture, model, and display separately" },
-      { label: "Try bad cases", point: "Replay awkward pauses and broken connections" },
-      { label: "Good enough", point: "Fast, but not constantly firing at the wrong time" }
+      { label: "Start", point: "I start by choosing a delay people can actually notice." },
+      { label: "Break it down", point: "I measure capture, model, and display latency separately." },
+      { label: "Try bad cases", point: "I replay awkward pauses and broken connections." },
+      { label: "Good enough", point: "I ship when it feels fast without firing at the wrong time." }
     ],
     citation: "Projects/Audio-assistant.md"
   },
@@ -53,10 +53,10 @@ const mockScenarios = [
     question: "“What tradeoff did you make to keep the assistant useful?”",
     candidateStart: "The awkward part was answering early without jumping in too soon...",
     beats: [
-      { label: "The tension", point: "Answer early, or wait for cleaner transcript" },
-      { label: "What I chose", point: "Start after a stable 800 ms pause" },
-      { label: "Fallback", point: "Run again when the final turn arrives" },
-      { label: "Still checking", point: "Whether early cards are useful, not merely fast" }
+      { label: "The tension", point: "I was balancing an early answer against a cleaner transcript." },
+      { label: "What I chose", point: "I started generation after a stable 800-millisecond pause." },
+      { label: "Fallback", point: "I ran it again when the final turn arrived." },
+      { label: "Still checking", point: "I still measured whether early cues were useful, not merely fast." }
     ],
     citation: "Architecture/Latency-harness.md"
   },
@@ -64,10 +64,10 @@ const mockScenarios = [
     question: "“A CUDA kernel shows high occupancy but still runs slowly. What would you look at next?”",
     candidateStart: "I would not trust occupancy by itself; I would open Nsight Compute first...",
     beats: [
-      { label: "First thought", point: "High occupancy does not mean useful work" },
-      { label: "Memory", point: "Check coalescing, cache misses, and DRAM throughput" },
-      { label: "Warp stalls", point: "Use Nsight Compute; see what warps wait on" },
-      { label: "Then code", point: "Look for divergence, spills, and expensive instructions" }
+      { label: "First thought", point: "I would not treat high occupancy as proof of useful work." },
+      { label: "Memory", point: "I would check coalescing, cache misses, and DRAM throughput." },
+      { label: "Warp stalls", point: "I would use Nsight Compute to see why warps were stalled." },
+      { label: "Then code", point: "I would inspect divergence, register spills, and expensive instructions." }
     ],
     citation: "Notes/CUDA-performance.md"
   },
@@ -75,10 +75,10 @@ const mockScenarios = [
     question: "“Why might a tiled CUDA matrix multiply get slower when you increase the tile size?”",
     candidateStart: "My first guess is that the larger tile pushed resource use too far...",
     beats: [
-      { label: "Likely cost", point: "The bigger tile uses more shared memory" },
-      { label: "Registers", point: "Pressure may spill values into local memory" },
-      { label: "Residency", point: "Fewer blocks can stay active on each SM" },
-      { label: "I would test", point: "Compare tile sizes and bank conflicts in Nsight" }
+      { label: "Likely cost", point: "I would first suspect the larger tile pushed resource use too far." },
+      { label: "Residency", point: "I would check whether shared-memory use reduced residency." },
+      { label: "Registers", point: "I would look for register pressure and local-memory spills." },
+      { label: "I would test", point: "I would compare tile sizes and bank conflicts in Nsight." }
     ],
     citation: "Notes/CUDA-kernels.md"
   }
@@ -151,11 +151,16 @@ function elapsedMilliseconds(startedAt, endedAt = Date.now()) {
 function setConnectionStatus(kind, label, eyebrow = null) {
   state.connectionKind = kind;
   const chip = $("#connectionButton");
-  chip.classList.remove("is-connected", "is-reconnecting");
+  chip.classList.remove("is-connected", "is-reconnecting", "is-disconnected");
   if (kind === "connected") chip.classList.add("is-connected");
   if (kind === "reconnecting") chip.classList.add("is-reconnecting");
+  if (kind === "disconnected") chip.classList.add("is-disconnected");
   $("#connectionEyebrow").textContent = eyebrow || (kind === "connected" ? "CAUGHT UP" : "RECONNECTING");
   $("#connectionLabel").textContent = label;
+  chip.setAttribute("aria-label", label);
+  const popover = $("#connectionPopover");
+  popover.classList.toggle("is-connected", kind === "connected");
+  $("#popoverConnectionLabel").textContent = label;
   renderInferenceStatus();
 }
 
@@ -518,11 +523,27 @@ function replaceAnswerBeats(container, beats) {
   });
 }
 
+function previousRoundsFor(suggestions, current) {
+  const currentQuestion = current?.question?.trim().toLocaleLowerCase() || "";
+  const seen = new Set(currentQuestion ? [currentQuestion] : []);
+  const previous = [];
+
+  suggestions.forEach((suggestion) => {
+    if (!suggestion || suggestion.id === current?.id) return;
+    const question = suggestion.question?.trim();
+    const key = question?.toLocaleLowerCase();
+    if (!question || seen.has(key)) return;
+    seen.add(key);
+    previous.push(suggestion);
+  });
+  return previous.slice(0, 3);
+}
+
 function outlineText(suggestion) {
   if (!suggestion) return "";
   return [
     suggestion.question,
-    ...(suggestion.beats || []).map((beat) => `${beat.label} — ${beat.point}`)
+    ...(suggestion.beats || []).map((beat) => beat.point)
   ].join("\n");
 }
 
@@ -538,56 +559,34 @@ function generationTimingText(suggestion) {
   const modelTime = Number(suggestion.generationMilliseconds || 0).toLocaleString();
   const totalTime = suggestion.totalLatencyMilliseconds;
   return Number.isFinite(totalTime)
-    ? `model ${modelTime} ms · transcript→card ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
+    ? `model ${modelTime} ms · transcript→cue ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
     : `model ${modelTime} ms`;
 }
 
-function createHistoryCard(suggestion) {
-  const card = document.createElement("article");
-  const citationCount = (suggestion.citations || []).length;
-  const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
-  card.className = `answer-card history-card${usesGeneralKnowledge ? " uses-general-knowledge" : ""}`;
-  card.dataset.suggestionId = suggestion.id;
+function createHistoryRound(suggestion, index) {
+  const round = document.createElement("article");
+  round.className = "history-round";
+  round.dataset.suggestionId = suggestion.id;
 
   const header = document.createElement("header");
-  const title = document.createElement("div");
-  title.className = "history-card-title";
   const eyebrow = document.createElement("small");
-  eyebrow.textContent = "PREVIOUS OUTLINE";
+  eyebrow.textContent = index === 0 ? "PREVIOUS ROUND" : `${index + 1} ROUNDS BACK`;
   const question = document.createElement("strong");
   question.textContent = suggestion.question;
-  title.append(eyebrow, question);
-  const copy = document.createElement("button");
-  copy.className = "history-copy-button";
-  copy.type = "button";
-  copy.dataset.copySuggestionId = suggestion.id;
-  copy.textContent = "Copy";
-  copy.setAttribute("aria-label", "Copy previous answer outline");
-  header.append(title, copy);
+  header.append(eyebrow, question);
 
   const beats = document.createElement("ul");
-  beats.className = "answer-beats compact-beats";
-  replaceAnswerBeats(beats, suggestion.beats);
+  beats.className = "history-cues";
+  (suggestion.beats || []).forEach((beat) => {
+    const item = document.createElement("li");
+    const point = document.createElement("span");
+    point.textContent = beat.point;
+    item.append(point);
+    beats.append(item);
+  });
 
-  const footer = document.createElement("footer");
-  const grounding = document.createElement("span");
-  grounding.textContent = groundingText(suggestion);
-  footer.append(grounding);
-  const citation = suggestion.citations?.[0];
-  if (citation) {
-    const source = document.createElement("button");
-    source.className = "source-citation compact-citation";
-    source.type = "button";
-    source.dataset.citationPath = citation.path;
-    source.textContent = `${citation.label} · ${citation.path}`;
-    footer.append(source);
-  }
-  const timing = document.createElement("span");
-  timing.className = "generation-time";
-  timing.textContent = generationTimingText(suggestion);
-  footer.append(timing);
-  card.append(header, beats, footer);
-  return card;
+  round.append(header, beats);
+  return round;
 }
 
 function renderSuggestionStack(assistant) {
@@ -602,7 +601,7 @@ function renderSuggestionStack(assistant) {
   }
 
   $("#answerQuestion").textContent = current.question;
-  $("#answerLead").textContent = "Key beats · not a script";
+  $("#answerLead").textContent = "Speak from here";
   replaceAnswerBeats($("#answerBeats"), current.beats);
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
@@ -616,14 +615,15 @@ function renderSuggestionStack(assistant) {
   $("#sourceCitation").hidden = !citation;
   $("#pinButton").classList.toggle("is-active", assistant?.pinnedSuggestionID === current.id);
 
-  const previous = suggestions.filter((item) => item.id !== current.id);
+  const previous = previousRoundsFor(suggestions, current);
   $("#answerHistory").hidden = previous.length === 0;
-  $("#answerHistoryCount").textContent = `${previous.length} previous · newest first`;
+  $("#answerHistoryCount").textContent = `${previous.length} previous round${previous.length === 1 ? "" : "s"}`;
   const historyCards = $("#answerHistoryCards");
-  historyCards.replaceChildren(...previous.map(createHistoryCard));
+  historyCards.replaceChildren(...previous.map(createHistoryRound));
 
   if (state.renderedSuggestionID !== current.id) {
     state.renderedSuggestionID = current.id;
+    $(".teleprompter").scrollTop = 0;
     $("#answerCard").animate(
       [{ opacity: 0.45, transform: "translateY(-5px)" }, { opacity: 1, transform: "translateY(0)" }],
       { duration: 260, easing: "ease-out" }
@@ -950,7 +950,7 @@ function enterMockMode() {
   state.mockHistory = [];
   state.mockGeneration = 0;
   $("#modeRibbon").textContent = "STANDALONE PREVIEW · simulated events (start the Swift app for live mode)";
-  setConnectionStatus("connected", "Standalone preview", "SIMULATED");
+  setConnectionStatus("disconnected", "Not connected", "PREVIEW");
   $("#nextMomentButton").hidden = false;
   renderMockScenario(0);
 }
@@ -960,7 +960,7 @@ function testReconnect() {
     setConnectionStatus("reconnecting", "Simulating retry · 1.0 s");
     showRecovery("Connection interrupted", "Simulating host-side capture continuing…");
     setTimeout(() => {
-      setConnectionStatus("connected", "Standalone preview", "SIMULATED");
+      setConnectionStatus("disconnected", "Not connected", "PREVIEW");
       showRecovery("Back online · nothing lost", "Simulated replay completed.", true);
     }, 1600);
     return;

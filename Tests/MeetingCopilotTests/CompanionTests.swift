@@ -360,7 +360,12 @@ final class CompanionTests: XCTestCase {
     func testWingmanRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
         XCTAssertTrue(
             InterviewWingmanClient.behaviorInstructions.contains(
-                "Use telegraphic fragments"
+                "first-person speaking cue"
+            )
+        )
+        XCTAssertTrue(
+            InterviewWingmanClient.behaviorInstructions.contains(
+                "every point must stand on its own"
             )
         )
         XCTAssertTrue(

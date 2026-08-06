@@ -125,9 +125,9 @@ An `assistant.suggestion` payload is already a view model, for example:
   "basedOnSequence": 2487,
   "question": "Tell me about a time you improved a critical system.",
   "beats": [
-    {"label": "Context", "point": "Checkout latency hurting conversion"},
-    {"label": "My move", "point": "Trace slow path; remove repeated lookup"},
-    {"label": "Proof", "point": "Validate 41% lower p95 under load"}
+    {"label": "Context", "point": "I inherited a checkout path whose latency was hurting conversion."},
+    {"label": "My move", "point": "I traced the slow path and removed a repeated lookup."},
+    {"label": "Proof", "point": "I validated a 41% lower p95 under load."}
   ],
   "citations": [{"label": "Checkout latency", "path": "Projects/Checkout.md"}],
   "grounding": "localReferences",
@@ -138,9 +138,14 @@ An `assistant.suggestion` payload is already a view model, for example:
 }
 ```
 
-The host chooses the facts and shorthand wording. `assistant.suggestionHistory`
+The host chooses the facts and concise first-person wording. Labels are internal
+structure; the teleprompter displays only the self-contained speaking cues.
+`assistant.suggestionHistory`
 in the atomic snapshot retains the newest four outlines in newest-first order.
-The display may lay out, copy, pin, or dismiss these objects, but it does not
+The focused display uses that history as a typographic round stack: the current
+question and cues are primary, while up to three distinct earlier questions and
+their cues remain below at a smaller scale. It may also copy, pin, or dismiss
+these objects, but it does not
 receive retrieved chunks and does not run a second interpretation step.
 
 An 800 ms audio pause from `Other` schedules a structured shorthand outline
@@ -150,7 +155,7 @@ turns remain visible in the transcript for comparison but do not schedule or
 replace the model outline. Exact partial/final duplicates for one interviewer
 turn are coalesced. This is structural speaker routing, not a language
 heuristic; there is no keyword or pattern gate in front of the model. A
-completed decision that returns no outline leaves the previous cards intact and
+completed decision that returns no outline leaves the previous suggestion intact and
 is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
@@ -159,9 +164,9 @@ The structured decision labels every displayed outline as either
 `localReferences` or `generalKnowledge`. Local grounding requires at least one
 validated citation path from the current indexed snapshot. If no indexed file
 supports a useful outline, the model may use the live discussion as context and
-general model knowledge with an empty citation list. The display prefixes that
-card with **NO LOCAL SUPPORTING MATERIAL** and keeps the warning when copying
-the outline.
+general model knowledge with an empty citation list. Those cues use hypothetical
+first-person language (for example, "I would…") rather than invented past
+experience. A grounding warning remains in copied diagnostic output.
 
 The host also writes privacy-safe lifecycle markers under the
 `com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
@@ -322,8 +327,9 @@ Each behavior defines:
 The host passes the cached stable reference prefix, recent finalized turns,
 the current partial, and an explicit interviewer response target to a fast
 model and requires structured output. It converts the model result into three
-to five labeled telegraphic beats in plain, conversational language before
-publishing it. It should cancel or
+to five concise, first-person speaking cues in plain, conversational language
+before publishing it. Each cue stands on its own because the teleprompter hides
+the internal labels. It should cancel or
 supersede stale generations when a newer interviewer moment arrives. No regex
 or keyword gate should decide whether the meeting "looks like" an interview.
 
