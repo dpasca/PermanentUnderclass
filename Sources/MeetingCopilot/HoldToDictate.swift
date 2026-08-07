@@ -1593,14 +1593,17 @@ final class HoldToDictateService {
 
     /// Publishes the delivery outcome and, when nothing was pasted, leaves the
     /// text on the clipboard so it is one keystroke away instead of lost.
+    ///
+    /// Several dictations can be transcribing at once, so one going
+    /// undeliverable says nothing about whether another is mid-paste. The
+    /// clipboard write therefore goes through `PasteInjector`, which holds it
+    /// until no posted Cmd+V could still pick it up by mistake.
     private func finishDelivery(
         _ outcome: QuickDictationDeliveryOutcome,
         text: String
     ) {
         if case .notDelivered = outcome {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
+            pasteInjector.offerOnClipboard(text)
         }
         deliveryHandler(outcome)
         progressHandler(nil)
@@ -2658,6 +2661,9 @@ final class PasteInjector {
     /// A restore that is waiting out its dwell. Until it runs, it — not the
     /// pasteboard — holds the user's real clipboard.
     private var pendingRestore: PasteAttempt?
+    /// Text owed to the clipboard once no paste is in flight. Last one wins,
+    /// matching the plain overwrite this replaced.
+    private var pendingClipboardOffer: String?
     private var scheduledWorkItem: DispatchWorkItem?
     private var generation = UUID()
 
@@ -2672,6 +2678,19 @@ final class PasteInjector {
         processNextRequest()
     }
 
+    /// Leaves text on the clipboard for the user to paste by hand, once doing
+    /// so cannot corrupt a paste in flight.
+    ///
+    /// Writing straight to the pasteboard — which is what callers used to do —
+    /// makes an already-posted Cmd+V deliver *this* text instead of its own,
+    /// and bumps the change count so the in-flight attempt gives up on handing
+    /// the user their real clipboard back. Several dictations can be in flight
+    /// at once, so this is reachable whenever one of them is undeliverable.
+    func offerOnClipboard(_ text: String) {
+        pendingClipboardOffer = text
+        drainClipboardOffer()
+    }
+
     func cancel() {
         generation = UUID()
         scheduledWorkItem?.cancel()
@@ -2679,11 +2698,58 @@ final class PasteInjector {
         restoreActiveClipboardIfUnchanged(isDeliveryProven: false)
         queuedRequests.removeAll()
         activeRequest = nil
+        drainClipboardOffer()
+    }
+
+    private func drainClipboardOffer() {
+        guard let text = pendingClipboardOffer else { return }
+        // The offer is only unsafe while a posted Cmd+V could still read it:
+        // an attempt that has not been retired yet (`activePasteAttempt`), one
+        // inside its dwell (`pendingRestore`), or one about to be posted.
+        // Notably this does *not* wait on `activeRequest`, so the ordinary
+        // "paste failed" path still hands the text over without delay.
+        guard
+            activePasteAttempt == nil,
+            pendingRestore == nil,
+            queuedRequests.isEmpty
+        else {
+            return
+        }
+        pendingClipboardOffer = nil
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        Self.logger.notice("clipboard_offer_delivered")
     }
 
     private func processNextRequest() {
-        guard activeRequest == nil, !queuedRequests.isEmpty else { return }
-        activeRequest = queuedRequests.removeFirst()
+        guard activeRequest == nil, !queuedRequests.isEmpty else {
+            drainClipboardOffer()
+            return
+        }
+        let request = queuedRequests.removeFirst()
+        activeRequest = request
+        // Re-checked here, not just when the dictation was handed over: a
+        // queued request waits out the previous paste's serialization delay,
+        // and by the time it runs the user may have moved on. `restoreFocus`
+        // would then drag them back to where they were to type into a field
+        // they have left, which is worse than not pasting at all.
+        guard request.target.isStillFrontmost else {
+            let currentApplication = NSWorkspace.shared.frontmostApplication?
+                .localizedName ?? "another app"
+            Self.logger.notice(
+                "paste_skipped_stale_target expected=\(request.target.applicationName, privacy: .public) frontmost=\(currentApplication, privacy: .public)"
+            )
+            finishActiveRequest(
+                with: .failure(
+                    MeetingCopilotError.audio(
+                        "You switched to \(currentApplication) before Quick Dictation could paste this text."
+                    )
+                ),
+                generation: generation
+            )
+            return
+        }
         attemptFocus(
             remainingAttempts: Self.maximumFocusAttempts,
             generation: generation
@@ -3091,6 +3157,9 @@ final class PasteInjector {
             guard self.pendingRestore?.id == attempt.id else { return }
             self.pendingRestore = nil
             Self.restoreClipboardAndLog(after: attempt)
+            // The dwell was the last thing holding back an undeliverable
+            // dictation waiting for the clipboard.
+            self.drainClipboardOffer()
         }
     }
 
