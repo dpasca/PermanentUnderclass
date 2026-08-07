@@ -105,6 +105,8 @@ private final class QuickDictationOverlayModel: ObservableObject {
     @Published var waveform: [Float] = Array(repeating: 0, count: 180)
     @Published var partialTranscript = ""
     @Published var microphoneName = "System default microphone"
+    @Published var engineName = ""
+    @Published var engineRunsLocally = true
     @Published var progress: DictationTranscriptionProgress?
     var onCopy: () -> Void = {}
     var onDismiss: () -> Void = {}
@@ -148,19 +150,46 @@ private struct QuickDictationOverlayView: View {
                     }
                 }
 
-                if model.content == .listening {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(model.microphoneName)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                // Which microphone is heard and which model is doing the work
+                // are both worth knowing at a glance, and stay visible through
+                // transcription rather than only while recording.
+                if model.content == .listening || model.content == .transcribing {
+                    HStack(spacing: 9) {
+                        if model.content == .listening {
+                            Label {
+                                Text(model.microphoneName)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            } icon: {
+                                Image(systemName: "mic.fill")
+                            }
+                        }
+                        if !model.engineName.isEmpty {
+                            Label {
+                                Text(model.engineName)
+                                    .lineLimit(1)
+                            } icon: {
+                                Image(
+                                    systemName: model.engineRunsLocally
+                                        ? "desktopcomputer"
+                                        : "cloud"
+                                )
+                            }
+                            .foregroundStyle(
+                                model.engineRunsLocally ? Color.green : Color.blue
+                            )
+                        }
+                        Spacer(minLength: 0)
                     }
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
+                    .imageScale(.small)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Microphone")
-                    .accessibilityValue(model.microphoneName)
+                    .accessibilityLabel("Microphone and model")
+                    .accessibilityValue(
+                        "\(model.microphoneName), \(model.engineName)"
+                    )
                 }
 
                 content
@@ -573,6 +602,13 @@ final class QuickDictationOverlayController {
     func update(progress: DictationTranscriptionProgress?) {
         guard isEnabled, !isSuppressed else { return }
         model.progress = progress
+    }
+
+    /// The model doing the work, so the overlay answers "what is listening"
+    /// without opening settings.
+    func update(engine: TranscriptRefinementEngine) {
+        model.engineName = engine.shortLabel
+        model.engineRunsLocally = !engine.isCloud
     }
 
     func update(microphoneName: String) {

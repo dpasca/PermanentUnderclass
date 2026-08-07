@@ -1627,6 +1627,82 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertFalse(state.content.needsAcknowledgement)
     }
 
+    // MARK: - Local-first capability
+
+    func testFreshInstallCanDictateWithoutAnAPIKey() {
+        let capability = CloudCapability(hasAPIKey: false)
+
+        // The whole point: dictation must work before anything is configured.
+        XCTAssertFalse(
+            capability.resolvedEngine(preferring: .localWhisper).isCloud
+        )
+        XCTAssertFalse(capability.isCloudEnabled)
+        // Everything that genuinely cannot run locally is locked, and says so.
+        for feature in CloudFeature.allCases {
+            XCTAssertEqual(capability.access(to: feature), .needsAPIKey)
+            XCTAssertNotNil(capability.lockMessage(for: feature))
+            XCTAssertEqual(
+                capability.actionTitle(for: feature),
+                "Set Up OpenAI…"
+            )
+        }
+    }
+
+    func testAKeyUnlocksEverything() {
+        let capability = CloudCapability(hasAPIKey: true)
+
+        XCTAssertTrue(capability.isCloudEnabled)
+        for feature in CloudFeature.allCases {
+            XCTAssertEqual(capability.access(to: feature), .available)
+            XCTAssertNil(capability.lockMessage(for: feature))
+        }
+        XCTAssertEqual(
+            capability.resolvedEngine(preferring: .openAITranscribe),
+            .openAITranscribe
+        )
+    }
+
+    func testPrivacyLockOverridesASavedKey() {
+        let capability = CloudCapability(
+            hasAPIKey: true,
+            privacyLockEnabled: true
+        )
+
+        XCTAssertFalse(capability.isCloudEnabled)
+        XCTAssertEqual(
+            capability.access(to: .meetingCapture),
+            .blockedByPrivacyLock
+        )
+        // A cloud engine chosen earlier must not silently keep sending audio.
+        XCTAssertEqual(
+            capability.resolvedEngine(preferring: .openAITranscribe),
+            .localWhisper
+        )
+    }
+
+    func testRemovingAKeyDoesNotStrandDictationOnACloudEngine() {
+        // The stored preference is still the cloud model from when a key
+        // existed; dictation has to keep working anyway.
+        let capability = CloudCapability(hasAPIKey: false)
+
+        XCTAssertEqual(
+            capability.resolvedEngine(preferring: .openAITranscribe),
+            .localWhisper
+        )
+        // A deliberate local choice is never overridden.
+        XCTAssertEqual(
+            capability.resolvedEngine(preferring: .localParakeet),
+            .localParakeet
+        )
+    }
+
+    func testOnlyDictationAccuracyIsAnOptionalUpgrade() {
+        XCTAssertTrue(CloudFeature.bestAccuracyDictation.isOptionalUpgrade)
+        XCTAssertFalse(CloudFeature.meetingCapture.isOptionalUpgrade)
+        XCTAssertFalse(CloudFeature.answerMirror.isOptionalUpgrade)
+        XCTAssertFalse(CloudFeature.mockInterview.isOptionalUpgrade)
+    }
+
     func testAPIExpensesSurviveARelaunch() throws {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

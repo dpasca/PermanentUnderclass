@@ -9,11 +9,10 @@ struct ContentView: View {
     }
 
     @ObservedObject var controller: MeetingController
+    @Environment(\.openSettings) private var openSettings
     @State private var contextExpanded = false
-    @State private var expenseExpanded = false
-    @State private var modelPipelineExpanded = false
-    @State private var sharedSettingsExpanded = false
     @State private var selectedTab: AppTab = .meeting
+    @State private var didChooseInitialTab = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +35,15 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 1_000, minHeight: 760)
+        .onAppear {
+            // With no key, Meeting is locked and Quick Dictation is the thing
+            // that actually works — so start there.
+            guard !didChooseInitialTab else { return }
+            didChooseInitialTab = true
+            if !controller.capability.hasAPIKey {
+                selectedTab = .quickDictation
+            }
+        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -47,12 +55,32 @@ struct ContentView: View {
         }
     }
 
+    /// Opens the Settings scene at a specific section. `openSettings` is the
+    /// only reliable way to present it; the controller just records where to
+    /// land.
+    private func showSettings(_ section: SettingsSection) {
+        controller.requestSettings(section)
+        openSettings()
+    }
+
     private var meetingTab: some View {
         ScrollView {
             VStack(spacing: 12) {
-                meetingHeader
-                mainControls
+                VStack(spacing: 12) {
+                    meetingHeader
+                    mainControls
+                }
+                .locked(
+                    .meetingCapture,
+                    access: controller.access(to: .meetingCapture),
+                    onResolve: showSettings
+                )
                 syntheticInterviewPanel
+                    .locked(
+                        .mockInterview,
+                        access: controller.access(to: .mockInterview),
+                        onResolve: showSettings
+                    )
 
                 if let error = controller.errorMessage {
                     errorBanner(error)
@@ -106,29 +134,19 @@ struct ContentView: View {
                     health: controller.microphoneHealth(at: timeline.date)
                 )
             }
-            modelPipelineButton
+            modelMenu
             apiEstimateButton
 
             Button {
-                sharedSettingsExpanded.toggle()
+                showSettings(.general)
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 15, weight: .semibold))
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.bordered)
-            .help("Shared transcription settings")
-            .accessibilityLabel("Shared transcription settings")
-            .overlay(alignment: .topTrailing) {
-                if controller.apiKeyDraft.isEmpty {
-                    Circle()
-                        .fill(.orange)
-                        .frame(width: 7, height: 7)
-                }
-            }
-            .popover(isPresented: $sharedSettingsExpanded, arrowEdge: .bottom) {
-                SharedTranscriptionSettingsPopover(controller: controller)
-            }
+            .help("Settings")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -216,92 +234,121 @@ struct ContentView: View {
         .help("Shared microphone for Meeting and Quick Dictation")
     }
 
-    private var modelPipelineButton: some View {
-        Button {
-            modelPipelineExpanded.toggle()
+    /// A chooser, not a signpost. Clicking the thing that names the current
+    /// model should let you change it, the same way the microphone menu beside
+    /// it works.
+    private var modelMenu: some View {
+        let active = controller.resolvedDictationEngine
+        return Menu {
+            ForEach(TranscriptRefinementEngine.allCases) { engine in
+                let isLocked = engine.isCloud
+                    && !controller.capability.isCloudEnabled
+                Button {
+                    controller.selectRefinementEngine(engine)
+                } label: {
+                    if engine == active {
+                        Label(menuTitle(for: engine, isLocked: isLocked),
+                              systemImage: "checkmark")
+                    } else {
+                        Text(menuTitle(for: engine, isLocked: isLocked))
+                    }
+                }
+                .disabled(
+                    isLocked
+                        || controller.isListening
+                        || controller.isDictationBusy
+                )
+            }
+
+            Divider()
+
+            if !controller.capability.isCloudEnabled {
+                Button("Set Up OpenAI…") { showSettings(.openAI) }
+            }
+            Button("Dictation Settings…") { showSettings(.dictation) }
+            Button("How It Works…") { showSettings(.howItWorks) }
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: controller.localOnlyMode ? "lock.laptopcomputer" : "cpu")
-                    .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(controller.localOnlyMode ? "LOCAL ONLY" : "ACTIVE MODELS")
+            HStack(spacing: 7) {
+                Image(systemName: active.isCloud ? "cloud" : "desktopcomputer")
+                    .foregroundStyle(active.isCloud ? .blue : .green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("TRANSCRIBED BY")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
-                    if controller.localOnlyMode {
-                        Text("NOTHING LEAVES THIS MAC")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.green)
-                            .lineLimit(1)
-                    } else {
-                        Text("MEETING LIVE · \(RealtimeTranscriptionClient.model)")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.blue)
-                            .lineLimit(1)
-                    }
-                    Text("DICTATION · \(controller.refinementEngine.title)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.green)
+                    Text("\(active.accuracyTitle) · \(active.shortLabel)")
+                        .font(.callout.weight(.semibold))
                         .lineLimit(1)
                 }
                 Spacer(minLength: 2)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.down")
                     .font(.caption2.bold())
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .frame(width: 265)
-            .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+            .padding(.vertical, 6)
+            .frame(width: 215)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
             .overlay {
                 RoundedRectangle(cornerRadius: 9)
-                    .stroke(.green.opacity(0.20), lineWidth: 1)
+                    .stroke(.secondary.opacity(0.20), lineWidth: 1)
             }
         }
+        // `.borderlessButton` flattens a multi-line label to its first line,
+        // which would hide the very thing this control reports.
+        .menuStyle(.button)
         .buttonStyle(.plain)
-        .help("Show which model each workflow uses, and switch to local-only")
-        .accessibilityLabel("Active transcription models and pipeline")
-        .popover(isPresented: $modelPipelineExpanded, arrowEdge: .bottom) {
-            TranscriptionPipelinePopover(controller: controller)
-        }
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Choose which model transcribes your dictation")
+        // No explicit accessibility label: this menu style nests several
+        // wrapper elements, and a custom label is inherited by each of them,
+        // so VoiceOver would announce the same control four times. The visible
+        // text already reads as "Transcribed by, Accurate · Whisper".
     }
 
+    private func menuTitle(
+        for engine: TranscriptRefinementEngine,
+        isLocked: Bool
+    ) -> String {
+        let base = "\(engine.accuracyTitle) · \(engine.shortLabel)"
+        guard isLocked else { return base }
+        return "\(base) (needs OpenAI key)"
+    }
+
+    /// A running cost is meaningless to someone with no key, so it only
+    /// appears once there is spending to report.
+    @ViewBuilder
     private var apiEstimateButton: some View {
-        Button {
-            expenseExpanded = true
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "dollarsign.circle")
-                    .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("API ESTIMATE")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text(controller.apiExpenses.displayCost)
-                            .font(.callout.monospacedDigit().weight(.semibold))
-                        Text(controller.apiExpenses.accumulationDescription())
-                            .font(.system(size: 9))
+        if controller.capability.hasAPIKey {
+            Button {
+                showSettings(.openAI)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "dollarsign.circle")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("API ESTIMATE")
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text(controller.apiExpenses.displayCost)
+                                .font(.callout.monospacedDigit().weight(.semibold))
+                            Text(controller.apiExpenses.accumulationDescription())
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(.green.opacity(0.20), lineWidth: 1)
+                }
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(.green.opacity(0.20), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .help(
-            "Estimated transcription cost and assistant token usage, accumulated across launches \(controller.apiExpenses.accumulationDescription())"
-        )
-        .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
-            APIExpensePopover(
-                summary: controller.apiExpenses,
-                onReset: controller.resetAPIExpenses
-            )
+            .buttonStyle(.plain)
+            .help("Estimated OpenAI spending \(controller.apiExpenses.accumulationDescription())")
         }
     }
 
@@ -604,8 +651,8 @@ struct ContentView: View {
                     Text("Terminology and the API key are shared with cloud Quick Dictation; expected languages also guide Local Whisper.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Button("Shared Settings…") {
-                        sharedSettingsExpanded = true
+                    Button("Settings…") {
+                        showSettings(.general)
                     }
                     Spacer()
                     Picker("Accuracy / latency", selection: $controller.delay) {
@@ -772,224 +819,6 @@ struct ContentView: View {
     }
 }
 
-private struct SharedTranscriptionSettingsPopover: View {
-    @ObservedObject var controller: MeetingController
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Label("Shared Transcription Settings", systemImage: "gearshape")
-                        .font(.title3.weight(.semibold))
-                    Text("These settings apply to both Meeting and Quick Dictation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    AudioDeviceRow(
-                        title: "MICROPHONE INPUT",
-                        name: controller.microphoneName,
-                        systemImage: "mic.fill",
-                        health: controller.microphoneHealth(at: timeline.date),
-                        devices: controller.inputDevices,
-                        selectedDeviceID: controller.selectedInputDeviceID,
-                        onSelect: controller.selectInputDevice
-                    )
-                }
-
-                Divider()
-
-                SelectableTranscriptionModelPicker(controller: controller)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Expected languages")
-                        .font(.headline)
-                    TextField("Languages, e.g. en, ja", text: $controller.languagesText)
-                        .textFieldStyle(.roundedBorder)
-                    Text(
-                        "Quick Dictation uses this immediately. Meeting uses it when a session starts or when meeting context is applied."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("OpenAI API key")
-                        .font(.headline)
-                    HStack {
-                        SecureField("API key", text: $controller.apiKeyDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit(controller.saveAPIKey)
-                        Button("Save to Keychain", action: controller.saveAPIKey)
-                    }
-                    if !controller.keyStatus.isEmpty {
-                        Text(controller.keyStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(
-                        "The long-lived key stays in this Mac’s Keychain. Use an internal short-lived-token broker before deployment."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(16)
-        }
-        .frame(width: 590, height: 500)
-    }
-
-}
-
-private struct APIExpensePopover: View {
-    let summary: APIExpenseSummary
-    let onReset: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label("OpenAI usage estimate", systemImage: "dollarsign.circle")
-                        .font(.headline)
-                    // The total persists across launches, so the period it
-                    // covers has to be stated rather than assumed.
-                    Text("Accumulated \(summary.accumulationDescription())")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(summary.displayCost)
-                    .font(.title2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.green)
-            }
-
-            Divider()
-
-            expenseRow(
-                title: RealtimeTranscriptionClient.model,
-                detail: "Live · \(durationText(summary.liveAudioSeconds))",
-                cost: summary.liveCostUSD,
-                color: .blue
-            )
-            expenseRow(
-                title: RealtimeRefinementClient.model,
-                detail: "Final + cloud dictation · \(durationText(summary.finalAudioSeconds))",
-                cost: summary.finalCostUSD,
-                color: .purple
-            )
-            HStack(spacing: 9) {
-                Circle()
-                    .fill(.orange)
-                    .frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(InterviewWingmanClient.model)
-                        .font(.subheadline.weight(.medium))
-                    Text(
-                        "Scenario + Answer Mirror · \(summary.assistantGenerations) generations · "
-                            + "\(summary.assistantInputTokens) input / "
-                            + "\(summary.assistantOutputTokens) output / "
-                            + "\(summary.assistantReasoningTokens) reasoning tokens"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("usage")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            expenseRow(
-                title: "Local Whisper Large v3",
-                detail: "Runs on this Mac",
-                cost: 0,
-                color: .green
-            )
-            expenseRow(
-                title: "Local Parakeet",
-                detail: "Faster lightweight local option",
-                cost: 0,
-                color: .green
-            )
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(measurementDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(
-                    "Rates configured \(APIExpenseSummary.pricingEffectiveAt): "
-                        + "$0.017/min live and $0.0045/min final. "
-                        + "Assistant tokens are tracked but excluded from the total until a rate is configured. "
-                        + "The OpenAI invoice is the source of truth."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Spacer()
-                Button("Reset Counter") {
-                    onReset()
-                }
-                .disabled(
-                    summary.totalAudioSeconds == 0
-                        && summary.assistantGenerations == 0
-                )
-            }
-        }
-        .padding(14)
-        .frame(width: 360)
-    }
-
-    private func expenseRow(
-        title: String,
-        detail: String,
-        cost: Double,
-        color: Color
-    ) -> some View {
-        HStack(spacing: 9) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.callout.monospaced().weight(.medium))
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text(displayCost(cost))
-                .font(.callout.monospacedDigit().weight(.medium))
-        }
-    }
-
-    private var measurementDetail: String {
-        guard summary.serverReportedRecords + summary.estimatedRecords > 0 else {
-            return "Usage appears after OpenAI completes a transcription turn."
-        }
-        if summary.estimatedRecords == 0 {
-            return "Calculated from server-reported transcription duration."
-        }
-        return "Uses server-reported duration when available; "
-            + "\(summary.estimatedRecords) completed turn(s) use submitted PCM duration."
-    }
-
-    private func durationText(_ seconds: Double) -> String {
-        String(format: "%.1f min", seconds / 60)
-    }
-
-    private func displayCost(_ value: Double) -> String {
-        String(format: value < 0.01 ? "$%.4f" : "$%.2f", value)
-    }
-}
-
 struct ModelChoiceButton: View {
     let engine: TranscriptRefinementEngine
     let isSelected: Bool
@@ -1044,7 +873,7 @@ struct ModelChoiceButton: View {
     }
 }
 
-private struct AudioDeviceRow: View {
+struct AudioDeviceRow: View {
     let title: String
     let name: String
     let systemImage: String

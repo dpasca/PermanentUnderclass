@@ -333,12 +333,21 @@ The proof of concept includes:
   disk and accumulates across launches, labelled with the date it started and
   how long it has been running, so a day's spend stays legible across many
   restarts. **Reset Counter** is the only thing that clears it.
-- A **Keep everything on this Mac** switch in the model popover. It forces
-  Quick Dictation onto a local engine and blocks the cloud engine choice.
-  Meeting capture and Answer Mirror are refused while it is on, because their
-  live pass and generation have no on-device equivalent — the switch states
-  that cost rather than silently sending audio anyway. The toolbar chip reads
-  `LOCAL ONLY · NOTHING LEAVES THIS MAC` whenever it is active.
+- **Local-first onboarding.** A fresh install needs no account, no API key, and
+  no configuration: Quick Dictation transcribes on this Mac with Whisper out of
+  the box, and the app opens on the Quick Dictation tab while no key is saved.
+  An OpenAI key is presented as an optional upgrade, not a prerequisite.
+- **Capability-based gating.** What works is derived from whether a key exists,
+  not from a mode the user has to find. The features that genuinely cannot run
+  on-device — meeting capture, Answer Mirror, mock interview — show one
+  consistent locked card explaining why in plain language, with a button that
+  opens Settings at the API-key field. Everything else keeps working.
+- A **Never contact OpenAI** switch in Settings › Privacy for someone who has a
+  key but wants a hard guarantee. It is an override, not the primary gate.
+- Settings live in one standard ⌘, window (General, Dictation, OpenAI, Privacy,
+  How It Works) rather than three header popovers, so each control has exactly
+  one home. Model choices are presented by outcome — **Fast**, **Accurate**,
+  **Best** — with the underlying model identifier shown but not shouted.
 - A host-side reference folder that is restored and scanned at launch, watched
   recursively for changes, and converted into a stable content revision and
   cache-friendly assistant prompt prefix. The display client receives only

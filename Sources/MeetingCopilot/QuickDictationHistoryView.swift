@@ -2,6 +2,7 @@ import SwiftUI
 
 struct QuickDictationControlPanel: View {
     @ObservedObject var controller: MeetingController
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -27,6 +28,10 @@ struct QuickDictationControlPanel: View {
                         : "Grant Access",
                     action: controller.requestDictationPermissions
                 )
+                Button("Settings…") {
+                    controller.requestSettings(.dictation)
+                    openSettings()
+                }
                 Toggle(
                     "Enabled",
                     isOn: Binding(
@@ -36,34 +41,6 @@ struct QuickDictationControlPanel: View {
                 )
                 .toggleStyle(.switch)
                 .fixedSize()
-            }
-
-            QuickDictationPreviewControl(controller: controller)
-            QuickDictationCleanupControl(controller: controller)
-
-            HStack(alignment: .center, spacing: 8) {
-                TranscriptionStageCard(
-                    stage: "OPTIONAL STAGE · WHILE HELD",
-                    modelName: controller.refinementEngine.modelName,
-                    role: controller.dictationPreviewEnabled
-                        ? "Periodic snapshots · overlay text"
-                        : "Disabled with Screen preview",
-                    detail: "",
-                    badge: controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF",
-                    systemImage: "text.bubble",
-                    color: .orange,
-                    isEnabled: controller.dictationPreviewEnabled
-                )
-                TranscriptionPipelineConnector(label: "SAME\nMODEL")
-                TranscriptionStageCard(
-                    stage: "ON RELEASE · FINAL",
-                    modelName: controller.refinementEngine.modelName,
-                    role: "Full recording · paste + history",
-                    detail: "",
-                    badge: "REQUIRED",
-                    systemImage: controller.refinementEngine.systemImage,
-                    color: .green
-                )
             }
 
             if controller.dictationEnabled {
@@ -137,7 +114,9 @@ struct QuickDictationControlPanel: View {
                 .textSelection(.enabled)
         } else {
             Text(
-                "Keep both modifiers held while speaking; release either one to transcribe and paste back into the app and field that were focused when recording began."
+                controller.refinementEngine.isCloud
+                    ? "Hold both keys while you speak, then let go. The text is typed back into wherever you were working."
+                    : "Hold both keys while you speak, then let go. Everything is transcribed on this Mac \u{2014} no account needed."
             )
             .foregroundStyle(.secondary)
         }
@@ -310,7 +289,7 @@ struct QuickDictationHistoryView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("Choose a model in the transcription picker, then retry")
+                Text("Pick a transcription model in Settings, then retry")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

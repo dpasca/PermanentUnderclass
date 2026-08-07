@@ -69,6 +69,51 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Compact enough for the dictation overlay, specific enough to identify
+    /// which model produced a transcript.
+    var shortLabel: String {
+        switch self {
+        case .localWhisper:
+            "Whisper"
+        case .localParakeet:
+            "Parakeet"
+        case .openAITranscribe:
+            "GPT-Transcribe"
+        }
+    }
+
+    /// What the choice means to someone who does not know these model names.
+    var accuracyTitle: String {
+        switch self {
+        case .localWhisper:
+            "Accurate"
+        case .localParakeet:
+            "Fast"
+        case .openAITranscribe:
+            "Best"
+        }
+    }
+
+    var locationSummary: String {
+        switch self {
+        case .localWhisper, .localParakeet:
+            "Runs on this Mac · free · works offline"
+        case .openAITranscribe:
+            "Uses your OpenAI key · costs a few cents per hour"
+        }
+    }
+
+    var plainDescription: String {
+        switch self {
+        case .localWhisper:
+            "Handles about 99 languages and copes well with accents. Slower than Fast, and the download is 626 MB."
+        case .localParakeet:
+            "Much quicker, and good for English and European languages. Does not handle Japanese, Chinese, or Korean."
+        case .openAITranscribe:
+            "The most accurate option, especially for technical words and names. Needs an internet connection."
+        }
+    }
+
     var purpose: String {
         switch self {
         case .localWhisper, .localParakeet:

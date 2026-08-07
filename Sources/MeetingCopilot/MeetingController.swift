@@ -10,7 +10,8 @@ final class MeetingController: ObservableObject {
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
-    @Published var refinementEngine: TranscriptRefinementEngine = .openAITranscribe
+    /// Local-first: the app is fully usable on a fresh install with no key.
+    @Published var refinementEngine: TranscriptRefinementEngine = .localWhisper
     @Published var processes: [AudioProcessInfo] = []
     @Published var selectedProcessID: AudioObjectID?
     @Published var localTrack = TrackViewState()
@@ -42,10 +43,12 @@ final class MeetingController: ObservableObject {
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
     @Published var dictationCleanupEnabled = true
-    /// When set, nothing leaves this Mac. Quick Dictation runs on a local
-    /// model; Meeting capture and the assistant are unavailable because their
-    /// live pass has no on-device equivalent.
-    @Published private(set) var localOnlyMode = false
+    /// Set by someone who has a key but wants a hard guarantee that nothing
+    /// leaves the Mac. Without a key the cloud features are already locked, so
+    /// this is an override rather than the primary gate.
+    @Published private(set) var privacyLockEnabled = false
+    /// Which settings section to reveal when a locked feature is tapped.
+    @Published var pendingSettingsSection: SettingsSection?
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
     @Published private(set) var companionGatewayStatus = "Starting companion display…"
@@ -95,8 +98,10 @@ final class MeetingController: ObservableObject {
         "MeetingCopilot.QuickDictationCleanupEnabled"
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
-    private static let localOnlyModeDefaultsKey =
-        "MeetingCopilot.LocalOnlyMode"
+    private static let privacyLockDefaultsKey =
+        "MeetingCopilot.PrivacyLock"
+    private static let refinementEngineDefaultsKey =
+        "MeetingCopilot.RefinementEngine"
     private static let liveAssistantLogger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
         category: "LiveAssistant"
@@ -125,13 +130,24 @@ final class MeetingController: ObservableObject {
         dictationCleanupEnabled = UserDefaults.standard.object(
             forKey: Self.dictationCleanupEnabledDefaultsKey
         ) as? Bool ?? true
-        localOnlyMode = UserDefaults.standard.bool(
-            forKey: Self.localOnlyModeDefaultsKey
+        privacyLockEnabled = UserDefaults.standard.bool(
+            forKey: Self.privacyLockDefaultsKey
         )
-        if localOnlyMode, refinementEngine.isCloud {
-            refinementEngine = .localWhisper
+        if
+            let storedEngine = UserDefaults.standard.string(
+                forKey: Self.refinementEngineDefaultsKey
+            ),
+            let engine = TranscriptRefinementEngine(rawValue: storedEngine)
+        {
+            refinementEngine = engine
         }
+        // A cloud choice left over from before the key was removed must not
+        // break dictation on the next launch.
+        refinementEngine = capability.resolvedEngine(preferring: refinementEngine)
         dictationOverlay.setEnabled(dictationPreviewEnabled)
+        dictationOverlay.update(
+            engine: capability.resolvedEngine(preferring: refinementEngine)
+        )
         do {
             quickDictationHistory = try quickDictationHistoryStore.load()
             lastDictation = quickDictationHistory.first?.text ?? ""
@@ -277,13 +293,10 @@ final class MeetingController: ObservableObject {
                     "Release the Quick Dictation shortcut before starting meeting capture."
                 )
             }
-            // Meeting's live pass is a cloud-only model with no on-device
-            // equivalent, so local-only mode blocks it rather than quietly
-            // sending audio anyway.
-            guard !localOnlyMode else {
-                throw MeetingCopilotError.audio(
-                    "Meeting capture needs the cloud live model. Turn off local-only mode to start a meeting."
-                )
+            // Meeting's live pass is a hosted model with no on-device
+            // equivalent, so it is refused rather than quietly sending audio.
+            if let message = capability.lockMessage(for: .meetingCapture) {
+                throw MeetingCopilotError.audio(message)
             }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw MeetingCopilotError.noAPIKey }
@@ -519,15 +532,29 @@ final class MeetingController: ObservableObject {
         statusMessage = "Finishing your current turn…"
     }
 
-    /// Forces every stage that has an on-device option onto it, and blocks the
-    /// ones that do not. Turning it off restores the previous free choice but
-    /// does not silently re-select a cloud model.
-    func setLocalOnlyMode(_ enabled: Bool) {
-        guard localOnlyMode != enabled else { return }
-        localOnlyMode = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.localOnlyModeDefaultsKey)
+    /// What works right now. Derived from the key rather than from a mode the
+    /// user has to find and understand.
+    var capability: CloudCapability {
+        CloudCapability(
+            hasAPIKey: !apiKeyDraft
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty,
+            privacyLockEnabled: privacyLockEnabled
+        )
+    }
+
+    func access(to feature: CloudFeature) -> FeatureAccess {
+        capability.access(to: feature)
+    }
+
+    /// Hard opt-out for someone who has a key but wants nothing to leave the
+    /// Mac. Turning it off does not silently re-select a cloud model.
+    func setPrivacyLock(_ enabled: Bool) {
+        guard privacyLockEnabled != enabled else { return }
+        privacyLockEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.privacyLockDefaultsKey)
         guard enabled else {
-            statusMessage = "Cloud models are available again"
+            statusMessage = "OpenAI features are available again"
             return
         }
         if isListening {
@@ -536,17 +563,30 @@ final class MeetingController: ObservableObject {
         if refinementEngine.isCloud {
             selectRefinementEngine(.localWhisper)
         }
-        statusMessage = "Local-only: audio stays on this Mac"
+        statusMessage = "Everything stays on this Mac"
+    }
+
+    /// Records which section the settings window should open at. Opening it is
+    /// the view's job: only SwiftUI's `openSettings` action reliably presents
+    /// the Settings scene, and it is unavailable outside a view hierarchy.
+    func requestSettings(_ section: SettingsSection) {
+        pendingSettingsSection = section
     }
 
     func selectRefinementEngine(_ engine: TranscriptRefinementEngine) {
-        guard !localOnlyMode || !engine.isCloud else {
-            errorMessage =
-                "Turn off local-only mode to use \(engine.title)."
+        guard !engine.isCloud || capability.isCloudEnabled else {
+            errorMessage = privacyLockEnabled
+                ? "Turn off \u{201C}Keep everything on this Mac\u{201D} to use \(engine.title)."
+                : "Add an OpenAI API key to use \(engine.title)."
             return
         }
         guard !isListening, !isDictationBusy, refinementEngine != engine else { return }
         refinementEngine = engine
+        UserDefaults.standard.set(
+            engine.rawValue,
+            forKey: Self.refinementEngineDefaultsKey
+        )
+        dictationOverlay.update(engine: engine)
         if engine == .localWhisper {
             startWhisperWarmup()
         } else if engine == .localParakeet {
@@ -1545,13 +1585,20 @@ final class MeetingController: ObservableObject {
                     self?.recoverableDictations = recoveries
                 },
                 recoveryStore: quickDictationRecoveryStore,
-                transcriptionEngine: refinementEngine,
+                // Resolved rather than taken raw: a cloud preference left over
+                // from when a key existed must not stop dictation working.
+                transcriptionEngine: resolvedDictationEngine,
                 apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             dictationService = created
             service = created
         }
         _ = service.enable(requestAccess: requestAccess)
+    }
+
+    /// The engine dictation will actually use once availability is applied.
+    var resolvedDictationEngine: TranscriptRefinementEngine {
+        capability.resolvedEngine(preferring: refinementEngine)
     }
 
     private func restartDictationService() {
@@ -1792,10 +1839,10 @@ final class MeetingController: ObservableObject {
         assistantGenerationIdentity = identity
         // The assistant is a hosted model; local-only mode withholds the key
         // rather than sending the transcript off the Mac.
-        let isLocalOnly = localOnlyMode
-        let apiKey = isLocalOnly
-            ? ""
-            : apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLocalOnly = privacyLockEnabled
+        let apiKey = capability.isAvailable(.answerMirror)
+            ? apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
         let usesSyntheticReferences = syntheticInterviewState.isRunning
         let references = usesSyntheticReferences
             ? syntheticInterviewReferences
@@ -1847,8 +1894,8 @@ final class MeetingController: ObservableObject {
                     )
                     await hub.assistantFailed(
                         isLocalOnly
-                            ? "Answer Mirror needs a hosted model. Turn off local-only mode to enable it."
-                            : "Save an OpenAI API key on the Mac to enable Answer Mirror.",
+                            ? "Answer Mirror is off because everything is set to stay on this Mac."
+                            : "Add an OpenAI API key to turn on Answer Mirror.",
                         unavailable: true
                     )
                     return

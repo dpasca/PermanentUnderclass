@@ -15,6 +15,16 @@ struct MeetingCopilotApp: App {
             }
         }
         .defaultSize(width: 1_160, height: 900)
+
+        // Every setting has one home, reachable with the standard ⌘, rather
+        // than through several header popovers.
+        Settings {
+            if let controller = applicationModel.controller {
+                SettingsView(controller: controller)
+            } else {
+                Color.clear
+            }
+        }
     }
 }
 
