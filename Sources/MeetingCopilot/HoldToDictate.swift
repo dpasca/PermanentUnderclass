@@ -2210,12 +2210,21 @@ struct QuickDictationContentEvidence: Equatable {
     private let originalContent: String
 
     init(originalValue: String, insertedText: String) {
-        originalContent = Self.normalize(originalValue)
+        let originalContent = Self.normalize(originalValue)
+        self.originalContent = originalContent
         // The tail is checked rather than the head: a long paste scrolls its
         // beginning off the top, but the end sits at the cursor.
         let normalizedInsert = Self.normalize(insertedText)
         let probe = String(normalizedInsert.suffix(Self.probeLength))
-        self.probe = probe.count >= Self.minimumProbeLength ? probe : ""
+        // A probe already on screen — dictating the same thing twice, or
+        // reading back text that is already there — would report `.inserted`
+        // against an untouched screen. That is worse than having no probe at
+        // all, because `.inserted` is the one outcome trusted enough to hand
+        // the clipboard back immediately.
+        self.probe = probe.count >= Self.minimumProbeLength
+            && !originalContent.contains(probe)
+            ? probe
+            : ""
     }
 
     func evaluate(currentValue: String) -> Outcome {
@@ -2251,11 +2260,39 @@ enum QuickDictationPasteVerificationPolicy {
 }
 
 enum QuickDictationClipboardRestorationPolicy {
+    /// How long the dictation has to stay on the clipboard after the paste
+    /// keystroke before the previous contents may be put back.
+    ///
+    /// macOS never reports "the target read the pasteboard", and the keystroke
+    /// is delivered asynchronously, so evidence that *something* happened in
+    /// the target is not evidence that it has read the clipboard yet. Restoring
+    /// inside that window makes the target paste the user's previous clipboard
+    /// instead of their dictation.
+    ///
+    /// There is no signal to wait on, so this is a heuristic bound on how long
+    /// a target can take to service a posted Cmd+V. It is set well past what a
+    /// busy app plausibly needs; the only cost of overshooting is that the
+    /// user's clipboard comes back a beat later. It may safely exceed
+    /// `PasteInjector`'s serialization delay, because a paste that starts
+    /// during the dwell inherits the pending restore rather than racing it.
+    static let minimumDwellSeconds: TimeInterval = 1.5
+
     static func shouldRestore(
         insertedChangeCount: Int,
         currentChangeCount: Int
     ) -> Bool {
         insertedChangeCount == currentChangeCount
+    }
+
+    /// Delay before restoring, measured from the paste keystroke. Seeing the
+    /// text itself land in the target proves the clipboard was already read,
+    /// which is the one case that needs no dwell.
+    static func restoreDelaySeconds(
+        elapsedSincePaste: TimeInterval,
+        isDeliveryProven: Bool
+    ) -> TimeInterval {
+        guard !isDeliveryProven else { return 0 }
+        return max(0, minimumDwellSeconds - elapsedSincePaste)
     }
 }
 
@@ -2597,10 +2634,12 @@ final class PasteInjector {
     }
 
     private struct PasteAttempt {
+        let id = UUID()
         let verification: QuickDictationPasteVerification?
         let contentEvidence: QuickDictationContentEvidence?
         let previousClipboardItems: [NSPasteboardItem]
         let insertedChangeCount: Int
+        let pastedAtUptime: TimeInterval
     }
 
     private static let logger = Logger(
@@ -2616,6 +2655,9 @@ final class PasteInjector {
     private var queuedRequests: [Request] = []
     private var activeRequest: Request?
     private var activePasteAttempt: PasteAttempt?
+    /// A restore that is waiting out its dwell. Until it runs, it — not the
+    /// pasteboard — holds the user's real clipboard.
+    private var pendingRestore: PasteAttempt?
     private var scheduledWorkItem: DispatchWorkItem?
     private var generation = UUID()
 
@@ -2634,7 +2676,7 @@ final class PasteInjector {
         generation = UUID()
         scheduledWorkItem?.cancel()
         scheduledWorkItem = nil
-        restoreActiveClipboardIfUnchanged()
+        restoreActiveClipboardIfUnchanged(isDeliveryProven: false)
         queuedRequests.removeAll()
         activeRequest = nil
     }
@@ -2670,10 +2712,12 @@ final class PasteInjector {
             return
         }
         if request.target.restoreFocus() {
+            let inheritedItems = consumePendingRestoreItems()
             do {
                 let attempt = try Self.performPaste(
                     request.text,
-                    into: request.target
+                    into: request.target,
+                    inheritedPreviousItems: inheritedItems
                 )
                 activePasteAttempt = attempt
                 awaitPasteDelivery(
@@ -2682,6 +2726,13 @@ final class PasteInjector {
                     generation: generation
                 )
             } catch {
+                // `performPaste` can fail before it ever touches the clipboard,
+                // which would strand inherited items that no pending restore
+                // owns any more. Nothing of ours is on the pasteboard now, so
+                // putting them straight back is the correct final state.
+                if let inheritedItems {
+                    Self.restore(items: inheritedItems, to: .general)
+                }
                 finishActiveRequest(
                     with: .failure(error),
                     generation: generation
@@ -2750,6 +2801,7 @@ final class PasteInjector {
             finishActiveRequest(
                 with: .success(.verified),
                 delayBeforeNextRequest: Self.pasteSerializationDelay,
+                isDeliveryProven: true,
                 generation: generation
             )
             return
@@ -2810,6 +2862,11 @@ final class PasteInjector {
             finishActiveRequest(
                 with: .success(.verified),
                 delayBeforeNextRequest: Self.pasteSerializationDelay,
+                // A screen that merely *changed* may have been redrawn by
+                // something else entirely — a spinner, streaming output — while
+                // the paste is still on its way, so it proves nothing about the
+                // clipboard having been read.
+                isDeliveryProven: outcome == .inserted,
                 generation: generation
             )
             return
@@ -2884,6 +2941,7 @@ final class PasteInjector {
     private func finishActiveRequest(
         with result: Result<QuickDictationPasteDelivery, Error>,
         delayBeforeNextRequest: DispatchTimeInterval? = nil,
+        isDeliveryProven: Bool = false,
         generation: UUID
     ) {
         guard
@@ -2893,7 +2951,7 @@ final class PasteInjector {
             return
         }
 
-        restoreActiveClipboardIfUnchanged()
+        restoreActiveClipboardIfUnchanged(isDeliveryProven: isDeliveryProven)
 
         if let delayBeforeNextRequest {
             let workItem = DispatchWorkItem { [weak self] in
@@ -2919,7 +2977,8 @@ final class PasteInjector {
 
     private static func performPaste(
         _ text: String,
-        into target: QuickDictationPasteTarget
+        into target: QuickDictationPasteTarget,
+        inheritedPreviousItems: [NSPasteboardItem]?
     ) throws -> PasteAttempt {
         guard AXIsProcessTrusted() else {
             throw MeetingCopilotError.audio(
@@ -2951,20 +3010,44 @@ final class PasteInjector {
             value: ModifierHoldMonitor.pasteEventTag
         )
 
+        let pasteboard = NSPasteboard.general
+        // Reading back every representation of a large clipboard is expensive,
+        // so an inherited snapshot is both more correct and cheaper.
+        let previousItems = inheritedPreviousItems
+            ?? copyItems(pasteboard.pasteboardItems ?? [])
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            restore(items: previousItems, to: pasteboard)
+            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+        }
+        var insertedChangeCount = pasteboard.changeCount
+
+        // Snapshotted here rather than before the clipboard work above, which
+        // is slow in exactly the cases that matter: reading back every
+        // representation of a large clipboard, then writing out a long
+        // dictation. A baseline captured before that gap lets any unrelated
+        // redraw in the target — a spinner, streaming output — be read as the
+        // paste landing, which retires the attempt and puts the user's previous
+        // clipboard back before the target has read ours.
         let verification = target.makePasteVerification(inserting: text)
         // Targets without an editable value/range model still expose their
         // visible content, which is what makes a terminal paste checkable.
         let contentEvidence = verification == nil
             ? target.makeContentEvidence(inserting: text)
             : nil
-        let pasteboard = NSPasteboard.general
-        let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
-        pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
-            restore(items: previousItems, to: pasteboard)
-            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+
+        // Those snapshots are cross-process calls, which is long enough for a
+        // clipboard manager or a user copy to land on top of the dictation.
+        // Posting then would paste that instead, and no later guard can undo
+        // it — the change-count check only ever suppresses the restore.
+        if pasteboard.changeCount != insertedChangeCount {
+            pasteboard.clearContents()
+            guard pasteboard.setString(text, forType: .string) else {
+                restore(items: previousItems, to: pasteboard)
+                throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+            }
+            insertedChangeCount = pasteboard.changeCount
         }
-        let insertedChangeCount = pasteboard.changeCount
 
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
@@ -2972,16 +3055,66 @@ final class PasteInjector {
             verification: verification,
             contentEvidence: contentEvidence,
             previousClipboardItems: previousItems,
-            insertedChangeCount: insertedChangeCount
+            insertedChangeCount: insertedChangeCount,
+            pastedAtUptime: ProcessInfo.processInfo.systemUptime
         )
     }
 
-    private func restoreActiveClipboardIfUnchanged() {
+    /// - Parameter isDeliveryProven: Whether the dictation was seen in the
+    ///   target, which is the only evidence that it has already read the
+    ///   clipboard. Anything weaker waits out the dwell first.
+    private func restoreActiveClipboardIfUnchanged(isDeliveryProven: Bool) {
         guard let attempt = activePasteAttempt else { return }
         activePasteAttempt = nil
 
-        let restored = Self.restoreClipboardIfUnchanged(after: attempt)
-        Self.logger.notice(
+        let delay = QuickDictationClipboardRestorationPolicy.restoreDelaySeconds(
+            elapsedSincePaste:
+                ProcessInfo.processInfo.systemUptime - attempt.pastedAtUptime,
+            isDeliveryProven: isDeliveryProven
+        )
+        guard delay > 0 else {
+            Self.restoreClipboardAndLog(after: attempt)
+            return
+        }
+        pendingRestore = attempt
+        // Deliberately outside `scheduledWorkItem` and ungated by generation:
+        // a cancelled or superseded request still owes the user their clipboard
+        // back, and the change-count check keeps it from clobbering a newer one.
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else {
+                // Nothing can start another paste now, so this restore is
+                // unconditionally the right final state.
+                Self.restoreClipboardAndLog(after: attempt)
+                return
+            }
+            // A paste that started inside the dwell has taken these items over.
+            guard self.pendingRestore?.id == attempt.id else { return }
+            self.pendingRestore = nil
+            Self.restoreClipboardAndLog(after: attempt)
+        }
+    }
+
+    /// Hands a still-pending restore's saved items to the paste that is about
+    /// to start. Without this, that paste would record the *previous
+    /// dictation* as the clipboard to put back, and the user's real clipboard
+    /// would be lost the moment two dictations land inside one dwell.
+    private func consumePendingRestoreItems() -> [NSPasteboardItem]? {
+        guard let pending = pendingRestore else { return nil }
+        pendingRestore = nil
+        guard QuickDictationClipboardRestorationPolicy.shouldRestore(
+            insertedChangeCount: pending.insertedChangeCount,
+            currentChangeCount: NSPasteboard.general.changeCount
+        ) else {
+            // Someone else wrote the clipboard during the dwell; what they put
+            // there is the user's clipboard now, so it is what gets saved.
+            return nil
+        }
+        return pending.previousClipboardItems
+    }
+
+    private static func restoreClipboardAndLog(after attempt: PasteAttempt) {
+        let restored = restoreClipboardIfUnchanged(after: attempt)
+        logger.notice(
             "clipboard_restore restored=\(restored, privacy: .public)"
         )
     }

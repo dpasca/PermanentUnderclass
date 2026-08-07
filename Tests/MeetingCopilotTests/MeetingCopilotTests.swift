@@ -937,6 +937,65 @@ final class MeetingCopilotTests: XCTestCase {
         )
     }
 
+    func testUnprovenDeliveryKeepsDictationOnClipboardForTheDwell() {
+        let dwell = QuickDictationClipboardRestorationPolicy.minimumDwellSeconds
+
+        // The window that made a target paste the *previous* clipboard: the
+        // restore used to run microseconds after the paste keystroke.
+        XCTAssertEqual(
+            QuickDictationClipboardRestorationPolicy.restoreDelaySeconds(
+                elapsedSincePaste: 0,
+                isDeliveryProven: false
+            ),
+            dwell
+        )
+        XCTAssertEqual(
+            QuickDictationClipboardRestorationPolicy.restoreDelaySeconds(
+                elapsedSincePaste: dwell / 2,
+                isDeliveryProven: false
+            ),
+            dwell / 2,
+            accuracy: 0.000_1
+        )
+        XCTAssertEqual(
+            QuickDictationClipboardRestorationPolicy.restoreDelaySeconds(
+                elapsedSincePaste: dwell * 4,
+                isDeliveryProven: false
+            ),
+            0
+        )
+    }
+
+    func testProvenDeliveryRestoresTheClipboardImmediately() {
+        XCTAssertEqual(
+            QuickDictationClipboardRestorationPolicy.restoreDelaySeconds(
+                elapsedSincePaste: 0,
+                isDeliveryProven: true
+            ),
+            0
+        )
+    }
+
+    /// `.inserted` is the one outcome trusted enough to hand the clipboard back
+    /// without waiting out the dwell, so it must never fire against a screen
+    /// that already contained the text.
+    func testTextAlreadyOnScreenIsNotMistakenForAFreshPaste() {
+        let repeated = "please add the retry budget to the queue"
+        let evidence = QuickDictationContentEvidence(
+            originalValue: "$ echo \(repeated)",
+            insertedText: repeated
+        )
+
+        XCTAssertEqual(
+            evidence.evaluate(currentValue: "$ echo \(repeated)"),
+            .unchanged
+        )
+        XCTAssertEqual(
+            evidence.evaluate(currentValue: "$ echo \(repeated)\n$ \(repeated)"),
+            .changed
+        )
+    }
+
     func testQuickDictationDoesNotSendSilenceToParakeet() {
         let silence = Data(repeating: 0, count: 9_600)
         XCTAssertFalse(PCM16SignalGate.containsAudibleSignal(silence))
