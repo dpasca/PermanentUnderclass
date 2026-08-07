@@ -475,7 +475,6 @@ final class HoldToDictateService {
     private var recordingID: UUID?
     private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
-    private var previewGeneration = UUID()
     private var fallbackTranscriber: TranscriptRefining?
     private var fallbackTranscriberState: SocketState = .idle
     private var fallbackTranscriptionIDs: Set<String> = []
@@ -591,7 +590,6 @@ final class HoldToDictateService {
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             generation = UUID()
-            previewGeneration = UUID()
             connectTranscriber(generation: generation)
             connectFallbackTranscriberIfNeeded()
             publishRecoveries()
@@ -615,7 +613,6 @@ final class HoldToDictateService {
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
-        previewGeneration = UUID()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         reconnectPolicy.reset()
@@ -1491,48 +1488,6 @@ final class HoldToDictateService {
         }
 
         completeFinalTranscription(transcriptID: transcriptID, text: text)
-    }
-
-    private func handleLivePreviewTranscription(
-        transcriptID: String,
-        text: String,
-        generation: UUID
-    ) {
-        guard
-            previewGeneration == generation,
-            isRunning,
-            activeLivePreviewID == transcriptID
-        else {
-            return
-        }
-        activeLivePreviewID = nil
-        guard let recordingID else { return }
-        let partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !partial.isEmpty {
-            partialHandler(partial)
-        }
-        scheduleLivePreview(recordingID: recordingID)
-    }
-
-    private func handleLivePreviewFailure(
-        transcriptID: String,
-        message: String,
-        generation: UUID
-    ) {
-        guard
-            previewGeneration == generation,
-            isRunning,
-            activeLivePreviewID == transcriptID
-        else {
-            return
-        }
-        activeLivePreviewID = nil
-        Self.logger.error(
-            "live_preview_failed error=\(message, privacy: .public)"
-        )
-        if let recordingID {
-            scheduleLivePreview(recordingID: recordingID)
-        }
     }
 
     private func completeFinalTranscription(

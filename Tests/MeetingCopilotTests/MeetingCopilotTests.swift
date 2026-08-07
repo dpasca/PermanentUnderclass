@@ -1703,6 +1703,64 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertFalse(CloudFeature.mockInterview.isOptionalUpgrade)
     }
 
+    // MARK: - Settings migration
+
+    private func scratchDefaults() throws -> UserDefaults {
+        let name = "MeetingCopilotTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testLegacyLocalOnlyModeBecomesThePrivacyLock() throws {
+        let defaults = try scratchDefaults()
+        defaults.set(true, forKey: MeetingController.legacyLocalOnlyModeDefaultsKey)
+
+        MeetingController.migrateLegacyLocalOnlyMode(defaults: defaults)
+
+        XCTAssertTrue(
+            defaults.bool(forKey: MeetingController.privacyLockDefaultsKey)
+        )
+        // The old key must not linger; a stale flag is worse than none.
+        XCTAssertNil(
+            defaults.object(
+                forKey: MeetingController.legacyLocalOnlyModeDefaultsKey
+            )
+        )
+    }
+
+    func testLegacyLocalOnlyModeNeverOverridesANewerChoice() throws {
+        let defaults = try scratchDefaults()
+        defaults.set(true, forKey: MeetingController.legacyLocalOnlyModeDefaultsKey)
+        // Choosing a cloud engine is only possible under the new model, so it
+        // is proof of a more recent decision than the old flag.
+        defaults.set(
+            TranscriptRefinementEngine.openAITranscribe.rawValue,
+            forKey: MeetingController.refinementEngineDefaultsKey
+        )
+
+        MeetingController.migrateLegacyLocalOnlyMode(defaults: defaults)
+
+        XCTAssertFalse(
+            defaults.bool(forKey: MeetingController.privacyLockDefaultsKey)
+        )
+        XCTAssertNil(
+            defaults.object(
+                forKey: MeetingController.legacyLocalOnlyModeDefaultsKey
+            )
+        )
+    }
+
+    func testMigrationIsANoOpWithoutTheLegacyKey() throws {
+        let defaults = try scratchDefaults()
+
+        MeetingController.migrateLegacyLocalOnlyMode(defaults: defaults)
+
+        XCTAssertNil(
+            defaults.object(forKey: MeetingController.privacyLockDefaultsKey)
+        )
+    }
+
     func testAPIExpensesSurviveARelaunch() throws {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

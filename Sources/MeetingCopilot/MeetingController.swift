@@ -98,10 +98,14 @@ final class MeetingController: ObservableObject {
         "MeetingCopilot.QuickDictationCleanupEnabled"
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
-    private static let privacyLockDefaultsKey =
+    static let privacyLockDefaultsKey =
         "MeetingCopilot.PrivacyLock"
-    private static let refinementEngineDefaultsKey =
+    static let refinementEngineDefaultsKey =
         "MeetingCopilot.RefinementEngine"
+    /// Renamed when local-only stopped being the primary gate and became a
+    /// privacy override.
+    static let legacyLocalOnlyModeDefaultsKey =
+        "MeetingCopilot.LocalOnlyMode"
     private static let liveAssistantLogger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
         category: "LiveAssistant"
@@ -130,6 +134,7 @@ final class MeetingController: ObservableObject {
         dictationCleanupEnabled = UserDefaults.standard.object(
             forKey: Self.dictationCleanupEnabledDefaultsKey
         ) as? Bool ?? true
+        Self.migrateLegacyLocalOnlyMode()
         privacyLockEnabled = UserDefaults.standard.bool(
             forKey: Self.privacyLockDefaultsKey
         )
@@ -530,6 +535,32 @@ final class MeetingController: ObservableObject {
         localPipeline?.finish()
         localClient?.commitPendingAudio()
         statusMessage = "Finishing your current turn…"
+    }
+
+    /// Carries a pre-rename local-only choice into the privacy lock, then
+    /// drops the old key so it cannot linger and confuse a later reader.
+    ///
+    /// The presence of the engine key proves the user has already made a
+    /// choice under the new model, in which case adopting the old flag would
+    /// override a more recent decision — so it is discarded instead.
+    static func migrateLegacyLocalOnlyMode(
+        defaults: UserDefaults = .standard
+    ) {
+        guard defaults.object(forKey: legacyLocalOnlyModeDefaultsKey) != nil
+        else {
+            return
+        }
+        defer { defaults.removeObject(forKey: legacyLocalOnlyModeDefaultsKey) }
+        guard
+            defaults.object(forKey: privacyLockDefaultsKey) == nil,
+            defaults.object(forKey: refinementEngineDefaultsKey) == nil
+        else {
+            return
+        }
+        defaults.set(
+            defaults.bool(forKey: legacyLocalOnlyModeDefaultsKey),
+            forKey: privacyLockDefaultsKey
+        )
     }
 
     /// What works right now. Derived from the key rather than from a mode the

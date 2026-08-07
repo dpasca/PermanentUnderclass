@@ -11,8 +11,9 @@ struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @Environment(\.openSettings) private var openSettings
     @State private var contextExpanded = false
-    @State private var selectedTab: AppTab = .meeting
-    @State private var didChooseInitialTab = false
+    /// Dictation leads: it is the part that works with no account, no key, and
+    /// no configuration.
+    @State private var selectedTab: AppTab = .quickDictation
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,30 +21,21 @@ struct ContentView: View {
             Divider()
 
             TabView(selection: $selectedTab) {
-                meetingTab
-                    .tabItem {
-                        Label("Meeting", systemImage: "waveform")
-                    }
-                    .tag(AppTab.meeting)
-
                 QuickDictationHistoryView(controller: controller)
                     .tabItem {
                         Label("Quick Dictation", systemImage: "mic.badge.plus")
                     }
                     .badge(controller.quickDictationHistory.count)
                     .tag(AppTab.quickDictation)
+
+                meetingTab
+                    .tabItem {
+                        Label("Meeting", systemImage: "waveform")
+                    }
+                    .tag(AppTab.meeting)
             }
         }
         .frame(minWidth: 1_000, minHeight: 760)
-        .onAppear {
-            // With no key, Meeting is locked and Quick Dictation is the thing
-            // that actually works — so start there.
-            guard !didChooseInitialTab else { return }
-            didChooseInitialTab = true
-            if !controller.capability.hasAPIKey {
-                selectedTab = .quickDictation
-            }
-        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -67,8 +59,8 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 12) {
                 VStack(spacing: 12) {
-                    meetingHeader
-                    mainControls
+                    meetingControlPanel
+                    meetingAudioRoutePanel
                 }
                 .locked(
                     .meetingCapture,
@@ -153,38 +145,89 @@ struct ContentView: View {
         .background(.background)
     }
 
-    private var meetingHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Label("Meeting Capture", systemImage: "person.2.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                Text("Capture both sides of a meeting and build a refined transcript.")
-                    .font(.subheadline)
+    /// Same shape as the Quick Dictation control panel: one status row with a
+    /// state dot, the primary action, and a link into the settings that govern
+    /// it. The model diagram that used to sit here now lives in Settings.
+    private var meetingControlPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("Meeting capture", systemImage: "person.2.fill")
+                    .font(.headline)
+                Circle()
+                    .fill(meetingStatusColor)
+                    .frame(width: 8, height: 8)
+                Text(meetingStatusLabel)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Label("Headphones required", systemImage: "headphones")
-                .font(.callout.bold())
-                .foregroundStyle(.secondary)
-            Button("Finish My Turn", action: controller.finalizeLocalTurn)
-                .disabled(!controller.isListening)
-            Button {
                 if controller.isListening {
-                    controller.stopMeeting()
-                } else {
-                    controller.startMeeting()
+                    ProgressView()
+                        .controlSize(.small)
                 }
-            } label: {
-                Label(
-                    controller.isListening ? "Stop" : "Start Listening",
-                    systemImage: controller.isListening ? "stop.fill" : "waveform"
-                )
-                .frame(minWidth: 115)
+                Spacer()
+                Label("Headphones required", systemImage: "headphones")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Button("Settings…") { showSettings(.general) }
+                Button("Finish My Turn", action: controller.finalizeLocalTurn)
+                    .disabled(!controller.isListening)
+                Button {
+                    if controller.isListening {
+                        controller.stopMeeting()
+                    } else {
+                        controller.startMeeting()
+                    }
+                } label: {
+                    Label(
+                        controller.isListening ? "Stop" : "Start Listening",
+                        systemImage: controller.isListening ? "stop.fill" : "waveform"
+                    )
+                    .frame(minWidth: 108)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(controller.isListening ? .red : .accentColor)
+                .disabled(controller.syntheticInterviewState.isActive)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(controller.isListening ? .red : .accentColor)
-            .disabled(controller.syntheticInterviewState.isActive)
+
+            HStack(spacing: 8) {
+                Text("Captures both sides of a call and builds a refined transcript.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                // Kept from the removed pipeline panel: when turns stop being
+                // refined, this is the only place that says why.
+                Text("Final pass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                SocketBadge(state: controller.refinementState, color: .green)
+            }
         }
+        .padding(12)
+        .background(
+            controller.isListening
+                ? Color.red.opacity(0.10)
+                : Color.secondary.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    controller.isListening
+                        ? Color.red.opacity(0.75)
+                        : Color.secondary.opacity(0.25),
+                    lineWidth: controller.isListening ? 2 : 1
+                )
+        }
+    }
+
+    private var meetingStatusLabel: String {
+        if controller.isListening { return "Listening" }
+        if controller.syntheticInterviewState.isActive { return "Interview running" }
+        return controller.access(to: .meetingCapture).isAvailable ? "Ready" : "Needs setup"
+    }
+
+    private var meetingStatusColor: Color {
+        if controller.isListening { return .red }
+        return controller.access(to: .meetingCapture).isAvailable ? .green : .secondary
     }
 
     private func sharedMicrophoneMenu(health: AudioStreamHealth) -> some View {
@@ -448,57 +491,6 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(.indigo.opacity(0.25), lineWidth: 1)
         }
-    }
-
-    private var mainControls: some View {
-        HStack(alignment: .top, spacing: 12) {
-            meetingModelPanel
-            meetingAudioRoutePanel
-                .frame(width: 390)
-        }
-    }
-
-    private var meetingModelPanel: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label("Meeting model pipeline", systemImage: "cpu")
-                    .font(.headline)
-                Spacer()
-                Text("Final connection")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                SocketBadge(state: controller.refinementState, color: .green)
-            }
-
-            HStack(alignment: .center, spacing: 8) {
-                TranscriptionStageCard(
-                    stage: "STAGE 1 · LIVE",
-                    modelName: RealtimeTranscriptionClient.model,
-                    role: "Streaming text · both audio tracks",
-                    detail: "",
-                    badge: "FIXED",
-                    systemImage: "bolt.horizontal.fill",
-                    color: .blue
-                )
-                TranscriptionPipelineConnector(label: "TURN\nENDS")
-                TranscriptionStageCard(
-                    stage: "STAGE 2 · FINAL",
-                    modelName: controller.refinementEngine.modelName,
-                    role: "\(controller.refinementEngine.title) · completed turns",
-                    detail: "",
-                    badge: "SELECTED",
-                    systemImage: controller.refinementEngine.systemImage,
-                    color: .green
-                )
-            }
-        }
-        .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(.separator.opacity(0.45), lineWidth: 1)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     private var meetingAudioRoutePanel: some View {
@@ -816,60 +808,6 @@ struct ContentView: View {
         }
         return controller.processes.first(where: { $0.id == selectedProcessID })?.name
             ?? "Selected app unavailable"
-    }
-}
-
-struct ModelChoiceButton: View {
-    let engine: TranscriptRefinementEngine
-    let isSelected: Bool
-    let isDisabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Image(systemName: engine.systemImage)
-                    Text(engine.title)
-                        .font(.callout.weight(.semibold))
-                    Spacer(minLength: 4)
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(isSelected ? Color.green : Color.secondary)
-                }
-                Text(engine.modelName)
-                    .font(.caption.monospaced().weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Text(engine.purpose)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
-            .padding(9)
-            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
-            .background(
-                isSelected ? Color.green.opacity(0.10) : Color.primary.opacity(0.035),
-                in: RoundedRectangle(cornerRadius: 9)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(
-                        isSelected ? Color.green.opacity(0.8) : Color.secondary.opacity(0.25),
-                        lineWidth: isSelected ? 2 : 1
-                    )
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .opacity(isDisabled && !isSelected ? 0.55 : 1)
-        .accessibilityLabel("Final pass and Quick Dictation: \(engine.title), \(engine.modelName)")
-        .accessibilityValue(isSelected ? "Selected" : "Not selected")
-        .help(
-            isDisabled
-                ? "Stop the active workflow before changing this model."
-                : engine.purpose
-        )
     }
 }
 
