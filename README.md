@@ -164,15 +164,27 @@ another keyboard key while the chord is down cancels the recording, so normal
 Command-Option shortcuts do not become dictations.
 
 By default, Quick Dictation shows a small, non-activating preview near the
-bottom of the current screen. It displays the live microphone waveform while
-recording and periodically sends bounded snapshots to the selected model to
-update the preview text. With GPT-Transcribe selected, preview and final work use
-independent connections, so a slow preview cannot queue in front of the final
-recording. Quick Dictation does not use the Meeting-only `gpt-live-transcribe`
-model. After release, the selected model transcribes the complete recording once
-for the pasted and saved result. Neither recording nor local transcription has
-a duration deadline. For cloud transcription, the response watchdog starts only
-after every audio byte and the commit have been sent. An explicit OpenAI failure
+bottom of the current screen, displaying the live microphone waveform while
+recording.
+
+With GPT-Transcribe selected, audio streams to the transcription session **while
+the user speaks** rather than being uploaded after the shortcut is released. The
+stream closes a segment whenever the speaker pauses, so finished text arrives
+during the dictation, and releasing the shortcut only leaves the tail to send.
+Release-to-text latency therefore stays flat at a few seconds no matter how long
+the recording is, instead of growing with it. That single stream also produces
+the live preview text, so no separate connection or repeated snapshot upload is
+needed. If the stream breaks at any point, the complete recording is still
+buffered locally and is uploaded through the original one-shot path at release,
+so a broken stream costs latency rather than the dictation.
+
+Engines that cannot stream keep the bounded-snapshot preview loop, and any
+preview still in flight is cancelled when the shortcut is released so it cannot
+compete with the transcription the user is waiting for. Quick Dictation does not
+use the Meeting-only `gpt-live-transcribe` model. Neither recording nor local
+transcription has a duration deadline. For cloud transcription, the response
+watchdog starts only after every audio byte and the commit have been sent —
+for a streamed dictation, that is at release. An explicit OpenAI failure
 starts Local Whisper immediately; otherwise, Local Whisper starts after 30
 seconds without a response. The first successful result wins without cancelling
 valid work merely because it is slow. Once Local Whisper is ready, Quick
@@ -201,10 +213,24 @@ paste, whether or not the target exposes enough Accessibility information to
 verify the insertion. If another application changes the clipboard during that
 brief interval, Quick Dictation leaves the newer clipboard contents untouched.
 Because iTerm does not expose its terminal buffer as an ordinary editable
-Accessibility value, its successful paste is treated as intentionally
-unverifiable instead of generating a false failure warning.
-If the original target closes or can no longer be focused, Quick Dictation saves
-the completed text in history instead of pasting it into a different window.
+Accessibility value, its paste cannot be checked against the value/range model
+used for text fields. It is verified by visible content instead: the paste
+counts as delivered if the text appears on screen, or — for a TUI that renders
+a pasted-text placeholder rather than the literal text — if the visible screen
+changed at all. An idle terminal's Accessibility value is byte-stable, so a
+screen that did not change is real evidence that nothing arrived. Only that
+case leaves the overlay on screen offering **Copy** and **Dismiss**.
+
+If the user switched to a different application while the transcription was
+finishing, Quick Dictation does **not** paste and does not pull focus back.
+Instead the text is placed on the clipboard and the overlay says so, so a stray
+transcript can never land in whatever window happens to be frontmost. The same
+applies when the original target closes or can no longer be focused. In every
+one of these cases the text is also saved to history, so nothing is lost.
+
+While a dictation is being transcribed, the overlay reports what it is waiting
+on — streamed text as it arrives, upload percentage on the fallback path, then
+`Transcribing…` — so a slow provider is never indistinguishable from a hang.
 Quick Dictation is paused while meeting capture is using the microphone.
 
 The main window's **Quick Dictation** tab owns the shortcut, permission,
@@ -303,7 +329,16 @@ The proof of concept includes:
 - An always-visible OpenAI API estimate with a per-model breakdown. It prefers
   server-reported transcription duration and falls back to the submitted PCM
   duration, separates live and final passes, includes cloud Quick Dictation,
-  and shows both local engines as zero API cost.
+  and shows both local engines as zero API cost. The running total is stored on
+  disk and accumulates across launches, labelled with the date it started and
+  how long it has been running, so a day's spend stays legible across many
+  restarts. **Reset Counter** is the only thing that clears it.
+- A **Keep everything on this Mac** switch in the model popover. It forces
+  Quick Dictation onto a local engine and blocks the cloud engine choice.
+  Meeting capture and Answer Mirror are refused while it is on, because their
+  live pass and generation have no on-device equivalent — the switch states
+  that cost rather than silently sending audio anyway. The toolbar chip reads
+  `LOCAL ONLY · NOTHING LEAVES THIS MAC` whenever it is active.
 - A host-side reference folder that is restored and scanned at launch, watched
   recursively for changes, and converted into a stable content revision and
   cache-friendly assistant prompt prefix. The display client receives only

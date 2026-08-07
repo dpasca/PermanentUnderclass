@@ -221,17 +221,24 @@ struct ContentView: View {
             modelPipelineExpanded.toggle()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "cpu")
+                Image(systemName: controller.localOnlyMode ? "lock.laptopcomputer" : "cpu")
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("ACTIVE MODELS")
+                    Text(controller.localOnlyMode ? "LOCAL ONLY" : "ACTIVE MODELS")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
-                    Text("MEETING LIVE · \(RealtimeTranscriptionClient.model)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.blue)
-                        .lineLimit(1)
-                    Text("FINAL + DICTATION · \(controller.refinementEngine.title)")
+                    if controller.localOnlyMode {
+                        Text("NOTHING LEAVES THIS MAC")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.green)
+                            .lineLimit(1)
+                    } else {
+                        Text("MEETING LIVE · \(RealtimeTranscriptionClient.model)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                    }
+                    Text("DICTATION · \(controller.refinementEngine.title)")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.green)
                         .lineLimit(1)
@@ -251,7 +258,7 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("Show every transcription model, stage, and responsibility")
+        .help("Show which model each workflow uses, and switch to local-only")
         .accessibilityLabel("Active transcription models and pipeline")
         .popover(isPresented: $modelPipelineExpanded, arrowEdge: .bottom) {
             TranscriptionPipelinePopover(controller: controller)
@@ -269,8 +276,13 @@ struct ContentView: View {
                     Text("API ESTIMATE")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
-                    Text(controller.apiExpenses.displayCost)
-                        .font(.callout.monospacedDigit().weight(.semibold))
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(controller.apiExpenses.displayCost)
+                            .font(.callout.monospacedDigit().weight(.semibold))
+                        Text(controller.apiExpenses.accumulationDescription())
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(.horizontal, 9)
@@ -282,7 +294,9 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
-        .help("Estimated transcription cost and assistant token usage since reset")
+        .help(
+            "Estimated transcription cost and assistant token usage, accumulated across launches \(controller.apiExpenses.accumulationDescription())"
+        )
         .popover(isPresented: $expenseExpanded, arrowEdge: .bottom) {
             APIExpensePopover(
                 summary: controller.apiExpenses,
@@ -842,7 +856,9 @@ private struct APIExpensePopover: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Label("OpenAI usage estimate", systemImage: "dollarsign.circle")
                         .font(.headline)
-                    Text("Since the last reset")
+                    // The total persists across launches, so the period it
+                    // covers has to be stated rather than assumed.
+                    Text("Accumulated \(summary.accumulationDescription())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

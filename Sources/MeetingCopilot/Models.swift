@@ -60,6 +60,15 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
         }
     }
 
+    var isCloud: Bool {
+        switch self {
+        case .localWhisper, .localParakeet:
+            false
+        case .openAITranscribe:
+            true
+        }
+    }
+
     var purpose: String {
         switch self {
         case .localWhisper, .localParakeet:
@@ -288,13 +297,15 @@ struct OpenAITranscriptionUsageRecord: Equatable {
     let measurement: OpenAIUsageMeasurement
 }
 
-struct APIExpenseSummary: Equatable {
+struct APIExpenseSummary: Equatable, Codable {
     // Pricing is configuration, not an invoice. Keep the effective date visible
     // so a future model or pricing update cannot silently change old estimates.
     static let pricingEffectiveAt = "2026-08-01"
     static let liveTranscriptionUSDPerMinute = 0.017
     static let finalTranscriptionUSDPerMinute = 0.0045
 
+    /// When this counter last started. The total is meaningless without it.
+    var startedAt = Date()
     var liveAudioSeconds: Double = 0
     var finalAudioSeconds: Double = 0
     var serverReportedRecords = 0
@@ -325,6 +336,26 @@ struct APIExpenseSummary: Equatable {
     var displayCost: String {
         let decimalPlaces = totalCostUSD < 0.01 ? 4 : 2
         return String(format: "$%.*f", decimalPlaces, totalCostUSD)
+    }
+
+    /// Human-readable period the total covers, for display next to the amount.
+    func accumulationDescription(now: Date = Date()) -> String {
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: startedAt,
+            to: now
+        ).day ?? 0
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        let since = formatter.string(from: startedAt)
+        switch days {
+        case ..<1:
+            return "since \(since) (today)"
+        case 1:
+            return "since \(since) (1 day)"
+        default:
+            return "since \(since) (\(days) days)"
+        }
     }
 
     mutating func record(_ usage: OpenAITranscriptionUsageRecord) {
@@ -358,6 +389,34 @@ protocol TranscriptRefining: AnyObject {
     func refine(_ request: RealtimeRefinementRequest)
     func finishWhenIdle()
     func disconnect()
+    /// Drops queued work and stops publishing results for work already in
+    /// flight. Live preview uses this on key release so a preview that is
+    /// still running cannot compete with the transcription the user is
+    /// actually waiting for.
+    func cancelPendingRequests()
+}
+
+extension TranscriptRefining {
+    func cancelPendingRequests() {}
+}
+
+struct DictationStreamStart {
+    let streamID: String
+    let context: TranscriptionContext
+}
+
+/// Uploading a dictation only after the shortcut is released makes latency
+/// scale with how long the user spoke. A streaming transcriber accepts audio
+/// while recording so that releasing the key only leaves the tail to send.
+protocol TranscriptStreaming: AnyObject {
+    var supportsStreaming: Bool { get }
+    func beginStream(_ start: DictationStreamStart)
+    func appendStream(streamID: String, pcm16Audio: Data)
+    /// Closes the current segment so its transcript comes back while the user
+    /// keeps speaking.
+    func commitStreamSegment(streamID: String)
+    func finishStream(streamID: String)
+    func cancelStream(streamID: String)
 }
 
 struct AudioProcessInfo: Identifiable, Hashable {
@@ -565,6 +624,79 @@ enum DictationPhase: Equatable {
         default:
             return nil
         }
+    }
+}
+
+/// Whether the dictated text actually reached the field the user was typing in.
+/// Paste into a terminal cannot be verified through the accessibility API, and
+/// the user may have switched away during a long transcription, so an
+/// unresolved delivery has to be surfaced rather than reported as success.
+enum QuickDictationDeliveryOutcome: Equatable {
+    case delivering
+    case pasted
+    /// Posted to the app, but the app does not expose enough for the paste to
+    /// be confirmed.
+    case unverified(applicationName: String)
+    /// Nothing was pasted; the text is on the clipboard instead.
+    case notDelivered(reason: String)
+
+    var isResolved: Bool {
+        switch self {
+        case .pasted:
+            true
+        case .delivering, .unverified, .notDelivered:
+            false
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .delivering, .pasted:
+            "Dictated text"
+        case .unverified:
+            "Dictated text · unconfirmed"
+        case .notDelivered:
+            "Dictated text · not pasted"
+        }
+    }
+
+    var detail: String? {
+        switch self {
+        case .delivering, .pasted:
+            nil
+        case let .unverified(applicationName):
+            "\(applicationName) could not confirm the paste. Copy the text if it did not appear."
+        case let .notDelivered(reason):
+            "\(reason) The text is on the clipboard — press ⌘V where you want it."
+        }
+    }
+}
+
+/// What the app is waiting on between the shortcut being released and the text
+/// appearing. Without this the overlay shows an indeterminate spinner for as
+/// long as it takes, which is indistinguishable from a hang.
+enum DictationTranscriptionProgress: Equatable {
+    /// Audio went up while the user spoke; only the tail is outstanding.
+    case finishing
+    /// Fallback path: the whole recording is uploading after the fact.
+    case uploading(fraction: Double)
+    /// Everything is delivered; the model is producing text.
+    case transcribing
+
+    var label: String {
+        switch self {
+        case .finishing:
+            "Finishing…"
+        case let .uploading(fraction):
+            "Uploading \(Int((fraction * 100).rounded()))%"
+        case .transcribing:
+            "Transcribing…"
+        }
+    }
+
+    var fraction: Double? {
+        guard case let .uploading(fraction) = self else { return nil }
+        return min(max(fraction, 0), 1)
     }
 }
 

@@ -179,15 +179,118 @@ struct QuickDictationCleanupControl: View {
     }
 }
 
+/// The one switch that decides whether any audio leaves this Mac. Stated in
+/// terms of what it costs, because two features have no on-device equivalent.
+struct LocalOnlyModeControl: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { controller.localOnlyMode },
+                set: controller.setLocalOnlyMode
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep everything on this Mac")
+                        .font(.headline)
+                    Text(
+                        controller.localOnlyMode
+                            ? "No audio or text is sent to OpenAI. Meeting capture and Answer Mirror are unavailable."
+                            : "Quick Dictation stays local; Meeting capture and Answer Mirror still use OpenAI."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+        }
+        .padding(10)
+        .background(
+            (controller.localOnlyMode ? Color.green : Color.secondary)
+                .opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(
+                    (controller.localOnlyMode ? Color.green : Color.secondary)
+                        .opacity(0.25),
+                    lineWidth: 1
+                )
+        }
+    }
+}
+
+/// One row per workflow: what it uses, and whether that is a choice.
+struct ModelUsageSummary: View {
+    @ObservedObject var controller: MeetingController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            row(
+                workflow: "Quick Dictation",
+                model: controller.refinementEngine.modelName,
+                isCloud: controller.refinementEngine.isCloud,
+                note: "your choice"
+            )
+            row(
+                workflow: "Meeting · live",
+                model: RealtimeTranscriptionClient.model,
+                isCloud: true,
+                note: controller.localOnlyMode ? "unavailable" : "fixed"
+            )
+            row(
+                workflow: "Meeting · final",
+                model: controller.refinementEngine.modelName,
+                isCloud: controller.refinementEngine.isCloud,
+                note: controller.localOnlyMode
+                    ? "unavailable"
+                    : "same as Quick Dictation"
+            )
+        }
+    }
+
+    private func row(
+        workflow: String,
+        model: String,
+        isCloud: Bool,
+        note: String
+    ) -> some View {
+        let isUnavailable = note == "unavailable"
+        return HStack(spacing: 8) {
+            Image(systemName: isCloud ? "cloud" : "desktopcomputer")
+                .font(.system(size: 11))
+                .foregroundStyle(
+                    isUnavailable
+                        ? Color.secondary
+                        : (isCloud ? Color.blue : Color.green)
+                )
+                .frame(width: 16)
+            Text(workflow)
+                .font(.callout.weight(.medium))
+                .frame(width: 118, alignment: .leading)
+            Text(model)
+                .font(.callout.monospaced())
+                .foregroundStyle(isUnavailable ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            Spacer(minLength: 8)
+            Text(note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .opacity(isUnavailable ? 0.55 : 1)
+    }
+}
+
 struct SelectableTranscriptionModelPicker: View {
     @ObservedObject var controller: MeetingController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Selectable final-pass and Quick Dictation model")
+            Text("Transcription model")
                 .font(.headline)
             Text(
-                "This one selection drives Meeting’s second pass and both Quick Dictation stages. The Meeting live model is fixed separately."
+                "Used for Quick Dictation, and for Meeting’s second pass. Meeting’s live pass is a separate fixed cloud model."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -197,7 +300,9 @@ struct SelectableTranscriptionModelPicker: View {
                     ModelChoiceButton(
                         engine: engine,
                         isSelected: controller.refinementEngine == engine,
-                        isDisabled: controller.isListening || controller.isDictationBusy,
+                        isDisabled: controller.isListening
+                            || controller.isDictationBusy
+                            || (controller.localOnlyMode && engine.isCloud),
                         action: { controller.selectRefinementEngine(engine) }
                     )
                 }
@@ -269,12 +374,18 @@ struct TranscriptionPipelinePopover: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Label("Active Transcription Pipeline", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label("Models", systemImage: "point.3.connected.trianglepath.dotted")
                         .font(.title3.weight(.semibold))
-                    Text("Each workflow uses the models differently. Only the green model is selectable.")
+                    Text("What runs where, and which parts you can change.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+
+                LocalOnlyModeControl(controller: controller)
+
+                // The at-a-glance answer to "which model is used and how",
+                // before any of the per-stage detail below.
+                ModelUsageSummary(controller: controller)
 
                 Divider()
 
@@ -308,27 +419,44 @@ struct TranscriptionPipelinePopover: View {
 
                 workflowTitle(
                     "Quick Dictation",
-                    detail: "The selected model is reused; Meeting’s live model is not involved."
+                    detail: controller.refinementEngine.isCloud
+                        ? "One session transcribes while you speak, so releasing the shortcut only sends the tail."
+                        : "The selected model is reused; Meeting’s live model is not involved."
                 )
                 QuickDictationPreviewControl(controller: controller)
                 QuickDictationCleanupControl(controller: controller)
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
-                        stage: "OPTIONAL STAGE · WHILE HELD",
+                        stage: controller.refinementEngine.isCloud
+                            ? "WHILE HELD · STREAMING"
+                            : "OPTIONAL STAGE · WHILE HELD",
                         modelName: controller.refinementEngine.modelName,
-                        role: "\(controller.refinementEngine.title) · bounded snapshots",
-                        detail: "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
-                        badge: controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF",
+                        role: controller.refinementEngine.isCloud
+                            ? "\(controller.refinementEngine.title) · continuous upload"
+                            : "\(controller.refinementEngine.title) · bounded snapshots",
+                        detail: controller.refinementEngine.isCloud
+                            ? "Audio uploads as you speak and a segment closes on each pause, so live text comes back from the same session that produces the final transcript. This is not gpt-live-transcribe."
+                            : "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
+                        badge: controller.refinementEngine.isCloud
+                            ? "ONE SESSION"
+                            : (controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF"),
                         systemImage: "text.bubble",
                         color: .orange,
-                        isEnabled: controller.dictationPreviewEnabled
+                        isEnabled: controller.refinementEngine.isCloud
+                            || controller.dictationPreviewEnabled
                     )
-                    TranscriptionPipelineConnector(label: "SAME\nMODEL")
+                    TranscriptionPipelineConnector(
+                        label: controller.refinementEngine.isCloud
+                            ? "SAME\nSTREAM"
+                            : "SAME\nMODEL"
+                    )
                     TranscriptionStageCard(
                         stage: "ON RELEASE · FINAL",
                         modelName: controller.refinementEngine.modelName,
                         role: "\(controller.refinementEngine.title) · full recording",
-                        detail: "Transcribes the complete clip once, then returns to the app and field focused when recording began, pastes there, and saves it in history.",
+                        detail: controller.refinementEngine.isCloud
+                            ? "Commits the last segment, then returns to the app and field focused when recording began, pastes there, and saves it in history."
+                            : "Transcribes the complete clip once, then returns to the app and field focused when recording began, pastes there, and saves it in history.",
                         badge: selectedLocationBadge,
                         systemImage: controller.refinementEngine.systemImage,
                         color: .green

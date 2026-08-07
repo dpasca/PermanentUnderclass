@@ -1,12 +1,25 @@
 import AppKit
 import SwiftUI
 
+struct QuickDictationResultPresentation: Equatable {
+    let text: String
+    var delivery: QuickDictationDeliveryOutcome
+}
+
 enum QuickDictationPreviewContent: Equatable {
     case hidden
     case listening
     case transcribing
-    case result(String)
+    case result(QuickDictationResultPresentation)
     case failure(String)
+
+    /// True while the user still has to act on the result, which is what keeps
+    /// the overlay on screen and clickable instead of auto-dismissing.
+    var needsAcknowledgement: Bool {
+        guard case let .result(presentation) = self else { return false }
+        return !presentation.delivery.isResolved
+            && presentation.delivery != .delivering
+    }
 }
 
 enum QuickDictationBackgroundContent: Equatable {
@@ -55,7 +68,25 @@ struct QuickDictationPreviewState: Equatable {
             backgroundContent = .result(result)
             return
         }
-        content = .result(result)
+        content = .result(
+            QuickDictationResultPresentation(
+                text: result,
+                delivery: .delivering
+            )
+        )
+    }
+
+    /// Applies the delivery outcome to a result that is already on screen. The
+    /// transcript appears as soon as it exists; whether it landed is only known
+    /// once the paste has been attempted.
+    mutating func resolve(delivery: QuickDictationDeliveryOutcome) {
+        guard case let .result(presentation) = content else { return }
+        content = .result(
+            QuickDictationResultPresentation(
+                text: presentation.text,
+                delivery: delivery
+            )
+        )
     }
 
     mutating func hideBackground() {
@@ -74,6 +105,9 @@ private final class QuickDictationOverlayModel: ObservableObject {
     @Published var waveform: [Float] = Array(repeating: 0, count: 180)
     @Published var partialTranscript = ""
     @Published var microphoneName = "System default microphone"
+    @Published var progress: DictationTranscriptionProgress?
+    var onCopy: () -> Void = {}
+    var onDismiss: () -> Void = {}
 }
 
 private struct QuickDictationOverlayView: View {
@@ -259,24 +293,53 @@ private struct QuickDictationOverlayView: View {
                 .frame(height: 19)
             }
         case .transcribing:
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(
-                    model.partialTranscript.isEmpty
-                        ? "Finishing the transcription…"
-                        : model.partialTranscript
-                )
-                .font(.system(size: 14, weight: model.partialTranscript.isEmpty ? .regular : .medium))
-                .foregroundStyle(model.partialTranscript.isEmpty ? .secondary : .primary)
-                .lineLimit(2)
-                .truncationMode(.head)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if let fraction = model.progress?.fraction {
+                        ProgressView(value: fraction)
+                            .controlSize(.small)
+                            .frame(width: 90)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(
+                        model.partialTranscript.isEmpty
+                            ? (model.progress?.label ?? "Finishing the transcription…")
+                            : model.partialTranscript
+                    )
+                    .font(.system(size: 14, weight: model.partialTranscript.isEmpty ? .regular : .medium))
+                    .foregroundStyle(model.partialTranscript.isEmpty ? .secondary : .primary)
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                }
+                // With live text on screen the status line still has to say what
+                // the app is waiting on, otherwise a long tail looks like a hang.
+                if !model.partialTranscript.isEmpty, let progress = model.progress {
+                    Text(progress.label)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
-        case let .result(text):
-            Text(text)
-                .font(.system(size: 14, weight: .medium))
-                .lineLimit(2)
-                .truncationMode(.head)
+        case let .result(presentation):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(presentation.text)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                if let detail = presentation.delivery.detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    HStack(spacing: 8) {
+                        Button("Copy") { model.onCopy() }
+                        Button("Dismiss") { model.onDismiss() }
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.bordered)
+                }
+            }
         case let .failure(message):
             Text(message)
                 .font(.system(size: 14))
@@ -292,9 +355,9 @@ private struct QuickDictationOverlayView: View {
         case .listening:
             "Listening…"
         case .transcribing:
-            "Transcribing…"
-        case .result:
-            "Dictated text"
+            model.progress?.label ?? "Transcribing…"
+        case let .result(presentation):
+            presentation.delivery.title
         case .failure:
             "Dictation failed"
         }
@@ -306,8 +369,11 @@ private struct QuickDictationOverlayView: View {
             "mic.fill"
         case .transcribing:
             "text.bubble.fill"
-        case .result:
-            "checkmark"
+        case let .result(presentation):
+            presentation.delivery.isResolved
+                || presentation.delivery == .delivering
+                ? "checkmark"
+                : "exclamationmark.triangle.fill"
         case .failure:
             "exclamationmark"
         }
@@ -319,8 +385,11 @@ private struct QuickDictationOverlayView: View {
             .red
         case .transcribing:
             .orange
-        case .result:
-            .green
+        case let .result(presentation):
+            presentation.delivery.isResolved
+                || presentation.delivery == .delivering
+                ? .green
+                : .orange
         case .failure:
             .orange
         }
@@ -336,11 +405,15 @@ private struct QuickDictationOverlayView: View {
                 : "Listening. Live transcript: \(model.partialTranscript)"
             return "\(status) Microphone: \(model.microphoneName)."
         case .transcribing:
+            let status = model.progress?.label ?? "Transcribing the recording."
             return model.partialTranscript.isEmpty
-                ? "Transcribing the recording."
-                : "Finishing transcription. Live transcript: \(model.partialTranscript)"
-        case let .result(text):
-            return text
+                ? status
+                : "\(status) Live transcript: \(model.partialTranscript)"
+        case let .result(presentation):
+            guard let detail = presentation.delivery.detail else {
+                return presentation.text
+            }
+            return "\(presentation.text). \(detail)"
         case let .failure(message):
             return message
         }
@@ -365,6 +438,12 @@ final class QuickDictationOverlayController {
     private var visibilityGeneration = UUID()
 
     init() {
+        model.onCopy = { [weak self] in
+            self?.copyResultToClipboard()
+        }
+        model.onDismiss = { [weak self] in
+            self?.dismissImmediately()
+        }
         headlessModeObserver = NotificationCenter.default.addObserver(
             forName: .headlessModeDidChange,
             object: nil,
@@ -427,6 +506,8 @@ final class QuickDictationOverlayController {
         state.hide()
         model.content = .hidden
         model.backgroundContent = nil
+        model.progress = nil
+        setInteractive(false)
         panel.orderOut(nil)
     }
 
@@ -440,16 +521,19 @@ final class QuickDictationOverlayController {
         switch state.content {
         case .hidden:
             cancelBackgroundDismissal()
+            setInteractive(false)
             hide()
         case .listening:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
+            setInteractive(false)
             if state.backgroundContent == .transcribing {
                 cancelBackgroundDismissal()
             }
             if previousContent != .listening {
                 model.waveform = Array(repeating: 0, count: 180)
                 model.partialTranscript = ""
+                model.progress = nil
             }
             present()
         case .transcribing:
@@ -486,6 +570,11 @@ final class QuickDictationOverlayController {
         }
     }
 
+    func update(progress: DictationTranscriptionProgress?) {
+        guard isEnabled, !isSuppressed else { return }
+        model.progress = progress
+    }
+
     func update(microphoneName: String) {
         let trimmedName = microphoneName.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -501,6 +590,7 @@ final class QuickDictationOverlayController {
         state.show(result: result)
         model.content = state.content
         model.backgroundContent = state.backgroundContent
+        model.progress = nil
         if isBackgroundResult {
             present()
             dismissBackground(after: 1.6)
@@ -508,7 +598,39 @@ final class QuickDictationOverlayController {
         }
         model.partialTranscript = result
         present()
-        dismiss(after: 1.6)
+        // Dismissal waits for the delivery outcome: a result that never
+        // reached its destination must not disappear on a timer.
+    }
+
+    /// Reports whether the text actually landed. A confirmed paste dismisses
+    /// the overlay; anything else keeps it on screen and clickable so the user
+    /// can recover the text.
+    func resolve(delivery: QuickDictationDeliveryOutcome) {
+        guard isEnabled, !isSuppressed else { return }
+        state.resolve(delivery: delivery)
+        model.content = state.content
+        guard case .result = state.content else { return }
+        present()
+        if state.content.needsAcknowledgement {
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            setInteractive(true)
+        } else if delivery != .delivering {
+            dismiss(after: 1.6)
+        }
+    }
+
+    private func copyResultToClipboard() {
+        guard case let .result(presentation) = state.content else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(presentation.text, forType: .string)
+    }
+
+    /// The overlay is normally click-through so it never interrupts typing. It
+    /// only accepts the mouse while it is offering recovery actions.
+    private func setInteractive(_ interactive: Bool) {
+        panel.ignoresMouseEvents = !interactive
     }
 
     private func present() {

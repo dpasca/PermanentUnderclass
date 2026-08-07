@@ -42,6 +42,10 @@ final class MeetingController: ObservableObject {
     @Published var dictationPartialTranscript = ""
     @Published var dictationPreviewEnabled = true
     @Published var dictationCleanupEnabled = true
+    /// When set, nothing leaves this Mac. Quick Dictation runs on a local
+    /// model; Meeting capture and the assistant are unavailable because their
+    /// live pass has no on-device equivalent.
+    @Published private(set) var localOnlyMode = false
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
     @Published private(set) var companionGatewayStatus = "Starting companion display…"
@@ -80,6 +84,7 @@ final class MeetingController: ObservableObject {
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
     private let quickDictationRecoveryStore: QuickDictationRecoveryStore
+    private let apiExpenseStore: APIExpenseStore
     private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
 
     private static let dictationEnabledDefaultsKey =
@@ -90,6 +95,8 @@ final class MeetingController: ObservableObject {
         "MeetingCopilot.QuickDictationCleanupEnabled"
     private static let referenceFolderDefaultsKey =
         "MeetingCopilot.ReferenceFolderPath"
+    private static let localOnlyModeDefaultsKey =
+        "MeetingCopilot.LocalOnlyMode"
     private static let liveAssistantLogger = Logger(
         subsystem: "com.permanentunderclass.meetingcopilot",
         category: "LiveAssistant"
@@ -99,11 +106,16 @@ final class MeetingController: ObservableObject {
         quickDictationHistoryStore: QuickDictationHistoryStore = .applicationSupport(),
         quickDictationRecoveryStore: QuickDictationRecoveryStore = .applicationSupport(),
         syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore =
-            .applicationSupport()
+            .applicationSupport(),
+        apiExpenseStore: APIExpenseStore = .applicationSupport()
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
         self.quickDictationRecoveryStore = quickDictationRecoveryStore
         self.syntheticInterviewScenarioStore = syntheticInterviewScenarioStore
+        self.apiExpenseStore = apiExpenseStore
+        // A spend estimate that resets on every launch cannot answer "how much
+        // did today cost", so the running total outlives the process.
+        apiExpenses = (try? apiExpenseStore.load()) ?? APIExpenseSummary()
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
@@ -113,6 +125,12 @@ final class MeetingController: ObservableObject {
         dictationCleanupEnabled = UserDefaults.standard.object(
             forKey: Self.dictationCleanupEnabledDefaultsKey
         ) as? Bool ?? true
+        localOnlyMode = UserDefaults.standard.bool(
+            forKey: Self.localOnlyModeDefaultsKey
+        )
+        if localOnlyMode, refinementEngine.isCloud {
+            refinementEngine = .localWhisper
+        }
         dictationOverlay.setEnabled(dictationPreviewEnabled)
         do {
             quickDictationHistory = try quickDictationHistoryStore.load()
@@ -257,6 +275,14 @@ final class MeetingController: ObservableObject {
             guard !isDictating else {
                 throw MeetingCopilotError.audio(
                     "Release the Quick Dictation shortcut before starting meeting capture."
+                )
+            }
+            // Meeting's live pass is a cloud-only model with no on-device
+            // equivalent, so local-only mode blocks it rather than quietly
+            // sending audio anyway.
+            guard !localOnlyMode else {
+                throw MeetingCopilotError.audio(
+                    "Meeting capture needs the cloud live model. Turn off local-only mode to start a meeting."
                 )
             }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -493,7 +519,32 @@ final class MeetingController: ObservableObject {
         statusMessage = "Finishing your current turn…"
     }
 
+    /// Forces every stage that has an on-device option onto it, and blocks the
+    /// ones that do not. Turning it off restores the previous free choice but
+    /// does not silently re-select a cloud model.
+    func setLocalOnlyMode(_ enabled: Bool) {
+        guard localOnlyMode != enabled else { return }
+        localOnlyMode = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.localOnlyModeDefaultsKey)
+        guard enabled else {
+            statusMessage = "Cloud models are available again"
+            return
+        }
+        if isListening {
+            stopMeeting()
+        }
+        if refinementEngine.isCloud {
+            selectRefinementEngine(.localWhisper)
+        }
+        statusMessage = "Local-only: audio stays on this Mac"
+    }
+
     func selectRefinementEngine(_ engine: TranscriptRefinementEngine) {
+        guard !localOnlyMode || !engine.isCloud else {
+            errorMessage =
+                "Turn off local-only mode to use \(engine.title)."
+            return
+        }
         guard !isListening, !isDictationBusy, refinementEngine != engine else { return }
         refinementEngine = engine
         if engine == .localWhisper {
@@ -692,8 +743,20 @@ final class MeetingController: ObservableObject {
     }
 
     func resetAPIExpenses() {
-        apiExpenses = APIExpenseSummary()
+        apiExpenses = APIExpenseSummary(startedAt: Date())
+        persistAPIExpenses()
         publishCompanionUsage()
+    }
+
+    private func persistAPIExpenses() {
+        do {
+            try apiExpenseStore.save(apiExpenses)
+        } catch {
+            // The estimate is informational; a failed write must not interrupt
+            // a dictation or a meeting.
+            errorMessage =
+                "The API cost estimate could not be saved: \(error.localizedDescription)"
+        }
     }
 
     func chooseReferenceFolder() {
@@ -1472,6 +1535,12 @@ final class MeetingController: ObservableObject {
                 onUsage: { [weak self] usage in
                     self?.recordOpenAIUsage(usage)
                 },
+                onProgress: { [weak self] progress in
+                    self?.dictationOverlay.update(progress: progress)
+                },
+                onDelivery: { [weak self] outcome in
+                    self?.dictationOverlay.resolve(delivery: outcome)
+                },
                 onRecoveries: { [weak self] recoveries in
                     self?.recoverableDictations = recoveries
                 },
@@ -1495,6 +1564,7 @@ final class MeetingController: ObservableObject {
         var updated = apiExpenses
         updated.record(usage)
         apiExpenses = updated
+        persistAPIExpenses()
         publishCompanionUsage()
     }
 
@@ -1720,7 +1790,12 @@ final class MeetingController: ObservableObject {
         let requestID = UUID()
         assistantGenerationRequestID = requestID
         assistantGenerationIdentity = identity
-        let apiKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The assistant is a hosted model; local-only mode withholds the key
+        // rather than sending the transcript off the Mac.
+        let isLocalOnly = localOnlyMode
+        let apiKey = isLocalOnly
+            ? ""
+            : apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let usesSyntheticReferences = syntheticInterviewState.isRunning
         let references = usesSyntheticReferences
             ? syntheticInterviewReferences
@@ -1768,10 +1843,12 @@ final class MeetingController: ObservableObject {
 
                 guard !apiKey.isEmpty else {
                     Self.liveAssistantLogger.error(
-                        "assistant_check_skipped reason=api_key_missing"
+                        "assistant_check_skipped reason=\(isLocalOnly ? "local_only_mode" : "api_key_missing", privacy: .public)"
                     )
                     await hub.assistantFailed(
-                        "Save an OpenAI API key on the Mac to enable Answer Mirror.",
+                        isLocalOnly
+                            ? "Answer Mirror needs a hosted model. Turn off local-only mode to enable it."
+                            : "Save an OpenAI API key on the Mac to enable Answer Mirror.",
                         unavailable: true
                     )
                     return
@@ -1905,6 +1982,7 @@ final class MeetingController: ObservableObject {
         var updated = apiExpenses
         updated.record(usage)
         apiExpenses = updated
+        persistAPIExpenses()
         publishCompanionUsage()
     }
 

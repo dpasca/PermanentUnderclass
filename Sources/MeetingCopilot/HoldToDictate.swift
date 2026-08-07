@@ -206,19 +206,48 @@ struct DictationTranscriberCallbacks {
     let onFailure: (_ transcriptID: String, _ message: String) -> Void
     let onUsage: (OpenAITranscriptionUsageRecord) -> Void
     let onCommitted: (_ transcriptID: String) -> Void
+    let onStreamPartial: (_ streamID: String, _ text: String) -> Void
+    let onStreamCompleted: (_ streamID: String, _ text: String) -> Void
+    let onStreamFailed: (_ streamID: String, _ message: String) -> Void
+    let onUploadProgress: (
+        _ transcriptID: String,
+        _ sentBytes: Int,
+        _ totalBytes: Int
+    ) -> Void
 
     init(
         onState: @escaping (SocketState) -> Void,
         onRefined: @escaping (_ transcriptID: String, _ text: String) -> Void,
         onFailure: @escaping (_ transcriptID: String, _ message: String) -> Void,
         onUsage: @escaping (OpenAITranscriptionUsageRecord) -> Void = { _ in },
-        onCommitted: @escaping (_ transcriptID: String) -> Void = { _ in }
+        onCommitted: @escaping (_ transcriptID: String) -> Void = { _ in },
+        onStreamPartial: @escaping (
+            _ streamID: String,
+            _ text: String
+        ) -> Void = { _, _ in },
+        onStreamCompleted: @escaping (
+            _ streamID: String,
+            _ text: String
+        ) -> Void = { _, _ in },
+        onStreamFailed: @escaping (
+            _ streamID: String,
+            _ message: String
+        ) -> Void = { _, _ in },
+        onUploadProgress: @escaping (
+            _ transcriptID: String,
+            _ sentBytes: Int,
+            _ totalBytes: Int
+        ) -> Void = { _, _, _ in }
     ) {
         self.onState = onState
         self.onRefined = onRefined
         self.onFailure = onFailure
         self.onUsage = onUsage
         self.onCommitted = onCommitted
+        self.onStreamPartial = onStreamPartial
+        self.onStreamCompleted = onStreamCompleted
+        self.onStreamFailed = onStreamFailed
+        self.onUploadProgress = onUploadProgress
     }
 }
 
@@ -250,7 +279,11 @@ enum QuickDictationTranscriberFactory {
                 onRefined: callbacks.onRefined,
                 onFailure: callbacks.onFailure,
                 onUsage: callbacks.onUsage,
-                onCommitted: callbacks.onCommitted
+                onCommitted: callbacks.onCommitted,
+                onStreamPartial: callbacks.onStreamPartial,
+                onStreamCompleted: callbacks.onStreamCompleted,
+                onStreamFailed: callbacks.onStreamFailed,
+                onUploadProgress: callbacks.onUploadProgress
             )
         }
     }
@@ -403,6 +436,8 @@ final class HoldToDictateService {
     typealias PartialHandler = (String) -> Void
     typealias ResultHandler = (String) -> Bool
     typealias UsageHandler = (OpenAITranscriptionUsageRecord) -> Void
+    typealias ProgressHandler = (DictationTranscriptionProgress?) -> Void
+    typealias DeliveryHandler = (QuickDictationDeliveryOutcome) -> Void
     typealias RecoveriesHandler = ([QuickDictationRecoveryEntry]) -> Void
     typealias ContextProvider = () throws -> TranscriptionContext
 
@@ -423,6 +458,8 @@ final class HoldToDictateService {
     private let partialHandler: PartialHandler
     private let resultHandler: ResultHandler
     private let usageHandler: UsageHandler
+    private let progressHandler: ProgressHandler
+    private let deliveryHandler: DeliveryHandler
     private let recoveriesHandler: RecoveriesHandler
     private let recoveryStore: QuickDictationRecoveryStore
     private let transcribesAfterRecording: Bool
@@ -438,11 +475,7 @@ final class HoldToDictateService {
     private var recordingID: UUID?
     private var recordingTarget: QuickDictationPasteTarget?
     private var transcriber: TranscriptRefining?
-    private var previewTranscriber: TranscriptRefining?
-    private var previewTranscriberState: SocketState = .idle
     private var previewGeneration = UUID()
-    private var previewReconnectPolicy = QuickDictationReconnectPolicy()
-    private var previewReconnectWorkItem: DispatchWorkItem?
     private var fallbackTranscriber: TranscriptRefining?
     private var fallbackTranscriberState: SocketState = .idle
     private var fallbackTranscriptionIDs: Set<String> = []
@@ -456,6 +489,10 @@ final class HoldToDictateService {
     private var activeLivePreviewID: String?
     private var livePreviewWorkItem: DispatchWorkItem?
     private var lastLivePreviewByteCount = 0
+    private var activeStreamID: String?
+    private var streamDidFail = false
+    private var streamSegmentWorkItem: DispatchWorkItem?
+    private var streamCommittedByteCount = 0
     private var generation = UUID()
     private var transcriberState: SocketState = .idle
     private var reconnectPolicy = QuickDictationReconnectPolicy()
@@ -478,6 +515,8 @@ final class HoldToDictateService {
         onPartial: @escaping PartialHandler = { _ in },
         onResult: @escaping ResultHandler,
         onUsage: @escaping UsageHandler = { _ in },
+        onProgress: @escaping ProgressHandler = { _ in },
+        onDelivery: @escaping DeliveryHandler = { _ in },
         onRecoveries: @escaping RecoveriesHandler = { _ in },
         recoveryStore: QuickDictationRecoveryStore = .applicationSupport(),
         transcriptionEngine: TranscriptRefinementEngine = .localWhisper,
@@ -504,6 +543,8 @@ final class HoldToDictateService {
         partialHandler = onPartial
         resultHandler = onResult
         usageHandler = onUsage
+        progressHandler = onProgress
+        deliveryHandler = onDelivery
         recoveriesHandler = onRecoveries
         self.recoveryStore = recoveryStore
         self.transcriptionEngine = transcriptionEngine
@@ -551,11 +592,7 @@ final class HoldToDictateService {
             reconnectWorkItem = nil
             generation = UUID()
             previewGeneration = UUID()
-            previewReconnectPolicy.reset()
-            previewReconnectWorkItem?.cancel()
-            previewReconnectWorkItem = nil
             connectTranscriber(generation: generation)
-            connectPreviewTranscriberIfNeeded(generation: previewGeneration)
             connectFallbackTranscriberIfNeeded()
             publishRecoveries()
             return true
@@ -570,12 +607,11 @@ final class HoldToDictateService {
             || isRunning
             || recordingID != nil
             || transcriber != nil
-            || previewTranscriber != nil
             || workState.hasPendingTranscriptions
             || activeLivePreviewID != nil
             || livePreviewWorkItem != nil
+            || activeStreamID != nil
             || reconnectWorkItem != nil
-            || previewReconnectWorkItem != nil
         wantsEnabled = false
         guard hadActiveWork else { return }
         generation = UUID()
@@ -583,18 +619,13 @@ final class HoldToDictateService {
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         reconnectPolicy.reset()
-        previewReconnectWorkItem?.cancel()
-        previewReconnectWorkItem = nil
-        previewReconnectPolicy.reset()
         monitor.stop()
         stopLivePreview()
+        discardDictationStream()
         cancelRecording(nextPhase: .off)
         pasteInjector.cancel()
         transcriber?.disconnect()
         transcriber = nil
-        previewTranscriber?.disconnect()
-        previewTranscriber = nil
-        previewTranscriberState = .idle
         fallbackTranscriber?.disconnect()
         fallbackTranscriber = nil
         fallbackTranscriberState = .idle
@@ -615,11 +646,12 @@ final class HoldToDictateService {
         guard transcribesAfterRecording else { return }
         guard enabled else {
             stopLivePreview()
-            disconnectPreviewTranscriber()
             return
         }
-        connectPreviewTranscriberIfNeeded(generation: previewGeneration)
+        // A streamed dictation already emits live text from the transcription
+        // socket, so only the sampling loop needs starting here.
         guard
+            availableStreamingTranscriber == nil,
             let recordingID,
             activeLivePreviewID == nil,
             livePreviewWorkItem == nil
@@ -779,6 +811,35 @@ final class HoldToDictateService {
                     transcriptID: transcriptID,
                     generation: generation
                 )
+            },
+            onStreamPartial: { [weak self] streamID, text in
+                self?.handleStreamPartial(
+                    streamID: streamID,
+                    text: text,
+                    generation: generation
+                )
+            },
+            onStreamCompleted: { [weak self] streamID, text in
+                self?.handleStreamCompleted(
+                    streamID: streamID,
+                    text: text,
+                    generation: generation
+                )
+            },
+            onStreamFailed: { [weak self] streamID, message in
+                self?.handleStreamFailure(
+                    streamID: streamID,
+                    message: message,
+                    generation: generation
+                )
+            },
+            onUploadProgress: { [weak self] transcriptID, sentBytes, totalBytes in
+                self?.handleUploadProgress(
+                    transcriptID: transcriptID,
+                    sentBytes: sentBytes,
+                    totalBytes: totalBytes,
+                    generation: generation
+                )
             }
         )
         let transcriber = QuickDictationTranscriberFactory.make(
@@ -788,136 +849,6 @@ final class HoldToDictateService {
         )
         self.transcriber = transcriber
         transcriber.connect()
-    }
-
-    private func connectPreviewTranscriberIfNeeded(generation: UUID) {
-        guard
-            isRunning,
-            transcribesAfterRecording,
-            transcriptionEngine == .openAITranscribe,
-            shouldProduceLivePreview(),
-            previewTranscriber == nil
-        else {
-            return
-        }
-
-        previewTranscriberState = .connecting
-        let callbacks = DictationTranscriberCallbacks(
-            onState: { [weak self] state in
-                self?.handlePreviewTranscriberState(
-                    state,
-                    generation: generation
-                )
-            },
-            onRefined: { [weak self] transcriptID, text in
-                self?.handleLivePreviewTranscription(
-                    transcriptID: transcriptID,
-                    text: text,
-                    generation: generation
-                )
-            },
-            onFailure: { [weak self] transcriptID, message in
-                self?.handleLivePreviewFailure(
-                    transcriptID: transcriptID,
-                    message: message,
-                    generation: generation
-                )
-            },
-            onUsage: { [usageHandler] usage in
-                usageHandler(usage)
-            }
-        )
-        let transcriber = QuickDictationTranscriberFactory.make(
-            engine: .openAITranscribe,
-            apiKey: apiKey,
-            label: "QuickDictationPreview",
-            callbacks: callbacks
-        )
-        previewTranscriber = transcriber
-        transcriber.connect()
-    }
-
-    private func handlePreviewTranscriberState(
-        _ state: SocketState,
-        generation: UUID
-    ) {
-        guard
-            self.previewGeneration == generation,
-            isRunning,
-            shouldProduceLivePreview()
-        else {
-            return
-        }
-        previewTranscriberState = state
-        let reconnectDelay = previewReconnectPolicy.reconnectDelay(
-            after: state,
-            engine: .openAITranscribe
-        )
-        if case let .failed(message) = state {
-            Self.logger.error(
-                "live_preview_transcriber_failed error=\(message, privacy: .public)"
-            )
-        }
-        if let reconnectDelay {
-            schedulePreviewTranscriberReconnect(
-                after: reconnectDelay,
-                generation: generation
-            )
-        }
-    }
-
-    private func schedulePreviewTranscriberReconnect(
-        after delay: TimeInterval,
-        generation: UUID
-    ) {
-        previewReconnectWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard
-                let self,
-                self.isRunning,
-                self.previewGeneration == generation,
-                self.shouldProduceLivePreview()
-            else {
-                return
-            }
-            self.previewReconnectWorkItem = nil
-            self.restartPreviewTranscriber()
-        }
-        previewReconnectWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + delay,
-            execute: workItem
-        )
-    }
-
-    private func restartPreviewTranscriber() {
-        guard
-            isRunning,
-            transcriptionEngine == .openAITranscribe,
-            shouldProduceLivePreview()
-        else {
-            return
-        }
-        previewReconnectWorkItem?.cancel()
-        previewReconnectWorkItem = nil
-        let previousTranscriber = previewTranscriber
-        let nextGeneration = UUID()
-        previewGeneration = nextGeneration
-        previewTranscriber = nil
-        previewTranscriberState = .connecting
-        previousTranscriber?.disconnect()
-        Self.logger.notice("live_preview_transcriber_reconnecting")
-        connectPreviewTranscriberIfNeeded(generation: nextGeneration)
-    }
-
-    private func disconnectPreviewTranscriber() {
-        previewGeneration = UUID()
-        previewReconnectWorkItem?.cancel()
-        previewReconnectWorkItem = nil
-        previewReconnectPolicy.reset()
-        previewTranscriber?.disconnect()
-        previewTranscriber = nil
-        previewTranscriberState = .idle
     }
 
     private func connectFallbackTranscriberIfNeeded() {
@@ -1113,10 +1044,26 @@ final class HoldToDictateService {
 
         let currentRecordingID = UUID()
         let buffer = LockedAudioBuffer()
+
+        // Streaming uploads audio as the user speaks so that releasing the
+        // shortcut only leaves the tail to send. The stream handle and ID are
+        // captured here rather than read from the audio thread, so the capture
+        // callback never races with the main-actor state below.
+        let streamHandle = availableStreamingTranscriber
+        let streamID = streamHandle == nil
+            ? nil
+            : "dictation-\(UUID().uuidString)"
+
         let pipeline = AudioTrackPipeline(
             label: "MeetingCopilot.Audio.Dictation",
             onChunk: { chunk in
                 buffer.append(chunk)
+                if let streamHandle, let streamID {
+                    streamHandle.appendStream(
+                        streamID: streamID,
+                        pcm16Audio: chunk
+                    )
+                }
             },
             onTelemetry: { [telemetryHandler] telemetry in
                 telemetryHandler(telemetry)
@@ -1132,7 +1079,16 @@ final class HoldToDictateService {
         recordingHandler(true)
         phaseHandler(.recording)
         partialHandler("")
-        if transcribesAfterRecording, shouldProduceLivePreview() {
+        progressHandler(nil)
+        beginDictationStream(
+            streamHandle,
+            streamID: streamID,
+            recordingID: currentRecordingID
+        )
+        if transcribesAfterRecording, shouldProduceLivePreview(),
+           streamID == nil {
+            // The stream produces its own live text, so the sampling preview
+            // loop only runs for engines that cannot stream.
             scheduleLivePreview(recordingID: currentRecordingID)
         }
         Self.logger.notice("recording_started")
@@ -1190,6 +1146,8 @@ final class HoldToDictateService {
         capture?.stop()
         pipeline?.finish()
         stopLivePreview()
+        cancelInFlightPreviewWork()
+        stopStreamSegmentScheduling()
         recordingHandler(false)
 
         let audio = buffer?.take() ?? Data()
@@ -1198,22 +1156,28 @@ final class HoldToDictateService {
             "recording_finished bytes=\(audio.count, privacy: .public) peak=\(peak, privacy: .public)"
         )
         guard transcribesAfterRecording else {
+            discardDictationStream()
             phaseHandler(currentWorkPhase())
             return
         }
         guard audio.count >= 4_800 else {
             Self.logger.notice("recording_skipped reason=too_short")
+            discardDictationStream()
             phaseHandler(currentWorkPhase())
             return
         }
         guard peak >= 64 else {
             Self.logger.notice("recording_skipped reason=silence")
+            discardDictationStream()
             phaseHandler(currentWorkPhase())
             return
         }
 
         let languages = expectedLanguages()
-        let transcriptID = "dictation-\(UUID().uuidString)"
+        // A streamed dictation keeps the ID it was opened with so the transcript
+        // that arrives can be matched to this recording's paste target.
+        let streamedID = streamDidFail ? nil : activeStreamID
+        let transcriptID = streamedID ?? "dictation-\(UUID().uuidString)"
         let recovery: QuickDictationRecoveryEntry
         do {
             recovery = try recoveryStore.preserve(
@@ -1272,9 +1236,241 @@ final class HoldToDictateService {
             DispatchTime.now().uptimeNanoseconds
         phaseHandler(currentWorkPhase())
         Self.logger.notice(
-            "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public)"
+            "transcription_started pending=\(self.workState.pendingTranscriptionIDs.count, privacy: .public) streamed=\(streamedID != nil, privacy: .public)"
         )
+
+        if let streamedID, let streaming = availableStreamingTranscriber {
+            // The audio is already at the provider; only the tail and the final
+            // commit remain, so the fallback watchdog starts now.
+            progressHandler(.finishing)
+            streaming.finishStream(streamID: streamedID)
+            handlePrimaryTranscriptionCommitted(
+                transcriptID: streamedID,
+                generation: generation
+            )
+            return
+        }
+
+        discardDictationStream()
+        progressHandler(.uploading(fraction: 0))
         transcriber.refine(request)
+    }
+
+    // MARK: - Streaming dictation
+
+    /// The primary transcriber when it can accept audio during recording.
+    private var availableStreamingTranscriber: TranscriptStreaming? {
+        guard
+            transcribesAfterRecording,
+            let streaming = transcriber as? TranscriptStreaming,
+            streaming.supportsStreaming
+        else {
+            return nil
+        }
+        return streaming
+    }
+
+    private func beginDictationStream(
+        _ streaming: TranscriptStreaming?,
+        streamID: String?,
+        recordingID: UUID
+    ) {
+        activeStreamID = nil
+        streamDidFail = false
+        streamCommittedByteCount = 0
+        guard let streaming, let streamID else { return }
+        let context: TranscriptionContext
+        do {
+            context = try makeTranscriptionContext(
+                delay: .medium,
+                languages: expectedLanguages()
+            )
+        } catch {
+            // Without a context the stream cannot be configured; the batch path
+            // at release still produces the transcript.
+            Self.logger.error(
+                "stream_context_failed error=\(error.localizedDescription, privacy: .public)"
+            )
+            streamDidFail = true
+            return
+        }
+        activeStreamID = streamID
+        streaming.beginStream(
+            DictationStreamStart(streamID: streamID, context: context)
+        )
+        scheduleStreamSegmentCheck(recordingID: recordingID)
+    }
+
+    /// Closes a segment when the user pauses, so its transcript comes back
+    /// while they keep talking instead of piling up for the final commit.
+    private func scheduleStreamSegmentCheck(recordingID: UUID) {
+        streamSegmentWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.evaluateStreamSegment(recordingID: recordingID)
+        }
+        streamSegmentWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(500),
+            execute: workItem
+        )
+    }
+
+    private func evaluateStreamSegment(recordingID currentRecordingID: UUID) {
+        streamSegmentWorkItem = nil
+        guard
+            recordingID == currentRecordingID,
+            let streamID = activeStreamID,
+            !streamDidFail,
+            let streaming = availableStreamingTranscriber,
+            let buffer = audioBuffer
+        else {
+            return
+        }
+        let totalBytes = buffer.count
+        let segmentBytes = max(0, totalBytes - streamCommittedByteCount)
+        let segmentSeconds = Double(segmentBytes)
+            / Double(QuickDictationStreamPolicy.captureBytesPerSecond)
+        let trailingBytes = Int(
+            Double(QuickDictationStreamPolicy.captureBytesPerSecond)
+                * DictationSegmentCommitPolicy.trailingSilenceSeconds
+        )
+        let trailingIsSilent = !PCM16SignalGate.containsAudibleSignal(
+            buffer.tail(trailingBytes),
+            minimumPeak: QuickDictationStreamPolicy.pausePeakThreshold
+        )
+        if DictationSegmentCommitPolicy.shouldCommit(
+            segmentSeconds: segmentSeconds,
+            trailingIsSilent: trailingIsSilent
+        ) {
+            streaming.commitStreamSegment(streamID: streamID)
+            streamCommittedByteCount = totalBytes
+            Self.logger.notice(
+                "stream_segment_committed seconds=\(Int(segmentSeconds), privacy: .public) silent_boundary=\(trailingIsSilent, privacy: .public)"
+            )
+        }
+        scheduleStreamSegmentCheck(recordingID: currentRecordingID)
+    }
+
+    private func stopStreamSegmentScheduling() {
+        streamSegmentWorkItem?.cancel()
+        streamSegmentWorkItem = nil
+    }
+
+    /// Abandons the open stream without publishing a result, for recordings
+    /// that will never be transcribed or that fall back to the batch upload.
+    private func discardDictationStream() {
+        stopStreamSegmentScheduling()
+        if let activeStreamID {
+            availableStreamingTranscriber?.cancelStream(streamID: activeStreamID)
+        }
+        activeStreamID = nil
+        streamDidFail = false
+        streamCommittedByteCount = 0
+    }
+
+    private func handleStreamPartial(
+        streamID: String,
+        text: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            activeStreamID == streamID
+        else {
+            return
+        }
+        let partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !partial.isEmpty else { return }
+        partialHandler(partial)
+    }
+
+    private func handleStreamCompleted(
+        streamID: String,
+        text: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            activeStreamID == streamID
+        else {
+            return
+        }
+        activeStreamID = nil
+        streamCommittedByteCount = 0
+        progressHandler(nil)
+        completeFinalTranscription(transcriptID: streamID, text: text)
+    }
+
+    private func handleStreamFailure(
+        streamID: String,
+        message: String,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            activeStreamID == streamID
+        else {
+            return
+        }
+        Self.logger.error(
+            "stream_unavailable error=\(message, privacy: .public)"
+        )
+        streamDidFail = true
+        activeStreamID = nil
+        stopStreamSegmentScheduling()
+
+        // Still recording: the buffer keeps filling and the batch upload at
+        // release covers the whole take, so nothing is lost.
+        guard recordingID == nil else { return }
+
+        // Already released: the recording is retained, so resubmit it through
+        // the batch path rather than dropping the dictation.
+        guard let pending = workState.value(for: streamID) else { return }
+        guard let transcriber else {
+            handleTranscriptionFailure(
+                transcriptID: streamID,
+                message: message,
+                generation: generation
+            )
+            return
+        }
+        Self.logger.notice(
+            "stream_fallback_to_batch transcript_id=\(streamID, privacy: .public)"
+        )
+        progressHandler(.uploading(fraction: 0))
+        transcriber.refine(pending.request)
+    }
+
+    private func handleUploadProgress(
+        transcriptID: String,
+        sentBytes: Int,
+        totalBytes: Int,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            isRunning,
+            totalBytes > 0,
+            workState.value(for: transcriptID) != nil
+        else {
+            return
+        }
+        let fraction = Double(sentBytes) / Double(totalBytes)
+        progressHandler(
+            fraction >= 1 ? .transcribing : .uploading(fraction: fraction)
+        )
+    }
+
+    /// Stops preview work that is already running. A preview issued moments
+    /// before release would otherwise keep competing with the transcription the
+    /// user is waiting for.
+    private func cancelInFlightPreviewWork() {
+        guard activeLivePreviewID != nil else { return }
+        activeLivePreviewID = nil
+        transcriber?.cancelPendingRequests()
     }
 
     private func handleTranscription(
@@ -1383,11 +1579,33 @@ final class HoldToDictateService {
             Self.logger.notice(
                 "transcription_recovered characters=\(result.count, privacy: .public)"
             )
-            if recordingID == nil {
-                phaseHandler(currentWorkPhase())
-            }
+            finishDelivery(
+                .notDelivered(
+                    reason: "This dictation has no destination field."
+                ),
+                text: result
+            )
             return
         }
+
+        // The user may have moved on during the transcription. Pasting into
+        // wherever they are now, or dragging them back to where they were, is
+        // never what they asked for.
+        guard pasteTarget.isStillFrontmost else {
+            let currentApplication = NSWorkspace.shared.frontmostApplication?
+                .localizedName ?? "another app"
+            Self.logger.notice(
+                "paste_skipped_stale_target expected=\(pasteTarget.applicationName, privacy: .public) frontmost=\(currentApplication, privacy: .public)"
+            )
+            finishDelivery(
+                .notDelivered(
+                    reason: "You switched to \(currentApplication) while this was transcribing."
+                ),
+                text: result
+            )
+            return
+        }
+
         pasteInjector.paste(result, into: pasteTarget) { [weak self] pasteResult in
             guard let self, self.isRunning else { return }
             switch pasteResult {
@@ -1395,15 +1613,44 @@ final class HoldToDictateService {
                 Self.logger.notice(
                     "transcription_completed characters=\(result.count, privacy: .public) paste_delivery=\(delivery.rawValue, privacy: .public)"
                 )
-                if self.recordingID == nil {
-                    self.phaseHandler(self.currentWorkPhase())
+                switch delivery {
+                case .verified:
+                    self.finishDelivery(.pasted, text: result)
+                case .unverified:
+                    self.finishDelivery(
+                        .unverified(
+                            applicationName: pasteTarget.applicationName
+                        ),
+                        text: result
+                    )
                 }
             case let .failure(error):
                 Self.logger.error(
                     "paste_failed error=\(error.localizedDescription, privacy: .public)"
                 )
-                self.publishTranscriptionFailure(error.localizedDescription)
+                self.finishDelivery(
+                    .notDelivered(reason: error.localizedDescription),
+                    text: result
+                )
             }
+        }
+    }
+
+    /// Publishes the delivery outcome and, when nothing was pasted, leaves the
+    /// text on the clipboard so it is one keystroke away instead of lost.
+    private func finishDelivery(
+        _ outcome: QuickDictationDeliveryOutcome,
+        text: String
+    ) {
+        if case .notDelivered = outcome {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
+        deliveryHandler(outcome)
+        progressHandler(nil)
+        if recordingID == nil {
+            phaseHandler(currentWorkPhase())
         }
     }
 
@@ -1760,6 +2007,7 @@ final class HoldToDictateService {
 
     private func cancelRecording(nextPhase: DictationPhase? = nil) {
         stopLivePreview()
+        discardDictationStream()
         microphoneCapture?.stop()
         pipeline?.finish()
         microphoneCapture = nil
@@ -1823,11 +2071,7 @@ final class HoldToDictateService {
             scheduleLivePreview(recordingID: recordingID)
             return
         }
-        let selectedPreviewTranscriber = transcriptionEngine == .openAITranscribe
-            ? previewTranscriber
-            : transcriber
-        guard let selectedPreviewTranscriber else {
-            connectPreviewTranscriberIfNeeded(generation: previewGeneration)
+        guard let selectedPreviewTranscriber = transcriber else {
             scheduleLivePreview(recordingID: recordingID)
             return
         }
@@ -1875,6 +2119,15 @@ enum PCM16SignalGate {
     }
 }
 
+enum QuickDictationStreamPolicy {
+    static let captureBytesPerSecond =
+        RealtimeRefinementClient.captureSampleRate * MemoryLayout<Int16>.size
+    /// Peak below which the trailing window counts as a pause rather than
+    /// speech. Set well under conversational level so room tone does not read
+    /// as speech; if it never trips, the segment ceiling still forces a commit.
+    static let pausePeakThreshold: Int32 = 1_200
+}
+
 enum QuickDictationLivePreviewPolicy {
     private static let bytesPerSecond = 24_000 * MemoryLayout<Int16>.size
     static let minimumAudioBytes = Int(Double(bytesPerSecond) * 0.6)
@@ -1920,6 +2173,21 @@ private final class LockedAudioBuffer: @unchecked Sendable {
         defer { lock.unlock() }
         return data
     }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return data.count
+    }
+
+    /// Copies only the trailing bytes. The segment scheduler polls for trailing
+    /// silence several times a second, and copying the whole recording each
+    /// time would grow more expensive the longer the user speaks.
+    func tail(_ byteCount: Int) -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return Data(data.suffix(byteCount))
+    }
 }
 
 struct QuickDictationPasteVerification {
@@ -1962,13 +2230,61 @@ struct QuickDictationPasteVerification {
     }
 }
 
+/// Evidence that a paste landed in a target that has no editable value/range
+/// model. A terminal's `AXValue` is the visible screen rather than a field's
+/// contents, so exact comparison never matches — but the screen is stable when
+/// idle, which makes both "the text appeared" and "nothing happened at all"
+/// reliable signals.
+struct QuickDictationContentEvidence: Equatable {
+    enum Outcome: Equatable {
+        /// The pasted text is visible on screen.
+        case inserted
+        /// The screen changed but the text is not literally visible, which is
+        /// what a TUI that renders a pasted-text placeholder looks like.
+        case changed
+        /// Nothing happened; the paste did not reach the target.
+        case unchanged
+    }
+
+    /// Enough trailing characters to be unambiguous, few enough to survive the
+    /// text scrolling partly out of view.
+    private static let probeLength = 32
+    private static let minimumProbeLength = 6
+
+    private let probe: String
+    private let originalContent: String
+
+    init(originalValue: String, insertedText: String) {
+        originalContent = Self.normalize(originalValue)
+        // The tail is checked rather than the head: a long paste scrolls its
+        // beginning off the top, but the end sits at the cursor.
+        let normalizedInsert = Self.normalize(insertedText)
+        let probe = String(normalizedInsert.suffix(Self.probeLength))
+        self.probe = probe.count >= Self.minimumProbeLength ? probe : ""
+    }
+
+    func evaluate(currentValue: String) -> Outcome {
+        let current = Self.normalize(currentValue)
+        if !probe.isEmpty, current.contains(probe) {
+            return .inserted
+        }
+        return current == originalContent ? .unchanged : .changed
+    }
+
+    /// Terminals wrap lines mid-token, so whitespace cannot be compared.
+    private static func normalize(_ value: String) -> String {
+        value.filter { !$0.isWhitespace }
+    }
+}
+
 enum QuickDictationPasteVerificationPolicy {
     static let iTermBundleIdentifier = "com.googlecode.iterm2"
 
     static func shouldVerify(bundleIdentifier: String?) -> Bool {
         // iTerm exposes terminal contents through Accessibility, but not as
         // the editable value/range model used by ordinary text fields. The
-        // paste succeeds while exact value comparison consistently fails.
+        // paste succeeds while exact value comparison consistently fails, so
+        // those targets are checked with content evidence instead.
         bundleIdentifier != iTermBundleIdentifier
     }
 
@@ -2008,6 +2324,15 @@ final class QuickDictationPasteTarget {
 
     var isAvailable: Bool {
         !runningApplication.isTerminated
+    }
+
+    /// Whether this target is still the app the user is working in. A long
+    /// transcription gives the user time to switch away, and pasting into
+    /// whatever they moved to — or yanking focus back — is worse than not
+    /// pasting at all.
+    var isStillFrontmost: Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == runningApplication.processIdentifier
     }
 
     private init(
@@ -2097,6 +2422,41 @@ final class QuickDictationPasteTarget {
             selectedRange: selectedRange,
             insertedText: text
         )
+    }
+
+    /// Snapshots the visible content of a target that cannot be verified
+    /// through the editable value/range model.
+    func makeContentEvidence(
+        inserting text: String
+    ) -> QuickDictationContentEvidence? {
+        guard
+            let focusedElement,
+            let originalValue = Self.copyString(
+                attribute: kAXValueAttribute as CFString,
+                from: focusedElement
+            )
+        else {
+            return nil
+        }
+        return QuickDictationContentEvidence(
+            originalValue: originalValue,
+            insertedText: text
+        )
+    }
+
+    func evaluateContentEvidence(
+        _ evidence: QuickDictationContentEvidence
+    ) -> QuickDictationContentEvidence.Outcome? {
+        guard
+            let focusedElement,
+            let currentValue = Self.copyString(
+                attribute: kAXValueAttribute as CFString,
+                from: focusedElement
+            )
+        else {
+            return nil
+        }
+        return evidence.evaluate(currentValue: currentValue)
     }
 
     func verifyPaste(_ verification: QuickDictationPasteVerification) -> Bool {
@@ -2283,6 +2643,7 @@ final class PasteInjector {
 
     private struct PasteAttempt {
         let verification: QuickDictationPasteVerification?
+        let contentEvidence: QuickDictationContentEvidence?
         let previousClipboardItems: [NSPasteboardItem]
         let insertedChangeCount: Int
     }
@@ -2411,6 +2772,15 @@ final class PasteInjector {
             return
         }
 
+        if let evidence = attempt.contentEvidence {
+            awaitContentDelivery(
+                attempt,
+                evidence: evidence,
+                remainingAttempts: remainingAttempts,
+                generation: generation
+            )
+            return
+        }
         guard let verification = attempt.verification else {
             scheduleUnverifiedCompletion(
                 generation: generation,
@@ -2450,6 +2820,74 @@ final class PasteInjector {
             self.scheduledWorkItem = nil
             self.awaitPasteDelivery(
                 attempt,
+                remainingAttempts: remainingAttempts - 1,
+                generation: generation
+            )
+        }
+        scheduledWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.verificationRetryDelay,
+            execute: workItem
+        )
+    }
+
+    /// Confirms delivery into a target checked by visible content. Either the
+    /// text appears or the screen changes; only a screen that never changed at
+    /// all is reported back as undelivered.
+    private func awaitContentDelivery(
+        _ attempt: PasteAttempt,
+        evidence: QuickDictationContentEvidence,
+        remainingAttempts: Int,
+        generation: UUID
+    ) {
+        guard
+            self.generation == generation,
+            let request = activeRequest
+        else {
+            return
+        }
+        let outcome = request.target.evaluateContentEvidence(evidence)
+        switch outcome {
+        case .inserted, .changed:
+            Self.logger.notice(
+                "paste_delivery_verified target=\(request.target.applicationName, privacy: .public) evidence=\(outcome == .inserted ? "text_visible" : "screen_changed", privacy: .public)"
+            )
+            finishActiveRequest(
+                with: .success(.verified),
+                delayBeforeNextRequest: Self.pasteSerializationDelay,
+                generation: generation
+            )
+            return
+        case .none:
+            // The target stopped exposing its content; fall back to the
+            // previous behaviour rather than inventing a failure.
+            scheduleUnverifiedCompletion(
+                generation: generation,
+                target: request.target
+            )
+            return
+        case .unchanged:
+            break
+        }
+
+        guard remainingAttempts > 1 else {
+            Self.logger.error(
+                "paste_delivery_unchanged target=\(request.target.applicationName, privacy: .public)"
+            )
+            finishActiveRequest(
+                with: .success(.unverified),
+                delayBeforeNextRequest: Self.pasteSerializationDelay,
+                generation: generation
+            )
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scheduledWorkItem = nil
+            self.awaitContentDelivery(
+                attempt,
+                evidence: evidence,
                 remainingAttempts: remainingAttempts - 1,
                 generation: generation
             )
@@ -2559,6 +2997,11 @@ final class PasteInjector {
         )
 
         let verification = target.makePasteVerification(inserting: text)
+        // Targets without an editable value/range model still expose their
+        // visible content, which is what makes a terminal paste checkable.
+        let contentEvidence = verification == nil
+            ? target.makeContentEvidence(inserting: text)
+            : nil
         let pasteboard = NSPasteboard.general
         let previousItems = copyItems(pasteboard.pasteboardItems ?? [])
         pasteboard.clearContents()
@@ -2572,6 +3015,7 @@ final class PasteInjector {
         keyUp.post(tap: .cghidEventTap)
         return PasteAttempt(
             verification: verification,
+            contentEvidence: contentEvidence,
             previousClipboardItems: previousItems,
             insertedChangeCount: insertedChangeCount
         )

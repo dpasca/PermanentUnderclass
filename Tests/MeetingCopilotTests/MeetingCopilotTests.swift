@@ -439,7 +439,10 @@ final class MeetingCopilotTests: XCTestCase {
         let input = try XCTUnwrap(audio["input"] as? [String: Any])
         let format = try XCTUnwrap(input["format"] as? [String: Any])
         XCTAssertEqual(format["type"] as? String, "audio/pcm")
+        // The endpoint rejects anything below 24 kHz, so capture audio goes out
+        // unchanged.
         XCTAssertEqual(format["rate"] as? Int, 24_000)
+        XCTAssertEqual(RealtimeRefinementClient.captureSampleRate, 24_000)
         let transcription = try XCTUnwrap(input["transcription"] as? [String: Any])
         XCTAssertEqual(transcription["model"] as? String, "gpt-transcribe")
         XCTAssertTrue(input["turn_detection"] is NSNull)
@@ -1478,9 +1481,25 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertEqual(state.content, .transcribing)
 
         state.show(result: "A useful preview")
-        XCTAssertEqual(state.content, .result("A useful preview"))
+        XCTAssertEqual(
+            state.content,
+            .result(
+                QuickDictationResultPresentation(
+                    text: "A useful preview",
+                    delivery: .delivering
+                )
+            )
+        )
         state.handle(phase: .ready)
-        XCTAssertEqual(state.content, .result("A useful preview"))
+        XCTAssertEqual(
+            state.content,
+            .result(
+                QuickDictationResultPresentation(
+                    text: "A useful preview",
+                    delivery: .delivering
+                )
+            )
+        )
     }
 
     func testQuickDictationPreviewSeparatesListeningFromBackgroundResult() {
@@ -1522,5 +1541,233 @@ final class MeetingCopilotTests: XCTestCase {
         state.handle(phase: .recording)
         state.handle(phase: .failed("Microphone disconnected"))
         XCTAssertEqual(state.content, .failure("Microphone disconnected"))
+    }
+
+    // MARK: - Streamed dictation
+
+    func testStreamAssemblyOrdersSegmentsByCommitNotCompletion() {
+        var assembly = DictationStreamAssembly()
+        assembly.registerCommitted(itemID: "item_1")
+        assembly.registerCommitted(itemID: "item_2")
+
+        // The second segment finishes first; commit order still wins.
+        assembly.finalize(itemID: "item_2", text: "the second part")
+        XCTAssertFalse(assembly.isComplete(expectedSegments: 2))
+        assembly.finalize(itemID: "item_1", text: "This is")
+
+        XCTAssertTrue(assembly.isComplete(expectedSegments: 2))
+        XCTAssertEqual(assembly.text, "This is the second part")
+    }
+
+    func testStreamAssemblyShowsDeltasUntilASegmentFinalizes() {
+        var assembly = DictationStreamAssembly()
+        assembly.finalize(itemID: "item_1", text: "Committed text")
+        assembly.appendDelta(itemID: "item_2", delta: "in ")
+        assembly.appendDelta(itemID: "item_2", delta: "progress")
+
+        XCTAssertEqual(assembly.text, "Committed text in progress")
+        XCTAssertFalse(assembly.isComplete(expectedSegments: 2))
+
+        assembly.finalize(itemID: "item_2", text: "in progress now")
+        XCTAssertEqual(assembly.text, "Committed text in progress now")
+        XCTAssertTrue(assembly.isComplete(expectedSegments: 2))
+    }
+
+    func testSegmentCommitPolicyCutsOnPausesAndBoundsSegmentLength() {
+        // Too short to commit at all, pause or not.
+        XCTAssertFalse(
+            DictationSegmentCommitPolicy.shouldCommit(
+                segmentSeconds: 0.1,
+                trailingIsSilent: true
+            )
+        )
+        // Mid-sentence: wait rather than cut a word in half.
+        XCTAssertFalse(
+            DictationSegmentCommitPolicy.shouldCommit(
+                segmentSeconds: 10,
+                trailingIsSilent: false
+            )
+        )
+        // A pause after enough speech is the right place to cut.
+        XCTAssertTrue(
+            DictationSegmentCommitPolicy.shouldCommit(
+                segmentSeconds: 10,
+                trailingIsSilent: true
+            )
+        )
+        // An unbroken monologue still gets bounded so the tail stays short.
+        XCTAssertTrue(
+            DictationSegmentCommitPolicy.shouldCommit(
+                segmentSeconds: 25,
+                trailingIsSilent: false
+            )
+        )
+    }
+
+    func testUnresolvedDeliveryKeepsResultOnScreen() {
+        var state = QuickDictationPreviewState()
+        state.handle(phase: .transcribing)
+        state.show(result: "Some dictated text")
+
+        XCTAssertFalse(state.content.needsAcknowledgement)
+
+        state.resolve(delivery: .unverified(applicationName: "iTerm2"))
+        XCTAssertTrue(state.content.needsAcknowledgement)
+        XCTAssertEqual(
+            state.content,
+            .result(
+                QuickDictationResultPresentation(
+                    text: "Some dictated text",
+                    delivery: .unverified(applicationName: "iTerm2")
+                )
+            )
+        )
+
+        state.resolve(delivery: .pasted)
+        XCTAssertFalse(state.content.needsAcknowledgement)
+    }
+
+    func testAPIExpensesSurviveARelaunch() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("APIExpenses.json")
+        defer {
+            try? FileManager.default.removeItem(
+                at: fileURL.deletingLastPathComponent()
+            )
+        }
+        let store = APIExpenseStore(fileURL: fileURL)
+
+        // Nothing recorded yet: a fresh counter, not an error.
+        XCTAssertEqual(try store.load().totalCostUSD, 0)
+
+        var summary = APIExpenseSummary(
+            startedAt: Date(timeIntervalSince1970: 1_000_000)
+        )
+        summary.record(
+            OpenAITranscriptionUsageRecord(
+                pass: .final,
+                model: "gpt-transcribe",
+                audioSeconds: 120,
+                measurement: .serverReported
+            )
+        )
+        try store.save(summary)
+
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.finalAudioSeconds, 120)
+        XCTAssertEqual(reloaded.totalCostUSD, summary.totalCostUSD)
+        // The start date is what makes the running total interpretable.
+        XCTAssertEqual(
+            reloaded.startedAt.timeIntervalSince1970,
+            1_000_000,
+            accuracy: 0.001
+        )
+    }
+
+    func testExpenseAccumulationDescriptionNamesThePeriod() {
+        let started = Date(timeIntervalSince1970: 1_760_000_000)
+        let summary = APIExpenseSummary(startedAt: started)
+
+        XCTAssertTrue(
+            summary.accumulationDescription(now: started).hasSuffix("(today)")
+        )
+        XCTAssertTrue(
+            summary.accumulationDescription(
+                now: started.addingTimeInterval(86_400)
+            ).hasSuffix("(1 day)")
+        )
+        XCTAssertTrue(
+            summary.accumulationDescription(
+                now: started.addingTimeInterval(86_400 * 9)
+            ).hasSuffix("(9 days)")
+        )
+    }
+
+    func testLocalOnlyModeIdentifiesCloudEngines() {
+        XCTAssertTrue(TranscriptRefinementEngine.openAITranscribe.isCloud)
+        XCTAssertFalse(TranscriptRefinementEngine.localWhisper.isCloud)
+        XCTAssertFalse(TranscriptRefinementEngine.localParakeet.isCloud)
+    }
+
+    func testTerminalPasteEvidenceRecognizesVisibleText() {
+        let screen = "user@host ~/dev % ls -la\ntotal 8\nuser@host ~/dev % "
+        let evidence = QuickDictationContentEvidence(
+            originalValue: screen,
+            insertedText: "Please refactor the transcription client."
+        )
+
+        // Terminals wrap mid-token, so the echoed text is checked without
+        // whitespace.
+        XCTAssertEqual(
+            evidence.evaluate(
+                currentValue: screen + "Please refactor the transcr\niption client."
+            ),
+            .inserted
+        )
+    }
+
+    func testTerminalPasteEvidenceAcceptsAPlaceholderRedraw() {
+        let screen = "╭─ Claude Code ─╮\n│ > │\n╰───────────────╯"
+        let evidence = QuickDictationContentEvidence(
+            originalValue: screen,
+            insertedText: String(repeating: "long dictated text. ", count: 40)
+        )
+
+        // A TUI that renders a placeholder never shows the literal text, but
+        // the screen still changed, which is proof enough that it arrived.
+        XCTAssertEqual(
+            evidence.evaluate(
+                currentValue: "╭─ Claude Code ─╮\n│ > [Pasted text #1 +12 lines] │\n╰───────────────╯"
+            ),
+            .changed
+        )
+    }
+
+    func testTerminalPasteEvidenceReportsAnUntouchedScreen() {
+        let screen = "user@host ~/dev % "
+        let evidence = QuickDictationContentEvidence(
+            originalValue: screen,
+            insertedText: "This never arrived."
+        )
+
+        XCTAssertEqual(evidence.evaluate(currentValue: screen), .unchanged)
+        // Reflow alone still counts as delivery evidence only if content
+        // actually differs; identical content after whitespace normalization
+        // must not be mistaken for a change.
+        XCTAssertEqual(
+            evidence.evaluate(currentValue: "user@host    ~/dev %"),
+            .unchanged
+        )
+    }
+
+    func testShortDictationsFallBackToScreenChangeEvidence() {
+        let screen = "prompt> "
+        // Too short to be a distinctive probe, so containment is not used.
+        let evidence = QuickDictationContentEvidence(
+            originalValue: screen,
+            insertedText: "ok"
+        )
+
+        XCTAssertEqual(evidence.evaluate(currentValue: "prompt> ok"), .changed)
+        XCTAssertEqual(evidence.evaluate(currentValue: screen), .unchanged)
+    }
+
+    func testProgressLabelsDistinguishUploadFromTranscription() {
+        XCTAssertEqual(
+            DictationTranscriptionProgress.uploading(fraction: 0.42).label,
+            "Uploading 42%"
+        )
+        XCTAssertEqual(
+            DictationTranscriptionProgress.uploading(fraction: 0.42).fraction,
+            0.42
+        )
+        XCTAssertEqual(
+            DictationTranscriptionProgress.finishing.label,
+            "Finishing…"
+        )
+        // A streamed dictation has no upload bar to show; it is already there.
+        XCTAssertNil(DictationTranscriptionProgress.finishing.fraction)
+        XCTAssertNil(DictationTranscriptionProgress.transcribing.fraction)
     }
 }

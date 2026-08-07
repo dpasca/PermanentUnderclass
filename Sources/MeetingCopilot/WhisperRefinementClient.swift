@@ -98,6 +98,17 @@ final class WhisperRefinementClient: TranscriptRefining, @unchecked Sendable {
         }
     }
 
+    func cancelPendingRequests() {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.queuedRequests.removeAll()
+            // Whichever transcription is already running keeps the model busy,
+            // but its result is dropped so it cannot delay the dictation the
+            // user is waiting for.
+            self.activeRequest = nil
+        }
+    }
+
     func disconnect() {
         stateQueue.async { [weak self] in
             self?.disconnectNow()
