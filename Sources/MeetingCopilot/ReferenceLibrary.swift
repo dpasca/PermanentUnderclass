@@ -381,10 +381,14 @@ enum AssistantPromptBuilder {
         cachedPrefix: String,
         recentTranscript: String,
         currentPartial: String,
+        sessionContext: String = "",
         focusSpeaker: String = "",
         focusText: String = ""
     ) -> AssistantPromptPlan {
         let volatileSuffix = """
+        INTERVIEW SESSION CONTEXT
+        \(sessionContext)
+
         RECENT FINAL TRANSCRIPT
         \(recentTranscript)
 

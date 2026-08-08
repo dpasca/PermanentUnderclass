@@ -18,9 +18,9 @@ enum CloudFeature: String, CaseIterable, Identifiable {
         case .meetingCapture:
             "Meeting capture"
         case .answerMirror:
-            "Answer Mirror"
+            "Live interview"
         case .mockInterview:
-            "Mock interview"
+            "Generated interview replay"
         case .bestAccuracyDictation:
             "Best-accuracy dictation"
         }
@@ -33,9 +33,9 @@ enum CloudFeature: String, CaseIterable, Identifiable {
         case .meetingCapture:
             "Live meeting transcription needs OpenAI's streaming model. There is no offline equivalent yet."
         case .answerMirror:
-            "Suggested answers are written by a language model that runs on OpenAI's servers."
+            "Live interview transcription and suggested answers use OpenAI's streaming and language models."
         case .mockInterview:
-            "Practice questions are written by a language model that runs on OpenAI's servers."
+            "Replay questions and comparison answers are written by language models that run on OpenAI's servers."
         case .bestAccuracyDictation:
             "Dictation already works offline. An API key adds OpenAI's higher-accuracy model as an option."
         }

@@ -313,7 +313,7 @@ final class ProcessTapCapture {
             tapDescription = CATapDescription(
                 monoMixdownOfProcesses: [processObjectID]
             )
-            tapDescription.name = "PUnderclass meeting app audio"
+            tapDescription.name = "PUnderclass call audio"
         } else {
             tapDescription = CATapDescription(
                 monoGlobalTapButExcludeProcesses: []

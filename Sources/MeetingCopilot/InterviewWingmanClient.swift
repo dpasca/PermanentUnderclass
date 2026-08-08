@@ -69,6 +69,7 @@ struct InterviewWingmanClient: Sendable {
         recentTranscript: String,
         currentPartial: String,
         interviewerText: String,
+        interviewContext: String = "",
         basedOnSequence: Int
     ) async throws -> InterviewWingmanGeneration {
         let prefix = try AssistantPromptBuilder.cachedPrefix(
@@ -79,6 +80,7 @@ struct InterviewWingmanClient: Sendable {
             cachedPrefix: prefix,
             recentTranscript: recentTranscript,
             currentPartial: currentPartial,
+            sessionContext: interviewContext,
             focusSpeaker: SpeakerTag.other.rawValue,
             focusText: interviewerText
         )

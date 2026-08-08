@@ -267,7 +267,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
             guard let self else { return }
             self.acceptsRequests = false
             self.unavailableMessage =
-                "The meeting ended before this turn could be sent to GPT-Transcribe."
+                "Live capture ended before this turn could be sent to GPT-Transcribe."
             self.disconnectWhenIdle = true
             self.disconnectIfFinished()
         }
@@ -711,7 +711,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         let recentTranscript = request.recentTranscript
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !recentTranscript.isEmpty {
-            sections.append("Earlier meeting turns:\n\(recentTranscript)")
+            sections.append("Earlier captured turns:\n\(recentTranscript)")
         }
         return sections.joined(separator: "\n\n")
     }

@@ -115,6 +115,7 @@ final class CompanionTests: XCTestCase {
         _ = await hub.updateSession(
             isListening: false,
             status: "Generating an interview from 3 references…",
+            purpose: .interview,
             source: .syntheticInterview,
             title: "Reference-grounded interview",
             isPreparingSyntheticInterview: true
@@ -123,8 +124,24 @@ final class CompanionTests: XCTestCase {
 
         XCTAssertFalse(snapshot.session.isListening)
         XCTAssertTrue(snapshot.session.isPreparingSyntheticInterview)
+        XCTAssertEqual(snapshot.session.purpose, .interview)
         XCTAssertEqual(snapshot.session.source, .syntheticInterview)
         XCTAssertEqual(snapshot.session.title, "Reference-grounded interview")
+    }
+
+    func testMeetingSessionPublishesTranscriptOnlyBehavior() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .meeting
+        )
+        let snapshot = await hub.snapshot()
+
+        XCTAssertEqual(snapshot.session.purpose, .meeting)
+        XCTAssertEqual(snapshot.session.behaviorName, "Meeting transcription")
+        XCTAssertTrue(snapshot.session.behaviorDetail.contains("without generating"))
     }
 
     func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
@@ -212,8 +229,24 @@ final class CompanionTests: XCTestCase {
             RealtimeTranscriptionClient.assistantPauseSilenceChunkCount * 20,
             AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
         )
-        XCTAssertTrue(AssistantEvaluationPolicy.shouldEvaluate(speaker: .other))
-        XCTAssertFalse(AssistantEvaluationPolicy.shouldEvaluate(speaker: .you))
+        XCTAssertTrue(
+            AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: .other,
+                purpose: .interview
+            )
+        )
+        XCTAssertFalse(
+            AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: .you,
+                purpose: .interview
+            )
+        )
+        XCTAssertFalse(
+            AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: .other,
+                purpose: .meeting
+            )
+        )
     }
 
     func testSyntheticInterviewGenerationUsesReferencesAndBuildsFiveExchanges() throws {

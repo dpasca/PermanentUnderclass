@@ -4,7 +4,7 @@ A minimal native macOS proof of concept that captures two independent audio
 tracks and transcribes them in real time:
 
 - **You** — the Mac's default microphone.
-- **Other** — all system audio by default, or one selected meeting application.
+- **Other** — all system audio by default, or one selected call application.
 
 Each track is sent to its own OpenAI Realtime transcription session, so speaker
 labels come from the audio route rather than diarization guesses. Completed
@@ -45,16 +45,18 @@ not for retaining local privacy consent. Override the selected certificate with
 script falls back to ad-hoc signing and warns that consent may not persist.
 
 Open the shared transcription settings from the gear button, paste an API key,
-and press **Save to Keychain**, then start listening. Meeting capture uses all
-system audio by default. To limit capture to one app, choose it from **Audio to
-transcribe**; it may appear under a helper-process name.
+and press **Save to Keychain**, then start a meeting or interview. Both live
+capture modes use all system audio by default. To limit capture to one app,
+choose it from **Audio to transcribe**; it may appear under a helper-process
+name. Meeting mode only transcribes; Interview mode additionally runs Answer
+Mirror for interviewer speech.
 
 ## Live Assistant companion
 
 PUnderclass now embeds a loopback-only HTTP/SSE gateway and serves the
-cross-platform thin display itself. Start the Mac app, expand **References and
-meeting context**, choose a reference folder, then press **Open Live
-Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
+cross-platform thin display itself. Start the Mac app, open the **Interview**
+tab, expand **References and interview context**, choose a reference folder,
+then press **Open Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
 local references, OpenAI request, usage tracking, event ordering, and replay;
 the browser receives only transcript text, reference status, citations, and a
 presentation-ready comparison outline.
@@ -94,10 +96,10 @@ and idempotent pause/pin/dismiss commands. The protocol, retry contract,
 pairing boundary, and follow-up durability work are in
 `Docs/live-assistant-architecture.md`.
 
-## Synthetic interview replay
+## Generated interview replay
 
-The Meeting tab includes a **Document-grounded replay**. Choose a reference
-folder and wait for indexing, then press **Run Interview**. On the first run for
+The Interview tab includes a **Generated interview replay**. Choose a reference
+folder and wait for indexing, then press **Run Replay**. On the first run for
 a reference revision, the host uses a structured model call to create five
 question/answer exchanges grounded in exact indexed paths. The final two probe
 CUDA in depth when that subject is supported by the references; otherwise they
@@ -134,7 +136,7 @@ incur repeated synthesis calls.
 
 ## Reference material
 
-Expand **References and meeting context** on the Meeting tab and choose one
+Expand **References and interview context** on the Interview tab and choose one
 reference folder. The Swift app restores and ingests that folder at launch,
 watches it recursively for changes, and debounces change bursts into a fresh
 deterministic revision. It currently reads PDF, RTF, Markdown, plain text,
@@ -181,7 +183,7 @@ so a broken stream costs latency rather than the dictation.
 Engines that cannot stream keep the bounded-snapshot preview loop, and any
 preview still in flight is cancelled when the shortcut is released so it cannot
 compete with the transcription the user is waiting for. Quick Dictation does not
-use the Meeting-only `gpt-live-transcribe` model. Neither recording nor local
+use the live-capture-only `gpt-live-transcribe` model. Neither recording nor local
 transcription has a duration deadline. For cloud transcription, the response
 watchdog starts only after every audio byte and the commit have been sent —
 for a streamed dictation, that is at release. An explicit OpenAI failure
@@ -231,7 +233,8 @@ one of these cases the text is also saved to history, so nothing is lost.
 While a dictation is being transcribed, the overlay reports what it is waiting
 on — streamed text as it arrives, upload percentage on the fallback path, then
 `Transcribing…` — so a slow provider is never indistinguishable from a hang.
-Quick Dictation is paused while meeting capture is using the microphone.
+Quick Dictation is paused during meeting or interview capture and during a
+generated interview replay.
 
 The main window's **Quick Dictation** tab owns the shortcut, permission,
 preview, live microphone, and history controls. Completed text appears there in
@@ -303,13 +306,14 @@ The proof of concept includes:
   - **OpenAI GPT-Transcribe** runs a persistent committed-turn
     `gpt-transcribe` session for each audio track. The two tracks finalize in
     parallel while retaining deterministic speaker labels. Each turn includes
-    the meeting prompt, terminology and language hints, plus recent
+    the declared meeting or interview context, terminology and language hints,
+    plus recent
     cross-speaker transcript context.
 - Client-side audio voice-activity detection with a 300 ms pre-roll, a 3
   second end-of-turn pause, and explicit turn commits. Partial text continues
   streaming during the finalization pause. A **Finish My Turn** button supplies
   a manual boundary for controlled comparisons.
-- Answer Mirror checks an interviewer partial after an 800 ms audio pause,
+- In Interview mode, Answer Mirror checks an interviewer partial after an 800 ms audio pause,
   immediately checks a new finalized interviewer turn, and coalesces an
   unchanged partial/final pair. Candidate turns never replace the comparison
   answer.
@@ -339,7 +343,7 @@ The proof of concept includes:
   An OpenAI key is presented as an optional upgrade, not a prerequisite.
 - **Capability-based gating.** What works is derived from whether a key exists,
   not from a mode the user has to find. The features that genuinely cannot run
-  on-device — meeting capture, Answer Mirror, mock interview — show one
+  on-device — meeting capture, live interviews, generated interview replay — show one
   consistent locked card explaining why in plain language, with a button that
   opens Settings at the API-key field. Everything else keeps working.
 - A **Never contact OpenAI** switch in Settings › Privacy for someone who has a
@@ -361,11 +365,11 @@ The proof of concept includes:
   modifier-only Command-Option monitoring, and automatic paste into the app,
   window, and control that were focused when recording began.
 
-Meeting audio and transcripts remain in memory. Quick Dictation final text is
+Meeting and interview audio and transcripts remain in memory. Quick Dictation final text is
 stored locally for the history tab until the user erases it. Quick Dictation WAV
 audio is also stored temporarily while transcription is pending or recoverable;
 it is removed after text is safely saved or the user explicitly deletes it.
-Continuous meeting or diagnostic audio recording is not implemented.
+Continuous meeting, interview, or diagnostic audio recording is not implemented.
 
 FluidAudio is Apache-2.0 licensed, Argmax OSS and OpenAI Whisper are MIT
 licensed, and NVIDIA Parakeet TDT 0.6B v3 is available under CC BY 4.0.

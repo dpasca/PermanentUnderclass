@@ -43,6 +43,11 @@ final class MeetingCopilotTests: XCTestCase {
     func testSpeakerLabelsAreDeterministic() {
         XCTAssertEqual(SpeakerTag.you.rawValue, "You")
         XCTAssertEqual(SpeakerTag.other.rawValue, "Other")
+        XCTAssertEqual(SpeakerTag.other.displayName(for: .meeting), "Other")
+        XCTAssertEqual(
+            SpeakerTag.other.displayName(for: .interview),
+            "Interviewer"
+        )
     }
 
     func testRealtimeDeltaParsing() throws {
@@ -308,6 +313,7 @@ final class MeetingCopilotTests: XCTestCase {
             cachedPrefix: prefix,
             recentTranscript: "Other: What did you build?",
             currentPartial: "You: I built…",
+            sessionContext: "Backend role at Example Corp",
             focusSpeaker: "Other",
             focusText: "What did you build?"
         )
@@ -320,6 +326,9 @@ final class MeetingCopilotTests: XCTestCase {
         XCTAssertTrue(plan.promptCacheKey.hasPrefix("punderclass:"))
         XCTAssertEqual(plan.promptCacheKey.count, 44)
         XCTAssertFalse(plan.volatileSuffix.contains("Resume.md"))
+        XCTAssertTrue(
+            plan.volatileSuffix.contains("Backend role at Example Corp")
+        )
         XCTAssertTrue(plan.volatileSuffix.contains("CURRENT RESPONSE TARGET"))
         XCTAssertTrue(plan.volatileSuffix.contains("Speaker: Other"))
         XCTAssertLessThan(
@@ -505,7 +514,7 @@ final class MeetingCopilotTests: XCTestCase {
             },
             onFailure: { transcriptID, message in
                 XCTAssertEqual(transcriptID, "late-turn")
-                XCTAssertTrue(message.contains("meeting ended"))
+                XCTAssertTrue(message.contains("capture ended"))
                 rejected.fulfill()
             }
         )

@@ -4,13 +4,15 @@ import SwiftUI
 
 struct ContentView: View {
     private enum AppTab: Hashable {
-        case meeting
         case quickDictation
+        case meeting
+        case interview
     }
 
     @ObservedObject var controller: MeetingController
     @Environment(\.openSettings) private var openSettings
-    @State private var contextExpanded = false
+    @State private var meetingContextExpanded = false
+    @State private var interviewContextExpanded = false
     /// Dictation leads: it is the part that works with no account, no key, and
     /// no configuration.
     @State private var selectedTab: AppTab = .quickDictation
@@ -33,6 +35,12 @@ struct ContentView: View {
                         Label("Meeting", systemImage: "waveform")
                     }
                     .tag(AppTab.meeting)
+
+                interviewTab
+                    .tabItem {
+                        Label("Interview", systemImage: "person.crop.rectangle")
+                    }
+                    .tag(AppTab.interview)
             }
         }
         .frame(minWidth: 1_000, minHeight: 760)
@@ -56,23 +64,37 @@ struct ContentView: View {
     }
 
     private var meetingTab: some View {
+        captureTab(for: .meeting, includesReplay: false)
+    }
+
+    private var interviewTab: some View {
+        captureTab(for: .interview, includesReplay: true)
+    }
+
+    private func captureTab(
+        for purpose: CapturePurpose,
+        includesReplay: Bool
+    ) -> some View {
         ScrollView {
             VStack(spacing: 12) {
                 VStack(spacing: 12) {
-                    meetingControlPanel
-                    meetingAudioRoutePanel
+                    captureControlPanel(for: purpose)
+                    audioRoutePanel(for: purpose)
                 }
                 .locked(
-                    .meetingCapture,
-                    access: controller.access(to: .meetingCapture),
+                    liveFeature(for: purpose),
+                    access: controller.access(to: liveFeature(for: purpose)),
                     onResolve: showSettings
                 )
-                syntheticInterviewPanel
-                    .locked(
-                        .mockInterview,
-                        access: controller.access(to: .mockInterview),
-                        onResolve: showSettings
-                    )
+
+                if includesReplay {
+                    syntheticInterviewPanel
+                        .locked(
+                            .mockInterview,
+                            access: controller.access(to: .mockInterview),
+                            onResolve: showSettings
+                        )
+                }
 
                 if let error = controller.errorMessage {
                     errorBanner(error)
@@ -85,28 +107,40 @@ struct ContentView: View {
                             systemImage: "mic.fill",
                             subtitle: controller.microphoneName,
                             color: .blue,
-                            state: controller.localTrack,
-                            health: controller.meetingMicrophoneHealth(at: timeline.date)
+                            state: controller.localTrack(for: purpose),
+                            health: controller.captureMicrophoneHealth(
+                                for: purpose,
+                                at: timeline.date
+                            )
                         )
                         TrackCard(
-                            title: "MEETING AUDIO",
+                            title: purpose == .meeting
+                                ? "MEETING AUDIO"
+                                : "INTERVIEWER AUDIO",
                             systemImage: controller.selectedProcessID == nil
                                 ? "speaker.wave.2.fill"
                                 : "macwindow.on.rectangle",
-                            subtitle: selectedMeetingAudioName,
+                            subtitle: selectedSystemAudioName,
                             color: .purple,
-                            state: controller.remoteTrack,
-                            health: controller.meetingAudioHealth(at: timeline.date)
+                            state: controller.remoteTrack(for: purpose),
+                            health: controller.captureSystemAudioHealth(
+                                for: purpose,
+                                at: timeline.date
+                            )
                         )
                     }
                 }
 
-                transcriptPanel
+                transcriptPanel(for: purpose)
                     .frame(minHeight: 180)
-                contextPanel
+                contextPanel(for: purpose)
             }
             .padding(16)
         }
+    }
+
+    private func liveFeature(for purpose: CapturePurpose) -> CloudFeature {
+        purpose == .meeting ? .meetingCapture : .answerMirror
     }
 
     private var sharedHeader: some View {
@@ -145,51 +179,62 @@ struct ContentView: View {
         .background(.background)
     }
 
-    /// Same shape as the Quick Dictation control panel: one status row with a
-    /// state dot, the primary action, and a link into the settings that govern
-    /// it. The model diagram that used to sit here now lives in Settings.
-    private var meetingControlPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    /// Meeting and interview share capture plumbing, while the declared purpose
+    /// controls labels and whether Answer Mirror may run.
+    private func captureControlPanel(
+        for purpose: CapturePurpose
+    ) -> some View {
+        let isActive = controller.isListening
+            && controller.capturePurpose == purpose
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label("Meeting capture", systemImage: "person.2.fill")
+                Label(
+                    purpose == .meeting ? "Meeting capture" : "Live interview",
+                    systemImage: purpose == .meeting
+                        ? "person.2.fill"
+                        : "person.crop.rectangle"
+                )
                     .font(.headline)
                 Circle()
-                    .fill(meetingStatusColor)
+                    .fill(captureStatusColor(for: purpose))
                     .frame(width: 8, height: 8)
-                Text(meetingStatusLabel)
+                Text(captureStatusLabel(for: purpose))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if controller.isListening {
+                if isActive {
                     ProgressView()
                         .controlSize(.small)
                 }
                 Spacer()
+                if purpose == .interview {
+                    Button("Open Assistant", action: controller.openCompanionDisplay)
+                }
                 Label("Headphones required", systemImage: "headphones")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Button("Settings…") { showSettings(.general) }
                 Button("Finish My Turn", action: controller.finalizeLocalTurn)
-                    .disabled(!controller.isListening)
+                    .disabled(!isActive)
                 Button {
-                    if controller.isListening {
-                        controller.stopMeeting()
-                    } else {
-                        controller.startMeeting()
-                    }
+                    handlePrimaryCaptureAction(for: purpose)
                 } label: {
                     Label(
-                        controller.isListening ? "Stop" : "Start Listening",
-                        systemImage: controller.isListening ? "stop.fill" : "waveform"
+                        primaryCaptureActionTitle(for: purpose),
+                        systemImage: isActive ? "stop.fill" : "waveform"
                     )
                     .frame(minWidth: 108)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(controller.isListening ? .red : .accentColor)
-                .disabled(controller.syntheticInterviewState.isActive)
+                .tint(isActive ? .red : .accentColor)
+                .disabled(
+                    controller.syntheticInterviewState.isActive
+                        && purpose == .interview
+                )
             }
 
             HStack(spacing: 8) {
-                Text("Captures both sides of a call and builds a refined transcript.")
+                Text(captureDescription(for: purpose))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 12)
@@ -198,12 +243,17 @@ struct ContentView: View {
                 Text("Final pass")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                SocketBadge(state: controller.refinementState, color: .green)
+                SocketBadge(
+                    state: controller.capturePurpose == purpose
+                        ? controller.refinementState
+                        : .idle,
+                    color: .green
+                )
             }
         }
         .padding(12)
         .background(
-            controller.isListening
+            isActive
                 ? Color.red.opacity(0.10)
                 : Color.secondary.opacity(0.08),
             in: RoundedRectangle(cornerRadius: 12)
@@ -211,23 +261,77 @@ struct ContentView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    controller.isListening
+                    isActive
                         ? Color.red.opacity(0.75)
                         : Color.secondary.opacity(0.25),
-                    lineWidth: controller.isListening ? 2 : 1
+                    lineWidth: isActive ? 2 : 1
                 )
         }
     }
 
-    private var meetingStatusLabel: String {
-        if controller.isListening { return "Listening" }
-        if controller.syntheticInterviewState.isActive { return "Interview running" }
-        return controller.access(to: .meetingCapture).isAvailable ? "Ready" : "Needs setup"
+    private func captureStatusLabel(for purpose: CapturePurpose) -> String {
+        if controller.syntheticInterviewState.isActive {
+            return purpose == .interview ? "Replay running" : "Interview replay running"
+        }
+        if controller.isListening {
+            return controller.capturePurpose == purpose
+                ? "Listening"
+                : "\(controller.capturePurpose?.title ?? "Live capture") running"
+        }
+        return controller.access(to: liveFeature(for: purpose)).isAvailable
+            ? "Ready"
+            : "Needs setup"
     }
 
-    private var meetingStatusColor: Color {
+    private func captureStatusColor(for purpose: CapturePurpose) -> Color {
+        if controller.syntheticInterviewState.isActive
+            || (controller.isListening && controller.capturePurpose != purpose)
+        {
+            return .orange
+        }
         if controller.isListening { return .red }
-        return controller.access(to: .meetingCapture).isAvailable ? .green : .secondary
+        return controller.access(to: liveFeature(for: purpose)).isAvailable
+            ? .green
+            : .secondary
+    }
+
+    private func captureDescription(for purpose: CapturePurpose) -> String {
+        switch purpose {
+        case .meeting:
+            "Captures both sides and builds a refined transcript. Answer Mirror stays off."
+        case .interview:
+            "Captures both sides and sends interviewer moments to Answer Mirror for concise response cues."
+        }
+    }
+
+    private func primaryCaptureActionTitle(
+        for purpose: CapturePurpose
+    ) -> String {
+        if controller.syntheticInterviewState.isActive {
+            return purpose == .meeting ? "Open Interview" : "Replay Running"
+        }
+        if controller.isListening {
+            return controller.capturePurpose == purpose
+                ? "Stop"
+                : "Open \(controller.capturePurpose?.title ?? "Capture")"
+        }
+        return "Start \(purpose.title)"
+    }
+
+    private func handlePrimaryCaptureAction(for purpose: CapturePurpose) {
+        if controller.syntheticInterviewState.isActive {
+            selectedTab = .interview
+        } else if controller.isListening {
+            if controller.capturePurpose == purpose {
+                controller.stopCapture()
+            } else {
+                selectedTab = controller.capturePurpose == .interview
+                    ? .interview
+                    : .meeting
+            }
+        } else {
+            controller.startCapture(for: purpose)
+        }
     }
 
     private func sharedMicrophoneMenu(health: AudioStreamHealth) -> some View {
@@ -274,7 +378,7 @@ struct ContentView: View {
             }
         }
         .menuStyle(.borderlessButton)
-        .help("Shared microphone for Meeting and Quick Dictation")
+        .help("Shared microphone for Quick Dictation, meetings, and interviews")
     }
 
     /// A chooser, not a signpost. Clicking the thing that names the current
@@ -342,7 +446,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Choose which model transcribes your dictation")
+        .help("Choose which model finalizes captured turns and transcribes Quick Dictation")
         // No explicit accessibility label: this menu style nests several
         // wrapper elements, and a custom label is inherited by each of them,
         // so VoiceOver would announce the same control four times. The visible
@@ -412,6 +516,10 @@ struct ContentView: View {
         switch selectedTab {
         case .meeting:
             controller.statusMessage
+        case .interview:
+            controller.syntheticInterviewState.isActive
+                ? controller.syntheticInterviewState.title
+                : controller.statusMessage
         case .quickDictation:
             "Quick Dictation · \(controller.dictationPhase.label)"
         }
@@ -430,7 +538,7 @@ struct ContentView: View {
                 HStack(spacing: 7) {
                     Text(state.title)
                         .font(.callout.weight(.semibold))
-                    Text("DOCUMENT-GROUNDED REPLAY")
+                    Text("GENERATED INTERVIEW REPLAY")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.indigo)
                 }
@@ -458,7 +566,7 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 5) {
-                Text("3 GROUNDED Q&A · AUDIO PAUSE 800 ms")
+                Text("5 GROUNDED Q&A · AUDIO PAUSE 800 ms")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -476,7 +584,7 @@ struct ContentView: View {
                             controller.openCompanionDisplay()
                             controller.startSyntheticInterview()
                         } label: {
-                            Label("Run Interview", systemImage: "play.fill")
+                            Label("Run Replay", systemImage: "play.fill")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.indigo)
@@ -493,9 +601,9 @@ struct ContentView: View {
         }
     }
 
-    private var meetingAudioRoutePanel: some View {
+    private func audioRoutePanel(for purpose: CapturePurpose) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Meeting audio route", systemImage: "waveform")
+            Label("\(purpose.title) audio route", systemImage: "waveform")
                 .font(.headline)
 
             AudioDeviceRow(
@@ -566,31 +674,37 @@ struct ContentView: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private var transcriptPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func transcriptPanel(
+        for purpose: CapturePurpose
+    ) -> some View {
+        let turns = controller.transcript(for: purpose)
+
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Transcript", systemImage: "text.bubble")
+                Label("\(purpose.title) transcript", systemImage: "text.bubble")
                     .font(.headline)
                 Spacer()
-                Button("Copy", action: controller.copyTranscript)
-                    .disabled(controller.transcript.isEmpty)
-                Button("Export…", action: controller.exportTranscript)
-                    .disabled(controller.transcript.isEmpty)
-                Button("Clear", action: controller.clearTranscript)
-                    .disabled(controller.transcript.isEmpty)
+                Button("Copy") { controller.copyTranscript(for: purpose) }
+                    .disabled(turns.isEmpty)
+                Button("Export…") { controller.exportTranscript(for: purpose) }
+                    .disabled(turns.isEmpty)
+                Button("Clear") { controller.clearTranscript(for: purpose) }
+                    .disabled(turns.isEmpty)
             }
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if controller.transcript.isEmpty {
+                    if turns.isEmpty {
                         ContentUnavailableView(
-                            "No final transcript yet",
+                            "No \(purpose.title.lowercased()) transcript yet",
                             systemImage: "waveform",
-                            description: Text("Finalized speech turns appear here in chronological order.")
+                            description: Text(
+                                "Finalized \(purpose.title.lowercased()) turns appear here in chronological order."
+                            )
                         )
                         .frame(maxWidth: .infinity, minHeight: 150)
                     } else {
-                        ForEach(controller.transcript) { turn in
+                        ForEach(turns) { turn in
                             TranscriptRow(turn: turn)
                         }
                     }
@@ -607,18 +721,25 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private var contextPanel: some View {
-        DisclosureGroup(isExpanded: $contextExpanded) {
+    private func contextPanel(
+        for purpose: CapturePurpose
+    ) -> some View {
+        DisclosureGroup(isExpanded: contextExpandedBinding(for: purpose)) {
             VStack(alignment: .leading, spacing: 12) {
-                referenceMaterialPanel
-
-                Divider()
+                if purpose == .interview {
+                    referenceMaterialPanel
+                    Divider()
+                }
 
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Meeting context")
+                        Text(
+                            purpose == .meeting
+                                ? "Meeting context"
+                                : "Role, company, and interview context"
+                        )
                             .font(.callout.weight(.medium))
-                        TextEditor(text: $controller.topicPrompt)
+                        TextEditor(text: contextPromptBinding(for: purpose))
                             .font(.body)
                             .frame(minHeight: 64)
                             .overlay {
@@ -640,7 +761,7 @@ struct ContentView: View {
                 }
 
                 HStack {
-                    Text("Terminology and the API key are shared with cloud Quick Dictation; expected languages also guide Local Whisper.")
+                    Text("Terminology and expected languages are shared across dictation, meetings, and interviews.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("Settings…") {
@@ -653,22 +774,56 @@ struct ContentView: View {
                         }
                     }
                     .frame(width: 180)
-                    Button("Apply Context", action: controller.applyContext)
+                    Button("Apply Context") {
+                        controller.applyContext(for: purpose)
+                    }
+                    .disabled(
+                        controller.isListening
+                            && controller.capturePurpose != purpose
+                    )
                 }
-                Text("For specialized discussions, add exact vocabulary before the meeting—for example CUDA, thread block, and warp. Medium is the recommended starting point for balanced accuracy and latency.")
+                Text(
+                    purpose == .meeting
+                        ? "Add exact vocabulary before a specialized meeting. Medium is the recommended starting point for balanced accuracy and latency."
+                        : "Describe the role and likely subject areas, then add exact technical vocabulary. Interview context also guides Answer Mirror."
+                )
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 10)
         } label: {
             Label(
-                "References and meeting context",
+                purpose == .meeting
+                    ? "Meeting transcription context"
+                    : "References and interview context",
                 systemImage: "slider.horizontal.3"
             )
                 .font(.headline)
         }
         .padding(12)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func contextExpandedBinding(
+        for purpose: CapturePurpose
+    ) -> Binding<Bool> {
+        switch purpose {
+        case .meeting:
+            $meetingContextExpanded
+        case .interview:
+            $interviewContextExpanded
+        }
+    }
+
+    private func contextPromptBinding(
+        for purpose: CapturePurpose
+    ) -> Binding<String> {
+        switch purpose {
+        case .meeting:
+            $controller.meetingContextPrompt
+        case .interview:
+            $controller.interviewContextPrompt
+        }
     }
 
     private var referenceMaterialPanel: some View {
@@ -802,7 +957,7 @@ struct ContentView: View {
         return String(count)
     }
 
-    private var selectedMeetingAudioName: String {
+    private var selectedSystemAudioName: String {
         guard let selectedProcessID = controller.selectedProcessID else {
             return "All system audio"
         }
@@ -1198,10 +1353,13 @@ private struct TranscriptRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text(turn.speaker.rawValue.uppercased())
+            Text(turn.speaker.displayName(for: turn.purpose).uppercased())
                 .font(.callout.bold())
                 .foregroundStyle(turn.speaker == .you ? .blue : .purple)
-                .frame(width: 52, alignment: .leading)
+                .frame(
+                    width: turn.purpose == .interview ? 92 : 52,
+                    alignment: .leading
+                )
             Text(turn.startedAt, style: .time)
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)

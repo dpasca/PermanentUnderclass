@@ -194,18 +194,24 @@ struct ModelUsageSummary: View {
                 note: "your choice"
             )
             row(
-                workflow: "Meeting · live",
+                workflow: "Live capture · live",
                 model: RealtimeTranscriptionClient.model,
                 isCloud: true,
                 note: controller.capability.isCloudEnabled ? "fixed" : "needs a key"
             )
             row(
-                workflow: "Meeting · final",
+                workflow: "Live capture · final",
                 model: controller.refinementEngine.modelName,
                 isCloud: controller.refinementEngine.isCloud,
                 note: controller.capability.isCloudEnabled
                     ? "same as Quick Dictation"
                     : "needs a key"
+            )
+            row(
+                workflow: "Interview · cues",
+                model: InterviewWingmanClient.model,
+                isCloud: true,
+                note: controller.capability.isCloudEnabled ? "interview only" : "needs a key"
             )
         }
     }
@@ -247,15 +253,15 @@ struct TranscriptionPipelineDiagram: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
                 workflowTitle(
-                    "Meeting",
-                    detail: "A fast streaming pass is followed by a higher-accuracy pass for every completed turn."
+                    "Meetings and interviews",
+                    detail: "Both use the same capture pipeline. Interview mode additionally evaluates interviewer moments with Answer Mirror."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
                         stage: "STAGE 1 · LIVE",
                         modelName: RealtimeTranscriptionClient.model,
                         role: "Streaming partial and completed text",
-                        detail: "Fixed OpenAI cloud model. Two parallel sessions cover microphone and the selected system-audio source while the meeting is active.",
+                        detail: "Fixed OpenAI cloud model. Two parallel sessions cover microphone and the selected system-audio source while live capture is active.",
                         badge: "FIXED · CLOUD",
                         systemImage: "bolt.horizontal.fill",
                         color: .blue
@@ -278,7 +284,7 @@ struct TranscriptionPipelineDiagram: View {
                     "Quick Dictation",
                     detail: controller.refinementEngine.isCloud
                         ? "One session transcribes while you speak, so releasing the shortcut only sends the tail."
-                        : "The selected model is reused; Meeting’s live model is not involved."
+                        : "The selected model is reused; the live-capture model is not involved."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(

@@ -103,7 +103,8 @@ data: {"v":1,"streamId":"01J...","sequence":2487,"emittedAt":"2026-08-01T01:24:4
 Initial event set:
 
 - `GET /v1/snapshot`: full replaceable state and its `watermark`.
-- `session.status`: listening/stopped, capture health, active host behavior.
+- `session.status`: listening/stopped, capture health, the explicit `meeting`
+  or `interview` purpose, and active host behavior.
 - `transcript.partial`: replace the partial for one `turnId`; safe to coalesce.
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
@@ -314,6 +315,9 @@ privacy boundary.
 ## Assistant behavior boundary
 
 Behaviors are model-backed structured configurations, not keyword triggers.
+The user selects the behavior boundary explicitly: Meeting capture is
+transcript-only, while Interview capture enables Answer Mirror. The host never
+tries to infer that a meeting is an interview from its words.
 Each behavior defines:
 
 - goal and audience;

@@ -26,7 +26,7 @@ struct SyntheticInterviewState: Equatable {
     var isRunning = false
     var hasRun = false
     var title = "Reference-grounded interview ready"
-    var detail = "Generate an audible mock interview from the currently indexed reference documents."
+    var detail = "Generate an audible interview replay from the currently indexed reference documents."
     var scenarioName = ""
     var referenceRevision = ""
     var currentTurn = 0
@@ -104,7 +104,7 @@ enum SyntheticInterviewError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .referencesUnavailable:
-            "Choose and finish indexing a reference folder before generating the synthetic interview."
+            "Choose and finish indexing a reference folder before generating the interview replay."
         case .referencesChanged:
             "The reference documents changed during interview generation. Run it again to use the new revision."
         }
@@ -117,7 +117,7 @@ enum SyntheticSpeechError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .alreadySpeaking:
-            "The synthetic speech player is already speaking."
+            "The generated replay voice is already speaking."
         }
     }
 }

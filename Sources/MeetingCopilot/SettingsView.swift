@@ -84,7 +84,10 @@ private struct GeneralSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SettingsGroup("Microphone", detail: "Shared by dictation and meetings.") {
+            SettingsGroup(
+                "Microphone",
+                detail: "Shared by dictation, meetings, and interviews."
+            ) {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     AudioDeviceRow(
                         title: "MICROPHONE INPUT",
@@ -169,7 +172,7 @@ private struct OpenAISettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "OpenAI API key",
-                detail: "Optional. Dictation already works without it. A key adds meetings, practice interviews, and suggested answers."
+                detail: "Optional. Dictation already works without it. A key adds meetings, live interviews, generated replays, and suggested answers."
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -250,8 +253,8 @@ private struct PrivacySettings: View {
                     .toggleStyle(.switch)
                     Text(
                         controller.privacyLockEnabled
-                            ? "Dictation runs on this Mac. Meetings, practice interviews, and suggested answers are turned off."
-                            : "Dictation can run on this Mac either way — this also turns off meetings and the interview tools."
+                            ? "Dictation runs on this Mac. Meetings, live interviews, generated replays, and suggested answers are turned off."
+                            : "Dictation can run on this Mac either way — this also turns off meetings and every interview tool."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

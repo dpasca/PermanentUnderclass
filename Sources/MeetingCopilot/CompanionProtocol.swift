@@ -103,6 +103,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
+    var purpose: CapturePurpose?
     var source: CompanionSessionSource?
     var title: String?
     var isPreparingSyntheticInterview = false
@@ -354,6 +355,7 @@ actor CompanionEventHub {
     func updateSession(
         isListening: Bool,
         status: String,
+        purpose: CapturePurpose? = nil,
         source: CompanionSessionSource = .liveCapture,
         title: String? = nil,
         isPreparingSyntheticInterview: Bool = false
@@ -366,10 +368,25 @@ actor CompanionEventHub {
         }
         state.session.isListening = isListening
         state.session.status = status
+        state.session.purpose = purpose
         state.session.source = source
         state.session.title = title
         state.session.isPreparingSyntheticInterview =
             isPreparingSyntheticInterview
+        switch purpose {
+        case .meeting:
+            state.session.behaviorName = "Meeting transcription"
+            state.session.behaviorDetail =
+                "Capture both speakers without generating answer suggestions"
+        case .interview:
+            state.session.behaviorName = "Answer mirror"
+            state.session.behaviorDetail =
+                "Show 3–5 shorthand beats when the interviewer pauses"
+        case nil:
+            state.session.behaviorName = "Answer mirror"
+            state.session.behaviorDetail =
+                "Show 3–5 shorthand beats when the interviewer pauses"
+        }
         return publish(name: "session.status", payload: state.session)
     }
 

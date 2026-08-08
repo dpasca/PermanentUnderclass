@@ -217,10 +217,21 @@ function renderInferenceStatus() {
     return;
   }
 
+  if (session?.purpose === "meeting") {
+    setInferenceStatus(
+      "off",
+      "MEETING TRANSCRIPTION ONLY",
+      "Answer Mirror is off",
+      "Meeting capture records and transcribes both speakers without generating response cues.",
+      checkCount
+    );
+    return;
+  }
+
   if (session?.isPreparingSyntheticInterview) {
     setInferenceStatus(
       "working",
-      "BUILDING SYNTHETIC INTERVIEW",
+      "BUILDING GENERATED INTERVIEW",
       "Generating five exchanges from the indexed references",
       session.status || "The replay will begin as soon as the document-grounded scenario is ready.",
       checkCount
@@ -244,7 +255,7 @@ function renderInferenceStatus() {
       "off",
       "CAPTURE STOPPED · INFERENCE OFF",
       "No inference is happening",
-      "Start meeting capture or a reference-grounded replay in the Mac app.",
+      "Start a live interview or generated replay in the Mac app.",
       checkCount
     );
     return;
@@ -373,26 +384,33 @@ function updateWatermark(replayed = null) {
 function renderSession(session) {
   if (!session) return;
   const synthetic = session.source === "syntheticInterview";
+  const meeting = session.purpose === "meeting";
   $("#behaviorName").textContent = session.behaviorName || "Answer mirror";
   $("#behaviorDetail").textContent = session.behaviorDetail
     || "Show 3–5 shorthand beats when the interviewer pauses";
   $("#assistantToggle").checked = !session.suggestionsPaused;
   $("#assistantState").textContent = session.isPreparingSyntheticInterview
     ? "Generating interview from references"
-    : (session.suggestionsPaused
+    : (meeting
+      ? "Answer Mirror off for meetings"
+      : session.suggestionsPaused
       ? "Transcript only"
       : (session.isListening ? "Waiting for interviewer pauses" : "Inference stops with capture"));
   $("#meetingTitle").textContent = session.title
-    || (synthetic ? "Reference-grounded synthetic interview" : "Product engineering interview");
+    || (synthetic
+      ? "Reference-grounded generated interview"
+      : meeting ? "Meeting transcript" : "Live interview");
   if (state.mode === "live") {
     $("#modeRibbon").textContent = synthetic
-      ? "SYNTHETIC REPLAY · generated from references · live answer comparison"
-      : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
+      ? "GENERATED REPLAY · grounded in references · live answer comparison"
+      : meeting
+        ? "MEETING TRANSCRIPTION · Answer Mirror off · replayable SSE"
+        : "LIVE INTERVIEW · host-owned assistant · replayable SSE";
   }
   const liveMeta = $(".transcript-meta span:first-child");
   const captureLabel = session.isPreparingSyntheticInterview
     ? "Preparing"
-    : (session.isListening ? (synthetic ? "Synthetic" : "Live") : "Stopped");
+    : (session.isListening ? (synthetic ? "Generated replay" : "Live") : "Stopped");
   liveMeta.innerHTML = `<i></i> ${captureLabel}`;
   renderAssistant(state.snapshot?.assistant, session.suggestionsPaused);
   renderInferenceStatus();
@@ -448,9 +466,10 @@ function createTurn(turn, partial = false) {
   const header = document.createElement("header");
   const avatar = document.createElement("span");
   avatar.className = "speaker-avatar";
-  avatar.textContent = isYou ? "YOU" : "OT";
+  const meeting = state.snapshot?.session?.purpose === "meeting";
+  avatar.textContent = isYou ? "YOU" : meeting ? "OT" : "IV";
   const speaker = document.createElement("strong");
-  speaker.textContent = isYou ? "You" : "Other";
+  speaker.textContent = isYou ? "You" : meeting ? "Other" : "Interviewer";
   const time = document.createElement("time");
   time.textContent = partial ? "now" : formatTime(turn.startedAt);
   header.append(avatar, speaker, time);
@@ -475,7 +494,9 @@ function renderTranscript(transcript) {
     const empty = document.createElement("article");
     empty.className = "turn";
     const text = document.createElement("p");
-    text.textContent = "Transcript turns will appear here when meeting capture starts.";
+    text.textContent = state.snapshot?.session?.purpose === "meeting"
+      ? "Transcript turns will appear here when meeting capture starts."
+      : "Transcript turns will appear here when a live interview or generated replay starts.";
     empty.append(text);
     container.append(empty);
     return;
@@ -635,6 +656,18 @@ function renderSuggestionStack(assistant) {
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
   renderInferenceStatus();
   const empty = $("#pausedState");
+  if (state.snapshot?.session?.purpose === "meeting") {
+    state.currentSuggestion = null;
+    state.visibleSuggestions = [];
+    $("#answerStack").hidden = true;
+    $("#answerHistory").hidden = true;
+    $("#listeningStrip").hidden = true;
+    empty.hidden = false;
+    $("#emptyStateSymbol").textContent = "TXT";
+    $("#emptyStateTitle").textContent = "Meeting transcription only";
+    $("#emptyStateDetail").textContent = "Answer Mirror is off. Start an interview in the Mac app when you want response cues.";
+    return;
+  }
   const suggestion = renderSuggestionStack(assistant);
   $("#listeningStrip").hidden = true;
 
@@ -673,12 +706,12 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     const checkedWithoutGuidance = assistant?.lastEvaluationOutcome === "noSuggestion";
     if (session?.isPreparingSyntheticInterview) {
       $("#emptyStateSymbol").textContent = "AI";
-      $("#emptyStateTitle").textContent = "Building the synthetic interview";
-      $("#emptyStateDetail").textContent = "The first interviewer question will appear when the three document-grounded exchanges are ready.";
+      $("#emptyStateTitle").textContent = "Building the generated interview";
+      $("#emptyStateDetail").textContent = "The first interviewer question will appear when the five document-grounded exchanges are ready.";
     } else if (!session?.isListening) {
       $("#emptyStateSymbol").textContent = "■";
-      $("#emptyStateTitle").textContent = "Meeting capture is stopped";
-      $("#emptyStateDetail").textContent = "Start meeting capture or a reference-grounded replay in the Mac app.";
+      $("#emptyStateTitle").textContent = "Interview capture is stopped";
+      $("#emptyStateDetail").textContent = "Start a live interview or generated replay in the Mac app.";
     } else {
       const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
       $("#emptyStateSymbol").textContent = checkedWithoutGuidance ? "✓" : "AI";
@@ -841,9 +874,12 @@ function openEventStream() {
     state.lastHeartbeatAt = Date.now();
     setConnectionStatus("connected", "Connected to this Mac", "CAUGHT UP");
     const synthetic = state.snapshot?.session?.source === "syntheticInterview";
+    const meeting = state.snapshot?.session?.purpose === "meeting";
     $("#modeRibbon").textContent = synthetic
-      ? "SYNTHETIC REPLAY · generated from references · live answer comparison"
-      : "LIVE LOOPBACK · host-owned assistant · replayable SSE";
+      ? "GENERATED REPLAY · grounded in references · live answer comparison"
+      : meeting
+        ? "MEETING TRANSCRIPTION · Answer Mirror off · replayable SSE"
+        : "LIVE INTERVIEW · host-owned assistant · replayable SSE";
     if (state.reconnectStartSequence !== null) {
       const resumedAfter = state.reconnectStartSequence;
       setTimeout(() => {

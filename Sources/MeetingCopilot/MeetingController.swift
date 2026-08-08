@@ -5,8 +5,10 @@ import OSLog
 
 final class MeetingController: ObservableObject {
     @Published var apiKeyDraft = ""
-    @Published var topicPrompt =
+    @Published var meetingContextPrompt =
         "An English-language one-on-one technical company meeting. Speakers may have different regional or non-native English accents. Discussion may include software, hardware, APIs, product names, acronyms, numbers, and action items."
+    @Published var interviewContextPrompt =
+        "An English-language technical job interview. The other speaker is the interviewer and may ask about the candidate's experience, system design, debugging, performance, collaboration, and role-specific technical topics."
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
@@ -19,6 +21,7 @@ final class MeetingController: ObservableObject {
     @Published var refinementState: SocketState = .idle
     @Published var transcript: [TranscriptTurn] = []
     @Published var isListening = false
+    @Published private(set) var capturePurpose: CapturePurpose?
     @Published var statusMessage = "Ready"
     @Published var errorMessage: String?
     @Published var keyStatus = ""
@@ -285,22 +288,34 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    func startMeeting() {
+    func startCapture(for purpose: CapturePurpose) {
         errorMessage = nil
+        guard !isListening else {
+            let activeTitle = capturePurpose?.title.lowercased() ?? "live"
+            present(
+                MeetingCopilotError.audio(
+                    "The \(activeTitle) capture is already running."
+                )
+            )
+            return
+        }
         do {
             guard !syntheticInterviewState.isActive else {
                 throw MeetingCopilotError.audio(
-                    "Stop the synthetic interview before starting live capture."
+                    "Stop the generated interview replay before starting live capture."
                 )
             }
             guard !isDictating else {
                 throw MeetingCopilotError.audio(
-                    "Release the Quick Dictation shortcut before starting meeting capture."
+                    "Release the Quick Dictation shortcut before starting live capture."
                 )
             }
-            // Meeting's live pass is a hosted model with no on-device
-            // equivalent, so it is refused rather than quietly sending audio.
-            if let message = capability.lockMessage(for: .meetingCapture) {
+            // The live pass is a hosted model with no on-device equivalent, so
+            // it is refused rather than quietly sending audio.
+            let requiredFeature: CloudFeature = purpose == .meeting
+                ? .meetingCapture
+                : .answerMirror
+            if let message = capability.lockMessage(for: requiredFeature) {
                 throw MeetingCopilotError.audio(message)
             }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -321,18 +336,20 @@ final class MeetingController: ObservableObject {
             }
             syntheticInterviewState = SyntheticInterviewState()
             syntheticInterviewReferences = nil
-            let context = try transcriptionContext()
+            capturePurpose = purpose
+            prepareCompanionForNewSession()
+            let context = try transcriptionContext(for: purpose)
             uniqueRefinementClients().forEach { $0.disconnect() }
             refinementClients.removeAll()
             refinementStates.removeAll()
             markRefiningTurnsLiveOnly(
-                "Refinement was interrupted when a new meeting started."
+                "Refinement was interrupted when new live capture started."
             )
             let sessionID = UUID()
             activeSessionID = sessionID
             activeContext = context
             isListening = true
-            statusMessage = "Starting capture…"
+            statusMessage = "Starting \(purpose.title.lowercased()) capture…"
             publishCompanionSession()
             let monitoringStartedAt = Date()
             localTrack = TrackViewState(
@@ -347,12 +364,14 @@ final class MeetingController: ObservableObject {
 
             let localClient = makeClient(
                 speaker: .you,
+                purpose: purpose,
                 apiKey: key,
                 context: context,
                 sessionID: sessionID
             )
             let remoteClient = makeClient(
                 speaker: .other,
+                purpose: purpose,
                 apiKey: key,
                 context: context,
                 sessionID: sessionID
@@ -363,12 +382,20 @@ final class MeetingController: ObservableObject {
             let refinedHandler: (String, String) -> Void = {
                 [weak self] transcriptID, text in
                 guard let self, self.activeSessionID == sessionID else { return }
-                self.applyRefinement(transcriptID: transcriptID, text: text)
+                self.applyRefinement(
+                    transcriptID: transcriptID,
+                    purpose: purpose,
+                    text: text
+                )
             }
             let failureHandler: (String, String) -> Void = {
                 [weak self] transcriptID, message in
                 guard let self, self.activeSessionID == sessionID else { return }
-                self.markTurnLiveOnly(transcriptID: transcriptID, message: message)
+                self.markTurnLiveOnly(
+                    transcriptID: transcriptID,
+                    purpose: purpose,
+                    message: message
+                )
             }
             let usageHandler: (OpenAITranscriptionUsageRecord) -> Void = {
                 [weak self] usage in
@@ -477,7 +504,7 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    func stopMeeting() {
+    func stopCapture() {
         guard activeSessionID != nil else { return }
         isListening = false
         statusMessage = "Finalizing transcript…"
@@ -518,13 +545,23 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    func applyContext() {
+    func applyContext(for purpose: CapturePurpose) {
         do {
-            let context = try transcriptionContext()
+            guard !isListening || capturePurpose == purpose else {
+                let activeTitle = capturePurpose?.title.lowercased() ?? "live"
+                throw MeetingCopilotError.audio(
+                    "Stop the active \(activeTitle) capture before applying \(purpose.title.lowercased()) context."
+                )
+            }
+            let context = try transcriptionContext(for: purpose)
             activeContext = context
-            localClient?.updateContext(context)
-            remoteClient?.updateContext(context)
-            statusMessage = isListening ? "Context updated" : "Context ready"
+            if isListening {
+                localClient?.updateContext(context)
+                remoteClient?.updateContext(context)
+            }
+            statusMessage = isListening
+                ? "\(purpose.title) context updated"
+                : "\(purpose.title) context ready"
         } catch {
             present(error)
         }
@@ -589,7 +626,7 @@ final class MeetingController: ObservableObject {
             return
         }
         if isListening {
-            stopMeeting()
+            stopCapture()
         }
         if refinementEngine.isCloud {
             selectRefinementEngine(.localWhisper)
@@ -687,24 +724,38 @@ final class MeetingController: ObservableObject {
         )
     }
 
-    func meetingMicrophoneHealth(at now: Date = Date()) -> AudioStreamHealth {
+    func localTrack(for purpose: CapturePurpose) -> TrackViewState {
+        capturePurpose == purpose ? localTrack : TrackViewState()
+    }
+
+    func remoteTrack(for purpose: CapturePurpose) -> TrackViewState {
+        capturePurpose == purpose ? remoteTrack : TrackViewState()
+    }
+
+    func captureMicrophoneHealth(
+        for purpose: CapturePurpose,
+        at now: Date = Date()
+    ) -> AudioStreamHealth {
         AudioStreamHealth.evaluate(
             sourceAvailable: microphoneAvailable,
             permissionGranted: dictationPermissions.canUseMicrophone,
-            isMonitoring: isListening,
-            telemetry: localTrack.telemetry,
+            isMonitoring: isListening && capturePurpose == purpose,
+            telemetry: localTrack(for: purpose).telemetry,
             now: now
         )
     }
 
-    func meetingAudioHealth(at now: Date = Date()) -> AudioStreamHealth {
+    func captureSystemAudioHealth(
+        for purpose: CapturePurpose,
+        at now: Date = Date()
+    ) -> AudioStreamHealth {
         let sourceAvailable = selectedProcessID.map { selectedID in
             processes.contains(where: { $0.id == selectedID })
         } ?? audioOutputAvailable
         return AudioStreamHealth.evaluate(
             sourceAvailable: sourceAvailable,
-            isMonitoring: isListening,
-            telemetry: remoteTrack.telemetry,
+            isMonitoring: isListening && capturePurpose == purpose,
+            telemetry: remoteTrack(for: purpose).telemetry,
             now: now
         )
     }
@@ -728,12 +779,18 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    func clearTranscript() {
-        transcript.removeAll()
-        localTrack.partialTranscript = ""
-        remoteTrack.partialTranscript = ""
-        enqueueCompanionUpdate { hub in
-            await hub.clearTranscript()
+    func transcript(for purpose: CapturePurpose) -> [TranscriptTurn] {
+        transcript.filter { $0.purpose == purpose }
+    }
+
+    func clearTranscript(for purpose: CapturePurpose) {
+        transcript.removeAll { $0.purpose == purpose }
+        if capturePurpose == purpose {
+            localTrack.partialTranscript = ""
+            remoteTrack.partialTranscript = ""
+            enqueueCompanionUpdate { hub in
+                await hub.clearTranscript()
+            }
         }
     }
 
@@ -909,7 +966,7 @@ final class MeetingController: ObservableObject {
         guard !isListening else {
             present(
                 MeetingCopilotError.audio(
-                    "Stop live capture before starting the synthetic interview."
+                    "Stop live capture before starting the generated interview replay."
                 )
             )
             return
@@ -917,7 +974,7 @@ final class MeetingController: ObservableObject {
         guard !isDictationBusy else {
             present(
                 MeetingCopilotError.audio(
-                    "Finish Quick Dictation before starting the synthetic interview."
+                    "Finish Quick Dictation before starting the generated interview replay."
                 )
             )
             return
@@ -946,6 +1003,11 @@ final class MeetingController: ObservableObject {
             )
         let runID = UUID()
         syntheticInterviewRunID = runID
+        capturePurpose = .interview
+        prepareCompanionForNewSession()
+        localTrack = TrackViewState()
+        remoteTrack = TrackViewState()
+        refinementState = .idle
         syntheticInterviewState = SyntheticInterviewState(
             isGenerating: cachedScenario == nil,
             isRunning: false,
@@ -956,14 +1018,14 @@ final class MeetingController: ObservableObject {
             detail: cachedScenario == nil
                 ? "Creating five grounded exchanges from \(references.documents.count) indexed documents…"
                 : "Reusing the scenario generated for reference revision \(references.revision.prefix(8)).",
-            scenarioName: cachedScenario?.name ?? "Document-grounded mock interview",
+            scenarioName: cachedScenario?.name ?? "Generated interview replay",
             referenceRevision: references.revision,
             currentTurn: 0,
             totalTurns: cachedScenario?.turns.count ?? 10
         )
         statusMessage = cachedScenario == nil
-            ? "Generating synthetic interview…"
-            : "Preparing synthetic interview…"
+            ? "Generating interview replay…"
+            : "Preparing interview replay…"
         publishCompanionSession()
 
         syntheticInterviewTask = Task { @MainActor [weak self] in
@@ -1014,7 +1076,7 @@ final class MeetingController: ObservableObject {
                     totalTurns: scenario.turns.count
                 )
                 self.syntheticInterviewReferences = references
-                self.statusMessage = "Synthetic interview running"
+                self.statusMessage = "Generated interview replay running"
                 self.publishCompanionSession()
                 try await self.runSyntheticInterview(
                     scenario,
@@ -1023,13 +1085,13 @@ final class MeetingController: ObservableObject {
             } catch is CancellationError {
                 self.finishSyntheticInterview(
                     runID: runID,
-                    title: "Synthetic interview stopped",
+                    title: "Interview replay stopped",
                     detail: "The replay was stopped before all turns completed."
                 )
             } catch {
                 self.finishSyntheticInterview(
                     runID: runID,
-                    title: "Synthetic interview failed",
+                    title: "Interview replay failed",
                     detail: error.localizedDescription
                 )
                 self.present(error)
@@ -1096,7 +1158,10 @@ final class MeetingController: ObservableObject {
             let partialPauseSeconds = Double(
                 AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
             ) / 1_000
-            if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {
+            if AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: turn.speaker,
+                purpose: .interview
+            ) {
                 syntheticInterviewState.title = "Model-answer window"
                 syntheticInterviewState.detail =
                     "The interviewer is quiet. Answer Mirror starts a shorthand outline at the 800 ms pause marker while the model-generated candidate reply waits."
@@ -1106,12 +1171,16 @@ final class MeetingController: ObservableObject {
                     "The candidate voice is quiet. Its transcript remains beside the model outline stack for comparison."
             }
             try await Self.sleep(seconds: partialPauseSeconds)
-            if AssistantEvaluationPolicy.shouldEvaluate(speaker: turn.speaker) {
+            if AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: turn.speaker,
+                purpose: .interview
+            ) {
                 scheduleInterviewWingman(
                     trigger: .partialTranscript,
                     turnID: turnID,
                     sourceText: turn.text,
                     speaker: turn.speaker,
+                    purpose: .interview,
                     observedAt: endedAt
                 )
             }
@@ -1144,7 +1213,7 @@ final class MeetingController: ObservableObject {
 
         finishSyntheticInterview(
             runID: runID,
-            title: "Synthetic interview complete",
+            title: "Interview replay complete",
             detail: "All \(scenario.turns.count) audible turns generated from \(scenario.referenceDocumentCount) reference documents were replayed."
         )
     }
@@ -1181,12 +1250,15 @@ final class MeetingController: ObservableObject {
 
         let turn = TranscriptTurn(
             id: id,
+            purpose: .interview,
             speaker: speaker,
             startedAt: startedAt,
             endedAt: endedAt,
             liveText: text,
             text: text,
-            refinement: .liveOnly("Synthetic ground-truth transcript; ASR was intentionally bypassed.")
+            refinement: .liveOnly(
+                "Generated replay transcript; ASR was intentionally bypassed."
+            )
         )
         transcript.removeAll { $0.id == id }
         transcript.append(turn)
@@ -1195,12 +1267,16 @@ final class MeetingController: ObservableObject {
             return $0.startedAt < $1.startedAt
         }
         publishCompanionFinal(turn)
-        if AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) {
+        if AssistantEvaluationPolicy.shouldEvaluate(
+            speaker: speaker,
+            purpose: .interview
+        ) {
             scheduleInterviewWingman(
                 trigger: .finalizedTurn,
                 turnID: id,
                 sourceText: text,
-                speaker: speaker
+                speaker: speaker,
+                purpose: .interview
             )
         }
     }
@@ -1255,21 +1331,28 @@ final class MeetingController: ObservableObject {
         try await Task.sleep(for: .milliseconds(milliseconds))
     }
 
-    func copyTranscript() {
+    func copyTranscript(for purpose: CapturePurpose) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(transcriptText(), forType: .string)
-        statusMessage = "Transcript copied"
+        NSPasteboard.general.setString(
+            transcriptText(for: purpose),
+            forType: .string
+        )
+        statusMessage = "\(purpose.title) transcript copied"
     }
 
-    func exportTranscript() {
+    func exportTranscript(for purpose: CapturePurpose) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "Meeting Transcript.txt"
+        panel.nameFieldStringValue = "\(purpose.title) Transcript.txt"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try transcriptText().write(to: url, atomically: true, encoding: .utf8)
-            statusMessage = "Transcript saved"
+            try transcriptText(for: purpose).write(
+                to: url,
+                atomically: true,
+                encoding: .utf8
+            )
+            statusMessage = "\(purpose.title) transcript saved"
         } catch {
             present(error)
         }
@@ -1277,6 +1360,7 @@ final class MeetingController: ObservableObject {
 
     private func makeClient(
         speaker: SpeakerTag,
+        purpose: CapturePurpose,
         apiKey: String,
         context: TranscriptionContext,
         sessionID: UUID
@@ -1325,6 +1409,7 @@ final class MeetingController: ObservableObject {
                     : .refining
                 let turn = TranscriptTurn(
                     id: transcriptID,
+                    purpose: purpose,
                     speaker: speaker,
                     startedAt: startedAt,
                     endedAt: endedAt,
@@ -1340,12 +1425,16 @@ final class MeetingController: ObservableObject {
                     return $0.startedAt < $1.startedAt
                 }
                 self.publishCompanionFinal(turn)
-                if AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) {
+                if AssistantEvaluationPolicy.shouldEvaluate(
+                    speaker: speaker,
+                    purpose: purpose
+                ) {
                     self.scheduleInterviewWingman(
                         trigger: .finalizedTurn,
                         turnID: transcriptID,
                         sourceText: text,
-                        speaker: speaker
+                        speaker: speaker,
+                        purpose: purpose
                     )
                 }
                 guard
@@ -1356,7 +1445,9 @@ final class MeetingController: ObservableObject {
                     return
                 }
                 let recentTranscript = self.transcript
-                    .filter { $0.id != transcriptID }
+                    .filter {
+                        $0.purpose == purpose && $0.id != transcriptID
+                    }
                     .suffix(8)
                     .map { "\($0.speaker.rawValue): \($0.text)" }
                     .joined(separator: "\n")
@@ -1374,7 +1465,10 @@ final class MeetingController: ObservableObject {
                 guard
                     let self,
                     self.activeSessionID == sessionID,
-                    AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker)
+                    AssistantEvaluationPolicy.shouldEvaluate(
+                        speaker: speaker,
+                        purpose: purpose
+                    )
                 else {
                     return
                 }
@@ -1393,6 +1487,7 @@ final class MeetingController: ObservableObject {
                     turnID: "\(speaker.rawValue)-\(itemID)",
                     sourceText: text,
                     speaker: speaker,
+                    purpose: purpose,
                     observedAt: speechEndedAt
                 )
             },
@@ -1460,8 +1555,14 @@ final class MeetingController: ObservableObject {
         return .idle
     }
 
-    private func applyRefinement(transcriptID: String, text: String) {
-        guard let index = transcript.firstIndex(where: { $0.id == transcriptID }) else {
+    private func applyRefinement(
+        transcriptID: String,
+        purpose: CapturePurpose,
+        text: String
+    ) {
+        guard let index = transcript.lastIndex(where: {
+            $0.id == transcriptID && $0.purpose == purpose
+        }) else {
             return
         }
         transcript[index].text = text
@@ -1469,8 +1570,14 @@ final class MeetingController: ObservableObject {
         publishCompanionRevision(transcript[index])
     }
 
-    private func markTurnLiveOnly(transcriptID: String, message: String) {
-        guard let index = transcript.firstIndex(where: { $0.id == transcriptID }) else {
+    private func markTurnLiveOnly(
+        transcriptID: String,
+        purpose: CapturePurpose,
+        message: String
+    ) {
+        guard let index = transcript.lastIndex(where: {
+            $0.id == transcriptID && $0.purpose == purpose
+        }) else {
             return
         }
         transcript[index].refinement = .liveOnly(message)
@@ -1487,7 +1594,9 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func transcriptionContext() throws -> TranscriptionContext {
+    private func transcriptionContext(
+        for purpose: CapturePurpose
+    ) throws -> TranscriptionContext {
         let keywords = keywordsText
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1508,18 +1617,29 @@ final class MeetingController: ObservableObject {
             .filter { !$0.isEmpty }
 
         return TranscriptionContext(
-            prompt: topicPrompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            prompt: contextPrompt(for: purpose).trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
             keywords: keywords,
             languages: languages,
             delay: delay
         )
     }
 
-    private func transcriptText() -> String {
+    private func contextPrompt(for purpose: CapturePurpose) -> String {
+        switch purpose {
+        case .meeting:
+            meetingContextPrompt
+        case .interview:
+            interviewContextPrompt
+        }
+    }
+
+    private func transcriptText(for purpose: CapturePurpose) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        return transcript.map {
-            "[\(formatter.string(from: $0.startedAt))] \($0.speaker.rawValue): \($0.text)"
+        return transcript(for: purpose).map {
+            "[\(formatter.string(from: $0.startedAt))] \($0.speaker.displayName(for: purpose)): \($0.text)"
         }
         .joined(separator: "\n\n")
     }
@@ -1536,7 +1656,9 @@ final class MeetingController: ObservableObject {
         } else {
             let created = HoldToDictateService(
                 canRecord: { [weak self] in
-                    self?.isListening == false
+                    guard let self else { return false }
+                    return !self.isListening
+                        && !self.syntheticInterviewState.isActive
                 },
                 expectedLanguages: { [weak self] in
                     self?.dictationLanguages() ?? ["en"]
@@ -1722,6 +1844,16 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    private func prepareCompanionForNewSession() {
+        assistantGenerationTask?.cancel()
+        assistantGenerationTask = nil
+        assistantGenerationRequestID = nil
+        assistantGenerationIdentity = nil
+        enqueueCompanionUpdate { hub in
+            await hub.clearTranscript()
+        }
+    }
+
     private func publishCompanionSession() {
         let listening = isListening || syntheticInterviewState.isRunning
         let status = statusMessage
@@ -1733,11 +1865,15 @@ final class MeetingController: ObservableObject {
         let title = isSyntheticSession
             ? syntheticInterviewState.scenarioName
             : nil
+        let purpose: CapturePurpose? = isSyntheticSession
+            ? .interview
+            : capturePurpose
         let isPreparingSyntheticInterview = syntheticInterviewState.isGenerating
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
                 status: status,
+                purpose: purpose,
                 source: source,
                 title: title,
                 isPreparingSyntheticInterview: isPreparingSyntheticInterview
@@ -1843,9 +1979,13 @@ final class MeetingController: ObservableObject {
         turnID: String,
         sourceText: String,
         speaker: SpeakerTag,
+        purpose: CapturePurpose,
         observedAt: Date = Date()
     ) {
-        guard AssistantEvaluationPolicy.shouldEvaluate(speaker: speaker) else {
+        guard AssistantEvaluationPolicy.shouldEvaluate(
+            speaker: speaker,
+            purpose: purpose
+        ) else {
             return
         }
         let normalizedText = sourceText.trimmingCharacters(
@@ -1878,7 +2018,9 @@ final class MeetingController: ObservableObject {
         let references = usesSyntheticReferences
             ? syntheticInterviewReferences
             : referenceLibraryState.snapshot
-        let recentTranscript = transcript.suffix(16)
+        let recentTranscript = transcript
+            .filter { $0.purpose == purpose }
+            .suffix(16)
             .map { "\($0.speaker.rawValue): \($0.text)" }
             .joined(separator: "\n")
         let partialTranscript = [
@@ -1888,6 +2030,9 @@ final class MeetingController: ObservableObject {
         .filter { !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         .map { "\($0.0.rawValue): \($0.1)" }
         .joined(separator: "\n")
+        let interviewContext = interviewContextPrompt.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         let pendingCompanionUpdates = companionUpdateTail
         let hub = companionGateway.hub
         let client = interviewWingmanClient
@@ -1971,6 +2116,7 @@ final class MeetingController: ObservableObject {
                     recentTranscript: recentTranscript,
                     currentPartial: partialTranscript,
                     interviewerText: normalizedText,
+                    interviewContext: interviewContext,
                     basedOnSequence: basedOnSequence
                 )
                 await MainActor.run {
@@ -2226,7 +2372,7 @@ final class MeetingController: ObservableObject {
     }
 
     private func quickDictationContext() throws -> TranscriptionContext {
-        let sharedContext = try transcriptionContext()
+        let sharedContext = try transcriptionContext(for: .meeting)
         return TranscriptionContext(
             prompt: "",
             keywords: sharedContext.keywords,
@@ -2381,7 +2527,7 @@ final class MeetingController: ObservableObject {
                             self.statusMessage =
                                 "Remote audio continues — waiting for a microphone"
                         } else {
-                            self.stopMeeting()
+                            self.stopCapture()
                             self.present(error)
                         }
                     }
@@ -2412,6 +2558,7 @@ final class MeetingController: ObservableObject {
         activeContext = nil
         activeSessionID = nil
         isListening = false
+        capturePurpose = nil
         localTrack.socket = .idle
         remoteTrack.socket = .idle
         refinementState = .idle

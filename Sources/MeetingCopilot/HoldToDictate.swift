@@ -1019,7 +1019,11 @@ final class HoldToDictateService {
             return
         }
         guard canRecord() else {
-            phaseHandler(.failed("Quick Dictation is unavailable while meeting capture is active."))
+            phaseHandler(
+                .failed(
+                    "Quick Dictation is unavailable during live capture or a generated interview replay."
+                )
+            )
             return
         }
         let pasteTarget: QuickDictationPasteTarget?

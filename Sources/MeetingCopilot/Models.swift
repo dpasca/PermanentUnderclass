@@ -4,10 +4,40 @@ import Foundation
 enum SpeakerTag: String, Codable, Hashable {
     case you = "You"
     case other = "Other"
+
+    func displayName(for purpose: CapturePurpose) -> String {
+        switch (self, purpose) {
+        case (.other, .interview):
+            "Interviewer"
+        case (.you, _):
+            "You"
+        case (.other, .meeting):
+            "Other"
+        }
+    }
+}
+
+/// The user's declared intent for the shared two-track capture pipeline.
+/// This is an explicit product mode, not an inference from conversation text.
+enum CapturePurpose: String, Codable, CaseIterable, Identifiable, Sendable {
+    case meeting
+    case interview
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .meeting:
+            "Meeting"
+        case .interview:
+            "Interview"
+        }
+    }
 }
 
 struct TranscriptTurn: Identifiable, Equatable {
     let id: String
+    let purpose: CapturePurpose
     let speaker: SpeakerTag
     let startedAt: Date
     let endedAt: Date?
@@ -117,9 +147,9 @@ enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {
     var purpose: String {
         switch self {
         case .localWhisper, .localParakeet:
-            "Finalizes meeting turns and runs Quick Dictation privately on this Mac."
+            "Finalizes meeting and interview turns and runs Quick Dictation privately on this Mac."
         case .openAITranscribe:
-            "Finalizes meeting turns and runs Quick Dictation in the cloud."
+            "Finalizes meeting and interview turns and runs Quick Dictation in the cloud."
         }
     }
 
