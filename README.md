@@ -48,18 +48,23 @@ checksum. Intel Macs and non-macOS systems are not supported.
 
 ## Privacy at a glance
 
-| Feature | What stays local | What may leave the Mac |
+🟢 `LOCAL` stays on the Mac · 🟡 `OPTIONAL CLOUD` is explicitly selected ·
+🔵 `HOSTED` is required while that feature is active
+
+| Feature | On this Mac | Network use |
 | --- | --- | --- |
-| Quick Dictation | Local-model audio processing, saved final-text history, and temporary recoverable audio | Audio only when OpenAI GPT-Transcribe is explicitly selected |
-| Meeting and interview capture | UI state and in-memory transcript | Live audio is sent to OpenAI for realtime transcription |
-| Final transcript pass | Whisper or Parakeet can run on-device | Audio when the OpenAI finalizer is selected |
-| Meeting Assistant and Answer Mirror | Reference indexing and the browser gateway | Relevant reference text and transcript context sent to OpenAI to generate cues |
+| 🎙️ **Quick Dictation** | 🟢 `LOCAL DEFAULT`<br>Local-model audio processing, saved final-text history, and temporary recoverable audio | 🟡 `OPTIONAL CLOUD`<br>Audio only when OpenAI GPT-Transcribe is selected |
+| 👥 **Meeting and interview** | 🟢 `LOCAL SESSION STATE`<br>UI state and the in-memory transcript | 🔵 `HOSTED TRANSCRIPTION`<br>Live microphone and system audio while capture is running |
+| ✨ **Final transcript pass** | 🟢 `ON-DEVICE OPTION`<br>Whisper or Parakeet | 🟡 `OPTIONAL CLOUD`<br>Audio only when the OpenAI finalizer is selected |
+| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the loopback browser gateway | 🟡 `ON-DEMAND CLOUD`<br>Relevant reference text and transcript context used to generate cues |
+
+> 🔒 `PRIVACY LOCK` **Never contact OpenAI** disables every hosted path.
 
 The API key is stored in macOS Keychain. The companion display is served only
 on the loopback interface and never receives the API key or full reference
-corpus. A **Never contact OpenAI** privacy switch disables hosted features.
-Meeting and interview audio is not continuously recorded to disk; Quick
-Dictation retains audio only while a transcription is pending or recoverable.
+corpus. Meeting and interview audio is not continuously recorded to disk;
+Quick Dictation retains audio only while a transcription is pending or
+recoverable.
 
 ## Requirements
 
