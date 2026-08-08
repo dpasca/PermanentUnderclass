@@ -176,6 +176,7 @@ enum CompanionSuggestionConfidence: String, Codable, Equatable, Sendable {
 
 enum CompanionSuggestionGrounding: String, Codable, Equatable, Sendable {
     case localReferences
+    case webSearch
     case generalKnowledge
 }
 

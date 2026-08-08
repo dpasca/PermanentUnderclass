@@ -510,6 +510,18 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
+        XCTAssertEqual(root["tool_choice"] as? String, "auto")
+        let tools = try XCTUnwrap(root["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, 1)
+        XCTAssertEqual(
+            tools[0]["type"] as? String,
+            LiveAssistantClient.webSearchToolType
+        )
+        XCTAssertEqual(tools[0]["search_context_size"] as? String, "low")
+        XCTAssertEqual(
+            root["include"] as? [String],
+            ["web_search_call.action.sources"]
+        )
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
         XCTAssertEqual(reasoning["effort"], "none")
 
@@ -537,7 +549,7 @@ final class CompanionTests: XCTestCase {
         let grounding = try XCTUnwrap(properties["grounding"] as? [String: Any])
         XCTAssertEqual(
             grounding["enum"] as? [String],
-            ["localReferences", "generalKnowledge"]
+            ["localReferences", "webSearch", "generalKnowledge"]
         )
         let beats = try XCTUnwrap(properties["beats"] as? [String: Any])
         XCTAssertEqual(beats["minItems"] as? Int, 3)
@@ -557,6 +569,54 @@ final class CompanionTests: XCTestCase {
             meetingText["format"] as? [String: Any]
         )
         XCTAssertEqual(meetingFormat["name"] as? String, "meeting_assistant")
+    }
+
+    func testLiveAssistantExtractsHostedWebSearchSources() {
+        let root: [String: Any] = [
+            "output": [
+                [
+                    "type": "web_search_call",
+                    "action": [
+                        "type": "search",
+                        "sources": [
+                            [
+                                "title": "WebKit Features",
+                                "url": "https://webkit.org/blog/example/"
+                            ],
+                            [
+                                "title": "Not a web URL",
+                                "url": "file:///tmp/private"
+                            ]
+                        ]
+                    ]
+                ],
+                [
+                    "type": "message",
+                    "content": [[
+                        "type": "output_text",
+                        "annotations": [[
+                            "type": "url_citation",
+                            "title": "Swift Releases",
+                            "url": "https://www.swift.org/blog/"
+                        ]]
+                    ]]
+                ]
+            ]
+        ]
+
+        XCTAssertEqual(
+            LiveAssistantClient.webSources(from: root),
+            [
+                LiveAssistantWebSource(
+                    title: "WebKit Features",
+                    url: "https://webkit.org/blog/example/"
+                ),
+                LiveAssistantWebSource(
+                    title: "Swift Releases",
+                    url: "https://www.swift.org/blog/"
+                )
+            ]
+        )
     }
 
     func testLiveAssistantResponseParsesUsageAndRejectsUnknownCitationPaths() throws {
@@ -659,6 +719,67 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(fallback.suggestion?.basedOnSequence, 20)
         XCTAssertEqual(fallback.suggestion?.grounding, .generalKnowledge)
         XCTAssertEqual(fallback.suggestion?.citations, [])
+
+        let supportedWebURL = "https://webkit.org/blog/example/"
+        var webOutput = output
+        webOutput["grounding"] = "webSearch"
+        webOutput["citations"] = [
+            ["label": "WebKit Features", "path": supportedWebURL],
+            ["label": "Unseen result", "path": "https://example.com/unseen"]
+        ]
+        let webOutputData = try JSONSerialization.data(withJSONObject: webOutput)
+        let webOutputText = try XCTUnwrap(
+            String(data: webOutputData, encoding: .utf8)
+        )
+        var webResponse = response
+        webResponse["output"] = [
+            [
+                "type": "web_search_call",
+                "action": [
+                    "type": "search",
+                    "sources": [[
+                        "title": "Official WebKit Features",
+                        "url": supportedWebURL
+                    ]]
+                ]
+            ],
+            [
+                "type": "message",
+                "content": [["type": "output_text", "text": webOutputText]]
+            ]
+        ]
+        let webData = try JSONSerialization.data(withJSONObject: webResponse)
+        let webGeneration = try LiveAssistantClient.parseResponse(
+            webData,
+            allowedReferencePaths: [],
+            basedOnSequence: 21,
+            generationMilliseconds: 410
+        )
+        XCTAssertEqual(webGeneration.suggestion?.grounding, .webSearch)
+        XCTAssertEqual(
+            webGeneration.suggestion?.citations,
+            [
+                CompanionCitation(
+                    label: "Official WebKit Features",
+                    path: supportedWebURL
+                )
+            ]
+        )
+        var unsupportedWebResponse = webResponse
+        unsupportedWebResponse["output"] = [[
+            "type": "message",
+            "content": [["type": "output_text", "text": webOutputText]]
+        ]]
+        let unsupportedWebData = try JSONSerialization.data(
+            withJSONObject: unsupportedWebResponse
+        )
+        let unsupportedWebGeneration = try LiveAssistantClient.parseResponse(
+            unsupportedWebData,
+            allowedReferencePaths: [],
+            basedOnSequence: 21,
+            generationMilliseconds: 410
+        )
+        XCTAssertNil(unsupportedWebGeneration.suggestion)
 
         var tooShortOutput = generalOutput
         let allBeats = try XCTUnwrap(

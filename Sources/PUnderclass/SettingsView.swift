@@ -195,7 +195,7 @@ private struct OpenAISettings: View {
                     )
                     .font(.caption)
                     Text(
-                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
+                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. Suggested answers may use OpenAI's built-in web search with this same key; no separate search account is needed. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -240,7 +240,7 @@ private struct PrivacySettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "Keep everything on this Mac",
-                detail: "Turns off every feature that would send audio or text to OpenAI, even if a key is saved."
+                detail: "Turns off every feature that would send audio or text to OpenAI or use its hosted web search, even if a key is saved."
             ) {
                 VStack(alignment: .leading, spacing: 9) {
                     Toggle(
