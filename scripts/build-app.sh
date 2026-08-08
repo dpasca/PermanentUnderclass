@@ -58,6 +58,10 @@ if [[ -z "$signing_identity" ]]; then
         "warning: no Developer ID Application certificate found; privacy permissions may be requested again after rebuilding"
 fi
 
+# Resource installs update Contents but leave the outer .app directory's
+# timestamp unchanged. Mark the bundle itself as changed so Launch Services
+# refreshes metadata such as the Dock icon for development builds.
+touch "$app_dir"
 codesign --force --sign "$signing_identity" "$app_dir"
 print -u2 "Signed PUnderclass with: $signing_identity"
 

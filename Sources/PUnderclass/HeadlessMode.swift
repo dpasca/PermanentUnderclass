@@ -234,6 +234,10 @@ final class HeadlessModeController {
             return
         }
 
+        if !PUnderclassApplicationIcon.install(on: application) {
+            Self.logger.error("icon_restore_failed")
+        }
+
         isHeadless = false
         publishState()
         let restorableWindows = windowsToRestore

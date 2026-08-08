@@ -1,4 +1,28 @@
+import AppKit
 import SwiftUI
+
+enum PUnderclassApplicationIcon {
+    private static let resourceName = "AppIcon"
+
+    @discardableResult
+    static func install(
+        on application: NSApplication = .shared,
+        bundle: Bundle = .main
+    ) -> Bool {
+        guard
+            let iconURL = bundle.url(
+                forResource: resourceName,
+                withExtension: "icns"
+            ),
+            let icon = NSImage(contentsOf: iconURL)
+        else {
+            return false
+        }
+
+        application.applicationIconImage = icon
+        return true
+    }
+}
 
 @main
 struct PUnderclassApp: App {
@@ -68,6 +92,10 @@ final class PUnderclassAppDelegate: NSObject, NSApplicationDelegate {
             }
             NSApplication.shared.terminate(nil)
             return
+        }
+
+        if !PUnderclassApplicationIcon.install() {
+            NSLog("Could not load the bundled application icon.")
         }
 
         let headlessModeController = HeadlessModeController()
