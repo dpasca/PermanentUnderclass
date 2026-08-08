@@ -352,7 +352,7 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertTrue(prefix.contains("grounding to generalKnowledge"))
         XCTAssertTrue(
             prefix.contains(
-                "Never imply that the discussion or general knowledge came from local material"
+                "Never imply that the discussion, web results, or general knowledge came from local material"
             )
         )
     }

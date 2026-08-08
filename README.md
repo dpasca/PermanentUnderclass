@@ -70,6 +70,14 @@ unsupported factual answers for verification rather than inventing commitments,
 metrics, deadlines, or status. **Answer Mirror** drafts an interview answer
 outline without inventing personal experience.
 
+Both behaviors give the same Responses API call access to OpenAI's hosted web
+search when current or public facts would materially improve a cue. Search is
+model-selected rather than keyword-triggered, uses the existing OpenAI key, and
+needs no separate search account or API key. The request uses the low search
+context for the live latency budget. A web-grounded cue is published only when
+its cited URL is present in the response's hosted-search source metadata, and
+the display makes that source visible and clickable.
+
 In either mode, an 800 ms pause in the other speaker's audio can trigger a
 structured `gpt-5.6-luna` Responses API outline from the current partial
 transcript before the 3 second final-turn boundary. The finalized turn remains
@@ -86,10 +94,12 @@ Indexed local files are preferred when they support the outline. If they do
 not, the model may still draft an approach-oriented outline from the live
 discussion and general model knowledge without claiming unverified personal
 experience. The display prefixes it with **NO LOCAL SUPPORTING MATERIAL**.
+Public web results are treated as untrusted data and never as instructions.
 The stable behavior/reference prefix uses an explicit prompt-cache breakpoint
 and cache key, while recent transcript stays in the volatile suffix. Assistant
 token and cache usage is counted separately; it is not folded into the dollar
-estimate until a model rate is configured.
+estimate until a model rate is configured. Hosted web-search tool-call fees are
+also not yet folded into that estimate.
 
 To view the same client without starting the native host, run the standalone
 preview:
@@ -116,7 +126,7 @@ exchange in exact indexed paths. Two macOS voices speak the resulting ten turns
 while the host streams their known words as partial transcript events. After
 every question, the active Meeting Assistant or Answer Mirror independently
 drafts the response outline shown beside the generated reply. The companion
-reports both model time and end-to-end `transcript → card` time.
+reports both assistant-generation time and end-to-end `transcript → card` time.
 
 Meeting and interview scenarios have separate local caches in Application
 Support. Each is reused while the reference revision and scenario format match,

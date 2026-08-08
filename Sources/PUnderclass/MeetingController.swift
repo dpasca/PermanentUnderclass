@@ -2178,7 +2178,7 @@ final class MeetingController: ObservableObject {
                     to: completedAt
                 )
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) model_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {

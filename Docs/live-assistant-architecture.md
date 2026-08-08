@@ -161,11 +161,17 @@ is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
 
-The structured decision labels every displayed outline as either
-`localReferences` or `generalKnowledge`. Local grounding requires at least one
-validated citation path from the current indexed snapshot. If no indexed file
-supports a useful outline, the model may use the live discussion as context and
-general model knowledge with an empty citation list. Interview cues use
+The structured decision labels every displayed outline as `localReferences`,
+`webSearch`, or `generalKnowledge`. Local grounding requires at least one
+validated citation path from the current indexed snapshot. The live Responses
+request also exposes OpenAI's hosted `web_search` tool with low search context
+and automatic tool choice. Web grounding requires at least one HTTP(S) citation
+whose URL appears in the response's URL annotations or complete hosted-search
+source list; the display presents the source as a visible, clickable link. If
+neither an indexed file nor a web source supports a useful outline, the model
+may use the live discussion as context and general model knowledge with an
+empty citation list. Public results are untrusted data and cannot override the
+assistant behavior. Interview cues use
 hypothetical first-person language (for example, "I would…") rather than
 invented past experience. Meeting cues explicitly mark unsupported facts for
 verification and never invent commitments, metrics, deadlines, decisions, or
@@ -174,7 +180,7 @@ status. A grounding warning remains in copied diagnostic output.
 The host also writes privacy-safe lifecycle markers under the
 `com.newtypekk.punderclass` subsystem and `LiveAssistant` category.
 They record scheduling, starts, skips, completion outcome, cancellation,
-trigger kind, trigger-to-start time, model time, and transcript-to-result time
+trigger kind, trigger-to-start time, assistant-generation time, and transcript-to-result time
 without recording transcript content or credentials.
 
 Event names and payload keys are language-level identifiers, not user-facing
@@ -320,7 +326,10 @@ in a document cannot override the assistant behavior.
 Reference files stay off the display device. If the configured assistant uses
 a cloud model, the host necessarily sends the prompt's selected reference text
 to that model provider; the product must state that separately from the display
-privacy boundary.
+privacy boundary. When hosted web search is selected, OpenAI derives and runs
+the public query inside the same Responses request. No additional credential is
+shared with a search provider. The privacy lock disables the assistant request
+and therefore disables hosted search as well.
 
 ## Assistant behavior boundary
 
@@ -343,7 +352,8 @@ Each behavior defines:
 
 The host passes the cached stable reference prefix, recent finalized turns,
 the current partial, and an explicit other-speaker response target to a fast
-model and requires structured output. It converts the model result into three
+model, exposes hosted web search with automatic tool choice, and requires
+structured output. It converts the model result into three
 to five concise, first-person speaking cues in plain, conversational language
 before publishing it. Each cue stands on its own because the teleprompter hides
 the internal labels. It should cancel or
@@ -385,7 +395,9 @@ The initial meter covers:
 
 For GPT-5.6 assistant calls, record uncached input, cached input, cache writes,
 output, and reasoning tokens separately. This makes a folder edit's one-time
-cache-write cost visible instead of hiding it inside the session total.
+cache-write cost visible instead of hiding it inside the session total. Hosted
+web-search tool-call fees are not part of the current dollar estimate until a
+dated search-price configuration and a persisted search-call counter are added.
 
 Price tables must carry an `effectiveAt` date and remain a replaceable
 configuration. The UI always says "estimate" and treats the provider invoice as

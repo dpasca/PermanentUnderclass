@@ -570,20 +570,43 @@ function outlineText(suggestion) {
 function groundingText(suggestion) {
   const citationCount = (suggestion.citations || []).length;
   const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
+  const usesWebSearch = suggestion.grounding === "webSearch" && citationCount > 0;
   const meeting = state.snapshot?.session?.purpose === "meeting";
-  return usesGeneralKnowledge
-    ? meeting
+  if (usesGeneralKnowledge) {
+    return meeting
       ? "Needs verification · no project facts invented"
-      : "Approach-oriented · no personal claims added"
+      : "Approach-oriented · no personal claims added";
+  }
+  return usesWebSearch
+    ? `Grounded in ${citationCount} public web source${citationCount === 1 ? "" : "s"}`
     : `Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
 }
 
 function generationTimingText(suggestion) {
-  const modelTime = Number(suggestion.generationMilliseconds || 0).toLocaleString();
+  const assistantTime = Number(suggestion.generationMilliseconds || 0).toLocaleString();
   const totalTime = suggestion.totalLatencyMilliseconds;
   return Number.isFinite(totalTime)
-    ? `model ${modelTime} ms · transcript→cue ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
-    : `model ${modelTime} ms`;
+    ? `assistant ${assistantTime} ms · transcript→cue ${totalTime.toLocaleString()} ms · ${triggerLabel(suggestion.trigger)}`
+    : `assistant ${assistantTime} ms`;
+}
+
+function createWebCitationLinks(suggestion, className) {
+  if (suggestion?.grounding !== "webSearch") return null;
+  const citations = (suggestion.citations || []).filter((citation) => citation?.path);
+  if (!citations.length) return null;
+  const container = document.createElement("div");
+  container.className = className;
+  container.setAttribute("aria-label", "Public web sources");
+  citations.forEach((citation, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "web-citation-link";
+    button.dataset.citationPath = citation.path;
+    button.title = citation.path;
+    button.textContent = `Source ${index + 1} · ${citation.label || citation.path} ↗`;
+    container.append(button);
+  });
+  return container;
 }
 
 function createHistoryRound(suggestion, index) {
@@ -609,6 +632,11 @@ function createHistoryRound(suggestion, index) {
   });
 
   round.append(header, beats);
+  const citations = createWebCitationLinks(
+    suggestion,
+    "history-web-citations"
+  );
+  if (citations) round.append(citations);
   return round;
 }
 
@@ -620,6 +648,8 @@ function renderSuggestionStack(assistant) {
   $("#answerStack").hidden = !current;
   if (!current) {
     $("#answerHistory").hidden = true;
+    $("#webCitations").hidden = true;
+    $("#webCitations").replaceChildren();
     return null;
   }
 
@@ -627,6 +657,9 @@ function renderSuggestionStack(assistant) {
   const meeting = state.snapshot?.session?.purpose === "meeting";
   $("#answerLead").textContent = meeting ? "Respond from here" : "Speak from here";
   replaceAnswerBeats($("#answerBeats"), current.beats);
+  const webCitations = createWebCitationLinks(current, "web-citations");
+  $("#webCitations").replaceChildren(...(webCitations?.children || []));
+  $("#webCitations").hidden = !webCitations;
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
@@ -1033,6 +1066,21 @@ async function sendCommand(type, suggestionID = null) {
 }
 
 function bindControls() {
+  function openCitation(path) {
+    if (!path) {
+      showToast("Citation metadata unavailable");
+      return;
+    }
+    try {
+      const url = new URL(path);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        window.open(url.href, "_blank", "noopener,noreferrer");
+        return;
+      }
+    } catch {}
+    showToast(path);
+  }
+
   $("#connectionButton").addEventListener("click", (event) => {
     event.stopPropagation();
     const popover = $("#connectionPopover");
@@ -1133,11 +1181,15 @@ function bindControls() {
     }
     const citationButton = event.target.closest("[data-citation-path]");
     if (citationButton) {
-      showToast(citationButton.dataset.citationPath);
+      openCitation(citationButton.dataset.citationPath);
     }
   });
+  $("#webCitations").addEventListener("click", (event) => {
+    const citationButton = event.target.closest("[data-citation-path]");
+    if (citationButton) openCitation(citationButton.dataset.citationPath);
+  });
   $("#sourceCitation").addEventListener("click", () => {
-    showToast(state.currentCitationPath || "Citation metadata unavailable");
+    openCitation(state.currentCitationPath);
   });
   $("#costButton").addEventListener("click", () => $("#costDialog").showModal());
 }
