@@ -671,7 +671,11 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 5) {
-                Text("5 GROUNDED EXCHANGES · ASSISTANT PAUSE 800 ms")
+                Text(
+                    purpose == .interview
+                        ? "5 GROUNDED EXCHANGES · 1 LIVE WEB CHECK"
+                        : "5 GROUNDED EXCHANGES · ASSISTANT PAUSE 800 ms"
+                )
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -686,6 +690,15 @@ struct ContentView: View {
                         Button("Stop Replay", action: controller.stopGeneratedReplay)
                             .tint(.red)
                     } else {
+                        if purpose == .interview {
+                            Button {
+                                controller.startWebSearchTest()
+                            } label: {
+                                Label("Test Web Search", systemImage: "globe")
+                            }
+                            .disabled(!controller.canStartWebSearchTest())
+                            .help(controller.webSearchTestReadinessDetail())
+                        }
                         Button(purpose == .meeting ? "New Scenario" : "New Questions") {
                             controller.openCompanionDisplay()
                             controller.regenerateGeneratedReplay(for: purpose)

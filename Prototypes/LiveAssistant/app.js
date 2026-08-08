@@ -81,6 +81,26 @@ const mockScenarios = [
       { label: "I would test", point: "I would compare tile sizes and bank conflicts in Nsight." }
     ],
     citation: "Notes/CUDA-kernels.md"
+  },
+  {
+    isWebSearchPreview: true,
+    question: "“As of today, what is the latest stable CUDA Toolkit release, and what profiling change matters?”",
+    candidateStart: "I would verify that against NVIDIA’s current release notes rather than trust memory...",
+    beats: [
+      { label: "Current release", point: "I’d confirm the production release in NVIDIA’s current toolkit notes." },
+      { label: "Profiler change", point: "I’d pull one documented profiling change from that same release." },
+      { label: "Version check", point: "I’d separate toolkit, driver, and Nsight versions before answering." },
+      { label: "Source", point: "I’d link the official release notes so the answer stays checkable." }
+    ],
+    citations: [
+      {
+        label: "NVIDIA CUDA Toolkit Release Notes",
+        path: "https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html"
+      }
+    ],
+    grounding: "webSearch",
+    generationMilliseconds: 1_280,
+    totalLatencyMilliseconds: 2_080
   }
 ];
 
@@ -975,7 +995,7 @@ async function resyncSnapshot(reason) {
 async function enterLiveMode() {
   const snapshot = await fetchSnapshot();
   state.mode = "live";
-  $("#nextMomentButton").hidden = true;
+  $("#previewControls").hidden = true;
   renderSnapshot(snapshot);
   openEventStream();
 }
@@ -989,13 +1009,13 @@ function renderMockScenario(index) {
     basedOnSequence: 2_487 + state.mockGeneration,
     question: scenario.question,
     beats: scenario.beats,
-    citations: [{ label: "Reference", path: scenario.citation }],
-    grounding: "localReferences",
+    citations: scenario.citations || [{ label: "Reference", path: scenario.citation }],
+    grounding: scenario.grounding || "localReferences",
     confidence: "high",
     generatedAt: new Date().toISOString(),
-    generationMilliseconds: 640,
+    generationMilliseconds: scenario.generationMilliseconds || 640,
     trigger: "partialTranscript",
-    totalLatencyMilliseconds: 1_440
+    totalLatencyMilliseconds: scenario.totalLatencyMilliseconds || 1_440
   };
   state.mockHistory = [suggestion, ...state.mockHistory].slice(0, 4);
   $("#transcriptQuestion").textContent = scenario.question.replaceAll("“", "").replaceAll("”", "");
@@ -1020,7 +1040,7 @@ function enterMockMode() {
   state.mockGeneration = 0;
   $("#modeRibbon").textContent = "STANDALONE PREVIEW · simulated events (start the Swift app for live mode)";
   setConnectionStatus("disconnected", "Not connected", "PREVIEW");
-  $("#nextMomentButton").hidden = false;
+  $("#previewControls").hidden = false;
   renderMockScenario(0);
 }
 
@@ -1120,9 +1140,19 @@ function bindControls() {
     renderMockScenario(state.mockIndex);
     showToast("New simulated answer outline");
   });
+  $("#previewWebSearchButton").addEventListener("click", () => {
+    const index = mockScenarios.findIndex((scenario) => scenario.isWebSearchPreview);
+    if (index < 0) return;
+    state.mockIndex = index;
+    renderMockScenario(index);
+    showToast("Simulated web-search result · no API call");
+  });
   document.addEventListener("keydown", (event) => {
     if (state.mode === "mock" && event.key.toLowerCase() === "n" && !event.metaKey && !event.ctrlKey && !event.altKey) {
       $("#nextMomentButton").click();
+    }
+    if (state.mode === "mock" && event.key.toLowerCase() === "w" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      $("#previewWebSearchButton").click();
     }
   });
 

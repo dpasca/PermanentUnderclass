@@ -48,6 +48,20 @@ struct LiveAssistantWebSource: Equatable, Sendable {
     let url: String
 }
 
+enum LiveAssistantWebSearchMode: Equatable, Sendable {
+    case automatic
+    case required
+
+    var toolChoice: String {
+        switch self {
+        case .automatic:
+            "auto"
+        case .required:
+            "required"
+        }
+    }
+}
+
 struct LiveAssistantClient: Sendable {
     static let model = "gpt-5.6-luna"
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
@@ -94,7 +108,8 @@ struct LiveAssistantClient: Sendable {
         otherSpeakerText: String,
         sessionContext: String = "",
         purpose: CapturePurpose,
-        basedOnSequence: Int
+        basedOnSequence: Int,
+        webSearchMode: LiveAssistantWebSearchMode = .automatic
     ) async throws -> LiveAssistantGeneration {
         let prefix = try AssistantPromptBuilder.cachedPrefix(
             behaviorInstructions: Self.behaviorInstructions(for: purpose),
@@ -108,7 +123,11 @@ struct LiveAssistantClient: Sendable {
             focusSpeaker: SpeakerTag.other.displayName(for: purpose),
             focusText: otherSpeakerText
         )
-        let body = try Self.requestBody(for: plan, purpose: purpose)
+        let body = try Self.requestBody(
+            for: plan,
+            purpose: purpose,
+            webSearchMode: webSearchMode
+        )
         let startedAt = ContinuousClock.now
         let data = try await responseData(
             apiKey: apiKey,
@@ -147,7 +166,8 @@ struct LiveAssistantClient: Sendable {
 
     static func requestBody(
         for plan: AssistantPromptPlan,
-        purpose: CapturePurpose
+        purpose: CapturePurpose,
+        webSearchMode: LiveAssistantWebSearchMode = .automatic
     ) throws -> Data {
         let request: [String: Any] = [
             "model": model,
@@ -176,7 +196,7 @@ struct LiveAssistantClient: Sendable {
             ],
             "prompt_cache_key": plan.promptCacheKey,
             "prompt_cache_options": ["mode": "explicit"],
-            "tool_choice": "auto",
+            "tool_choice": webSearchMode.toolChoice,
             "tools": [webSearchTool],
             "include": ["web_search_call.action.sources"],
             "text": [

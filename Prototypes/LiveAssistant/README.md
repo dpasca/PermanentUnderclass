@@ -26,8 +26,9 @@ previous cue had been scrolled.
 
 Useful interactions:
 
-- **Next example** appears only in standalone mode and cycles six sample cues,
-  including two CUDA performance-debugging questions.
+- **Preview web result** appears only in standalone mode and jumps to a
+  simulated web-grounded cue with a clickable public source. It makes no API
+  call. **Next example** cycles all sample cues.
 - The corner light is green only for a live host connection and red when the
   display is disconnected or reconnecting. Clicking it reveals transport
   diagnostics and the reconnect test.
@@ -43,6 +44,13 @@ Useful interactions:
 - Approach-oriented cues remain available when local files do not support the
   topic, but they use hypothetical phrasing such as "I would…" rather than
   inventing personal history.
+
+For an end-to-end hosted-search check, open the native app's Interview tab and
+press **Test Web Search** in the generated replay panel. The app opens Answer
+Mirror, speaks one time-sensitive CUDA question, and requires the Responses API
+to run web search for that explicit test. A successful result is labeled as
+public-web grounding and exposes clickable source links. Normal meeting and
+interview traffic continues to use automatic tool choice.
 
 The transport and recovery decision is documented in
 [`Docs/live-assistant-architecture.md`](../../Docs/live-assistant-architecture.md).

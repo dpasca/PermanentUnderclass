@@ -11,6 +11,9 @@ struct SyntheticInterviewTurn: Codable, Equatable, Sendable {
 struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
     static let launchArgument = "--synthetic-interview"
     static let generationVersion = 3
+    static let webSearchTestQuestion = """
+    As of today, what is the latest stable CUDA Toolkit release, and what is one profiling or performance-debugging change from its official release notes? Please verify the answer with current public sources.
+    """
 
     let generationVersion: Int
     let purpose: CapturePurpose
@@ -20,6 +23,26 @@ struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
     let generatedAt: Date
     let finalizationDelay: TimeInterval
     let turns: [SyntheticInterviewTurn]
+
+    static func webSearchTest(generatedAt: Date = Date()) -> Self {
+        SyntheticInterviewScenario(
+            generationVersion: generationVersion,
+            purpose: .interview,
+            name: "Live Web Search Test",
+            referenceRevision: "web-search-test",
+            referenceDocumentCount: 0,
+            generatedAt: generatedAt,
+            finalizationDelay: 1.6,
+            turns: [
+                SyntheticInterviewTurn(
+                    id: "web-search-question",
+                    speaker: .other,
+                    text: webSearchTestQuestion,
+                    pauseAfterSpeech: 12
+                )
+            ]
+        )
+    }
 }
 
 struct SyntheticInterviewState: Equatable {

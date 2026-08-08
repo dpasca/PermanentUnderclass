@@ -950,6 +950,29 @@ final class MeetingController: ObservableObject {
         return true
     }
 
+    func canStartWebSearchTest() -> Bool {
+        !syntheticInterviewState.isActive
+            && !isListening
+            && !isDictationBusy
+            && capability.isAvailable(.answerMirror)
+    }
+
+    func webSearchTestReadinessDetail() -> String {
+        if let message = capability.lockMessage(for: .answerMirror) {
+            return message
+        }
+        if syntheticInterviewState.isActive {
+            return "Stop the generated replay before running the web-search test."
+        }
+        if isListening {
+            return "Stop live capture before running the web-search test."
+        }
+        if isDictationBusy {
+            return "Finish Quick Dictation before running the web-search test."
+        }
+        return "Asks one audible, time-sensitive CUDA question and requires hosted web search."
+    }
+
     func generatedReplayReadinessDetail(
         for purpose: CapturePurpose
     ) -> String {
@@ -1138,6 +1161,80 @@ final class MeetingController: ObservableObject {
     }
 
     @MainActor
+    func startWebSearchTest() {
+        guard !syntheticInterviewState.isActive else { return }
+        guard !isListening else {
+            present(
+                PUnderclassError.audio(
+                    "Stop live capture before starting the web-search test."
+                )
+            )
+            return
+        }
+        guard !isDictationBusy else {
+            present(
+                PUnderclassError.audio(
+                    "Finish Quick Dictation before starting the web-search test."
+                )
+            )
+            return
+        }
+        if let message = capability.lockMessage(for: .answerMirror) {
+            present(PUnderclassError.audio(message))
+            return
+        }
+
+        let scenario = SyntheticInterviewScenario.webSearchTest()
+        let runID = UUID()
+        syntheticInterviewRunID = runID
+        syntheticInterviewReferences = nil
+        capturePurpose = .interview
+        prepareCompanionForNewSession()
+        localTrack = TrackViewState()
+        remoteTrack = TrackViewState()
+        refinementState = .idle
+        syntheticInterviewState = SyntheticInterviewState(
+            purpose: .interview,
+            isGenerating: false,
+            isRunning: true,
+            hasRun: true,
+            title: "Starting live web-search test",
+            detail: "The interviewer will ask one current-information question; watch Answer Mirror search and return clickable sources.",
+            scenarioName: scenario.name,
+            referenceRevision: scenario.referenceRevision,
+            currentTurn: 0,
+            totalTurns: scenario.turns.count
+        )
+        statusMessage = "Live web-search test running"
+        publishCompanionSession()
+        openCompanionDisplay()
+
+        syntheticInterviewTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.runSyntheticInterview(
+                    scenario,
+                    runID: runID,
+                    webSearchMode: .required
+                )
+            } catch is CancellationError {
+                self.finishSyntheticInterview(
+                    runID: runID,
+                    title: "Web-search test stopped",
+                    detail: "The test stopped before the sourced cue completed."
+                )
+            } catch {
+                self.finishSyntheticInterview(
+                    runID: runID,
+                    title: "Web-search test failed",
+                    detail: error.localizedDescription
+                )
+                self.present(error)
+            }
+        }
+    }
+
+    @MainActor
     func stopGeneratedReplay() {
         guard syntheticInterviewState.isActive else { return }
         syntheticInterviewTask?.cancel()
@@ -1155,7 +1252,8 @@ final class MeetingController: ObservableObject {
     @MainActor
     private func runSyntheticInterview(
         _ scenario: SyntheticInterviewScenario,
-        runID: UUID
+        runID: UUID,
+        webSearchMode: LiveAssistantWebSearchMode = .automatic
     ) async throws {
         for (index, turn) in scenario.turns.enumerated() {
             try Task.checkCancellation()
@@ -1225,7 +1323,8 @@ final class MeetingController: ObservableObject {
                     sourceText: turn.text,
                     speaker: turn.speaker,
                     purpose: scenario.purpose,
-                    observedAt: endedAt
+                    observedAt: endedAt,
+                    webSearchMode: webSearchMode
                 )
             }
             try await Self.sleep(
@@ -1241,7 +1340,8 @@ final class MeetingController: ObservableObject {
                 text: turn.text,
                 startedAt: startedAt,
                 endedAt: endedAt,
-                purpose: scenario.purpose
+                purpose: scenario.purpose,
+                webSearchMode: webSearchMode
             )
 
             let remainingPause = max(
@@ -1258,8 +1358,12 @@ final class MeetingController: ObservableObject {
 
         finishSyntheticInterview(
             runID: runID,
-            title: "\(scenario.purpose.title) replay complete",
-            detail: "All \(scenario.turns.count) audible turns generated from \(scenario.referenceDocumentCount) reference documents were replayed."
+            title: webSearchMode == .required
+                ? "Web-search test question complete"
+                : "\(scenario.purpose.title) replay complete",
+            detail: webSearchMode == .required
+                ? "The forced hosted search was triggered. Keep Answer Mirror open for the sourced cue and public links."
+                : "All \(scenario.turns.count) audible turns generated from \(scenario.referenceDocumentCount) reference documents were replayed."
         )
     }
 
@@ -1285,7 +1389,8 @@ final class MeetingController: ObservableObject {
         text: String,
         startedAt: Date,
         endedAt: Date,
-        purpose: CapturePurpose
+        purpose: CapturePurpose,
+        webSearchMode: LiveAssistantWebSearchMode = .automatic
     ) {
         if speaker == .you {
             localTrack.partialTranscript = ""
@@ -1322,7 +1427,8 @@ final class MeetingController: ObservableObject {
                 turnID: id,
                 sourceText: text,
                 speaker: speaker,
-                purpose: purpose
+                purpose: purpose,
+                webSearchMode: webSearchMode
             )
         }
     }
@@ -2026,7 +2132,8 @@ final class MeetingController: ObservableObject {
         sourceText: String,
         speaker: SpeakerTag,
         purpose: CapturePurpose,
-        observedAt: Date = Date()
+        observedAt: Date = Date(),
+        webSearchMode: LiveAssistantWebSearchMode = .automatic
     ) {
         guard AssistantEvaluationPolicy.shouldEvaluate(
             speaker: speaker,
@@ -2167,7 +2274,8 @@ final class MeetingController: ObservableObject {
                     otherSpeakerText: normalizedText,
                     sessionContext: sessionContext,
                     purpose: purpose,
-                    basedOnSequence: basedOnSequence
+                    basedOnSequence: basedOnSequence,
+                    webSearchMode: webSearchMode
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)

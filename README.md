@@ -109,6 +109,13 @@ preview:
 ```
 
 The standalone server falls back to simulated data and makes no model request.
+Press **Preview web result** there to inspect the public-source treatment
+without spending anything. For the real hosted path, open the native app's
+Interview tab and press **Test Web Search** in the generated replay panel. It
+opens Answer Mirror, speaks one deliberately time-sensitive question, requires
+one hosted search for that test run, and leaves the sourced cue on screen with
+clickable links. Ordinary meeting and interview requests still let the model
+decide whether searching is useful.
 The live host exposes an atomic snapshot, a replayable composite SSE cursor,
 and idempotent pause/pin/dismiss commands. The protocol, retry contract,
 pairing boundary, and follow-up durability work are in
