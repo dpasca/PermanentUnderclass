@@ -321,6 +321,29 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(generation.generationMilliseconds, 640)
     }
 
+    func testWebSearchScenarioAsksOneCurrentPublicQuestion() {
+        let generatedAt = Date(timeIntervalSince1970: 300)
+        let scenario = SyntheticInterviewScenario.webSearchTest(
+            generatedAt: generatedAt
+        )
+
+        XCTAssertEqual(scenario.name, "Live Web Search Test")
+        XCTAssertEqual(scenario.purpose, .interview)
+        XCTAssertEqual(scenario.referenceDocumentCount, 0)
+        XCTAssertEqual(scenario.generatedAt, generatedAt)
+        XCTAssertEqual(scenario.turns.count, 1)
+        XCTAssertEqual(scenario.turns[0].speaker, .other)
+        XCTAssertEqual(
+            scenario.turns[0].text,
+            SyntheticInterviewScenario.webSearchTestQuestion
+        )
+        XCTAssertTrue(scenario.turns[0].text.contains("current public sources"))
+        XCTAssertGreaterThan(
+            scenario.turns[0].pauseAfterSpeech,
+            scenario.finalizationDelay
+        )
+    }
+
     func testSyntheticMeetingGenerationUsesMeetingPromptAndPurpose() throws {
         let references = referenceSnapshot()
         let requestData = try SyntheticInterviewGeneratorClient.requestBody(
@@ -554,6 +577,17 @@ final class CompanionTests: XCTestCase {
         let beats = try XCTUnwrap(properties["beats"] as? [String: Any])
         XCTAssertEqual(beats["minItems"] as? Int, 3)
         XCTAssertEqual(beats["maxItems"] as? Int, 5)
+
+        let requiredSearchData = try LiveAssistantClient.requestBody(
+            for: plan,
+            purpose: .interview,
+            webSearchMode: .required
+        )
+        let requiredSearchRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requiredSearchData)
+                as? [String: Any]
+        )
+        XCTAssertEqual(requiredSearchRoot["tool_choice"] as? String, "required")
 
         let meetingData = try LiveAssistantClient.requestBody(
             for: plan,

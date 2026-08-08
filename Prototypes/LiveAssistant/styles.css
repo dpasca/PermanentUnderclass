@@ -240,17 +240,25 @@ button:focus-visible {
   padding-left: clamp(22px, 2.5vw, 42px);
 }
 
+.web-citations::before {
+  content: "PUBLIC WEB SOURCES";
+  flex-basis: 100%;
+  color: var(--green);
+  font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .16em;
+}
+
 .web-citation-link {
   appearance: none;
   max-width: min(100%, 44rem);
-  padding: 7px 10px;
+  padding: 9px 13px;
   overflow: hidden;
   border: 1px solid rgba(111, 230, 155, .22);
   border-radius: 999px;
   background: rgba(111, 230, 155, .06);
   color: #a9b7ad;
   font: inherit;
-  font-size: 11px;
+  font-size: clamp(12px, 1vw, 14px);
   letter-spacing: .015em;
   text-align: left;
   text-overflow: ellipsis;
@@ -386,11 +394,16 @@ button:focus-visible {
   line-height: 1.45;
 }
 
-.preview-next {
+.preview-controls {
   position: fixed;
   z-index: 15;
   left: clamp(18px, 3vw, 38px);
   bottom: clamp(18px, 3vw, 34px);
+  display: flex;
+  gap: 8px;
+}
+
+.preview-next {
   display: flex;
   align-items: center;
   gap: 9px;

@@ -353,7 +353,10 @@ Each behavior defines:
 The host passes the cached stable reference prefix, recent finalized turns,
 the current partial, and an explicit other-speaker response target to a fast
 model, exposes hosted web search with automatic tool choice, and requires
-structured output. It converts the model result into three
+structured output. The visible Interview **Test Web Search** harness is the
+single exception: it runs one audible, time-sensitive question with search
+required so the end-to-end tool and citation path can be verified on demand.
+It converts the model result into three
 to five concise, first-person speaking cues in plain, conversational language
 before publishing it. Each cue stands on its own because the teleprompter hides
 the internal labels. It should cancel or
@@ -443,3 +446,6 @@ the source of truth.
   response turns leave the outline stack intact, the unchanged final does not
   create a duplicate generation, and the display reports model and
   transcript-to-card milliseconds.
+- Run **Test Web Search** from Interview; the companion opens, the question is
+  audible, the assistant visibly enters its working state, and the completed
+  cue is labeled as public-web grounding with at least one clickable source.
