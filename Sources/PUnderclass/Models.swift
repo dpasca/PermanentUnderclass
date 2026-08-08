@@ -718,6 +718,9 @@ enum DictationPhase: Equatable {
 enum QuickDictationDeliveryOutcome: Equatable {
     case delivering
     case pasted
+    /// Escape ended the recording intentionally. The result must not be
+    /// inserted or copied until the user chooses what to do with it.
+    case interrupted
     /// Posted to the app, but the app does not expose enough for the paste to
     /// be confirmed.
     case unverified(applicationName: String)
@@ -728,7 +731,7 @@ enum QuickDictationDeliveryOutcome: Equatable {
         switch self {
         case .pasted:
             true
-        case .delivering, .unverified, .notDelivered:
+        case .delivering, .interrupted, .unverified, .notDelivered:
             false
         }
     }
@@ -737,6 +740,8 @@ enum QuickDictationDeliveryOutcome: Equatable {
         switch self {
         case .delivering, .pasted:
             "Dictated text"
+        case .interrupted:
+            "Dictation stopped"
         case .unverified:
             "Dictated text · unconfirmed"
         case .notDelivered:
@@ -748,6 +753,8 @@ enum QuickDictationDeliveryOutcome: Equatable {
         switch self {
         case .delivering, .pasted:
             nil
+        case .interrupted:
+            "Recording stopped with Escape. Copy the text, or dismiss this message."
         case let .unverified(applicationName):
             "\(applicationName) could not confirm the paste. Copy the text if it did not appear."
         case let .notDelivered(reason):

@@ -8,22 +8,29 @@ import OSLog
 enum ModifierHoldSignal: Equatable {
     case pressed
     case released
-    case cancelled
+    case interrupted
 }
 
 struct ModifierHoldState {
     private(set) var isHeld = false
 
     mutating func update(flags: CGEventFlags) -> ModifierHoldSignal? {
+        if isHeld {
+            // Once dictation has started, adding Shift, Control, Fn, or another
+            // modifier must not silently end it. Only releasing Command or
+            // Option completes the hold.
+            guard Self.hasRequiredModifiers(flags) else {
+                isHeld = false
+                return .released
+            }
+            return nil
+        }
+
         let isExactChord = Self.isExactChord(flags)
 
-        if isExactChord, !isHeld {
+        if isExactChord {
             isHeld = true
             return .pressed
-        }
-        if !isExactChord, isHeld {
-            isHeld = false
-            return .released
         }
         return nil
     }
@@ -32,23 +39,27 @@ struct ModifierHoldState {
         isHeld = Self.isExactChord(flags)
     }
 
-    mutating func cancelForKeyDown() -> ModifierHoldSignal? {
+    mutating func interruptForEscape() -> ModifierHoldSignal? {
         guard isHeld else { return nil }
         isHeld = false
-        return .cancelled
+        return .interrupted
     }
 
     mutating func reset() {
         isHeld = false
     }
 
-    private static func isExactChord(_ flags: CGEventFlags) -> Bool {
-        let hasRequiredModifiers = flags.contains(.maskCommand)
+    static func hasRequiredModifiers(_ flags: CGEventFlags) -> Bool {
+        flags.contains(.maskCommand)
             && flags.contains(.maskAlternate)
+    }
+
+    private static func isExactChord(_ flags: CGEventFlags) -> Bool {
+        let hasRequired = hasRequiredModifiers(flags)
         let hasDisallowedModifiers = flags.contains(.maskControl)
             || flags.contains(.maskShift)
             || flags.contains(.maskSecondaryFn)
-        return hasRequiredModifiers && !hasDisallowedModifiers
+        return hasRequired && !hasDisallowedModifiers
     }
 }
 
@@ -60,6 +71,7 @@ final class ModifierHoldMonitor {
 
     static let diagnosticEventTag: Int64 = 0x4D_43_44_54
     static let pasteEventTag: Int64 = 0x4D_43_50_53
+    static let escapeKeyCode: Int64 = 53
     private static let logger = Logger(
         subsystem: "com.newtypekk.punderclass",
         category: "QuickDictationHotkey"
@@ -71,16 +83,20 @@ final class ModifierHoldMonitor {
     private var retainedSelf: Unmanaged<ModifierHoldMonitor>?
     private var state = ModifierHoldState()
     private var isDiagnosticHold = false
+    private var isConsumingEscapeUntilChordRelease = false
 
     init(signalHandler: @escaping SignalHandler) {
         self.signalHandler = signalHandler
     }
 
-    static func shouldCancelForKeyDown(
+    static func shouldInterruptForKeyDown(
+        keyCode: Int64,
         eventTag: Int64,
         isDiagnosticHold: Bool
     ) -> Bool {
-        !isDiagnosticHold && eventTag != pasteEventTag
+        keyCode == escapeKeyCode
+            && !isDiagnosticHold
+            && eventTag != pasteEventTag
     }
 
     func start() throws {
@@ -93,6 +109,7 @@ final class ModifierHoldMonitor {
 
         let eventMask = (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
             | (CGEventMask(1) << CGEventType.keyDown.rawValue)
+            | (CGEventMask(1) << CGEventType.keyUp.rawValue)
         let retained = Unmanaged.passRetained(self)
         retainedSelf = retained
         guard let tap = CGEvent.tapCreate(
@@ -141,6 +158,7 @@ final class ModifierHoldMonitor {
         installedRunLoop = nil
         state.reset()
         isDiagnosticHold = false
+        isConsumingEscapeUntilChordRelease = false
     }
 
     private func handle(
@@ -157,6 +175,7 @@ final class ModifierHoldMonitor {
         }
 
         let signal: ModifierHoldSignal?
+        var shouldConsumeEvent = false
         switch type {
         case .flagsChanged:
             signal = state.update(flags: event.flags)
@@ -166,15 +185,28 @@ final class ModifierHoldMonitor {
             } else if signal == .released {
                 isDiagnosticHold = false
             }
+            if !ModifierHoldState.hasRequiredModifiers(event.flags) {
+                isConsumingEscapeUntilChordRelease = false
+            }
         case .keyDown:
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             let eventTag = event.getIntegerValueField(.eventSourceUserData)
-            signal = Self.shouldCancelForKeyDown(
+            signal = Self.shouldInterruptForKeyDown(
+                keyCode: keyCode,
                 eventTag: eventTag,
                 isDiagnosticHold: isDiagnosticHold
-            ) ? state.cancelForKeyDown() : nil
-            if signal == .cancelled {
+            ) ? state.interruptForEscape() : nil
+            if signal == .interrupted {
                 isDiagnosticHold = false
+                isConsumingEscapeUntilChordRelease = true
             }
+            shouldConsumeEvent = keyCode == Self.escapeKeyCode
+                && isConsumingEscapeUntilChordRelease
+        case .keyUp:
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            signal = nil
+            shouldConsumeEvent = keyCode == Self.escapeKeyCode
+                && isConsumingEscapeUntilChordRelease
         default:
             signal = nil
         }
@@ -192,7 +224,7 @@ final class ModifierHoldMonitor {
                 signalHandler(signal, focusedApplication)
             }
         }
-        return Unmanaged.passUnretained(event)
+        return shouldConsumeEvent ? nil : Unmanaged.passUnretained(event)
     }
 
     deinit {
@@ -423,6 +455,7 @@ struct QuickDictationWorkState<Target> {
 
 private struct QuickDictationPendingTranscription {
     let pasteTarget: QuickDictationPasteTarget?
+    let wasInterrupted: Bool
     let recovery: QuickDictationRecoveryEntry
     let request: RealtimeRefinementRequest
 }
@@ -719,6 +752,7 @@ final class HoldToDictateService {
             transcriptID: transcriptID,
             target: QuickDictationPendingTranscription(
                 pasteTarget: nil,
+                wasInterrupted: false,
                 recovery: recovery,
                 request: request
             )
@@ -1018,8 +1052,8 @@ final class HoldToDictateService {
             startRecording(initialApplication: initialApplication)
         case .released:
             finishRecording()
-        case .cancelled:
-            cancelRecording()
+        case .interrupted:
+            finishRecording(wasInterrupted: true)
         }
     }
 
@@ -1150,12 +1184,12 @@ final class HoldToDictateService {
         )
     }
 
-    private func finishRecording() {
+    private func finishRecording(wasInterrupted: Bool = false) {
         guard recordingID != nil else { return }
         let capture = microphoneCapture
         let pipeline = pipeline
         let buffer = audioBuffer
-        let pasteTarget = recordingTarget
+        let pasteTarget = wasInterrupted ? nil : recordingTarget
 
         microphoneCapture = nil
         self.pipeline = nil
@@ -1246,6 +1280,7 @@ final class HoldToDictateService {
             transcriptID: transcriptID,
             target: QuickDictationPendingTranscription(
                 pasteTarget: pasteTarget,
+                wasInterrupted: wasInterrupted,
                 recovery: recovery,
                 request: request
             )
@@ -1550,6 +1585,14 @@ final class HoldToDictateService {
                 pending.recovery,
                 message: "The transcript completed, but its text could not be saved to history."
             )
+        }
+
+        if pending.wasInterrupted {
+            Self.logger.notice(
+                "transcription_interrupted characters=\(result.count, privacy: .public)"
+            )
+            finishDelivery(.interrupted, text: result)
+            return
         }
 
         guard let pasteTarget = pending.pasteTarget else {
