@@ -144,6 +144,12 @@ struct ContentView: View {
 
     private var sharedHeader: some View {
         HStack(alignment: .center, spacing: 10) {
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 36, height: 36)
+                .accessibilityHidden(true)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text("PUnderclass")
                     .font(.system(size: 22, weight: .semibold))

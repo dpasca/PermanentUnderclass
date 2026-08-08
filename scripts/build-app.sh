@@ -20,6 +20,9 @@ mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
 /usr/bin/install -m 0644 \
     "$project_dir/AppBundle/THIRD_PARTY_NOTICES.md" \
     "$contents_dir/Resources/THIRD_PARTY_NOTICES.md"
+/usr/bin/install -m 0644 \
+    "$project_dir/AppBundle/Resources/AppIcon.icns" \
+    "$contents_dir/Resources/AppIcon.icns"
 /usr/bin/ditto \
     "$project_dir/Prototypes/LiveAssistant" \
     "$contents_dir/Resources/LiveAssistant"
