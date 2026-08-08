@@ -12,6 +12,7 @@ final class MeetingController: ObservableObject {
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
+    @Published var preparationPurpose: CapturePurpose = .meeting
     /// Local-first: the app is fully usable on a fresh install with no key.
     @Published var refinementEngine: TranscriptRefinementEngine = .localWhisper
     @Published var processes: [AudioProcessInfo] = []

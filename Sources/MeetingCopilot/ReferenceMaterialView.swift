@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum PUnderclassWindow {
-    static let referenceMaterial = "reference-material"
+    static let preparation = "capture-preparation"
 }
 
 struct ReferenceMaterialView: View {
@@ -15,7 +15,9 @@ struct ReferenceMaterialView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    sessionGuidanceSection
                     folderSection
+                    recognitionHintsSection
                     assistantUsesSection
                     documentSection
                     issueSection
@@ -25,12 +27,12 @@ struct ReferenceMaterialView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(minWidth: 760, minHeight: 620)
+        .frame(minWidth: 800, minHeight: 700)
     }
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "books.vertical.fill")
+            Image(systemName: "checklist")
                 .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 48, height: 48)
@@ -40,10 +42,12 @@ struct ReferenceMaterialView: View {
                 )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Reference Material")
+                Text("\(purpose.title) Preparation")
                     .font(.title.weight(.semibold))
                 Text(
-                    "One shared document library for Meeting Assistant, Answer Mirror, and generated replays."
+                    purpose == .meeting
+                        ? "Give transcription and Meeting Assistant the context they need before the conversation starts."
+                        : "Give transcription and Answer Mirror the role context they need before the interview starts."
                 )
                 .font(.body)
                 .foregroundStyle(.secondary)
@@ -51,21 +55,185 @@ struct ReferenceMaterialView: View {
 
             Spacer()
 
-            if controller.referenceLibraryState.phase == .scanning {
-                ProgressView()
-                    .controlSize(.regular)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("PREPARE FOR")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Picker("Prepare for", selection: $controller.preparationPurpose) {
+                    ForEach(CapturePurpose.allCases) { value in
+                        Text(value.title).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 230)
             }
-            Text(controller.referenceLibraryState.phaseLabel)
-                .font(.body.weight(.medium))
-                .foregroundStyle(phaseColor)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
     }
 
+    private var sessionGuidanceSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        purpose == .meeting
+                            ? "What is this meeting about?"
+                            : "What role and interview should the assistant expect?"
+                    )
+                    .font(.title3.weight(.semibold))
+                    Text(
+                        purpose == .meeting
+                            ? "Include the participants, purpose, likely topics, and any important constraints. This guides both transcription and Meeting Assistant."
+                            : "Include the company, role, interview stage, and likely topics. This guides both transcription and Answer Mirror."
+                    )
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                }
+
+                TextEditor(text: contextPromptBinding)
+                    .font(.body)
+                    .frame(minHeight: 115)
+                    .padding(7)
+                    .background(
+                        Color(nsColor: .textBackgroundColor).opacity(0.55),
+                        in: RoundedRectangle(cornerRadius: 9)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9)
+                            .stroke(.separator.opacity(0.75), lineWidth: 1)
+                    }
+
+                HStack(spacing: 12) {
+                    if controller.isListening,
+                       controller.capturePurpose == purpose
+                    {
+                        Label(
+                            "Changes need to be sent to the active \(purpose.title.lowercased()).",
+                            systemImage: "waveform"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Label(
+                            "Used automatically when the next \(purpose.title.lowercased()) starts.",
+                            systemImage: "checkmark.circle"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    if controller.isListening,
+                       controller.capturePurpose == purpose
+                    {
+                        Button {
+                            controller.applyContext(for: purpose)
+                        } label: {
+                            Label(
+                                "Update Live \(purpose.title)",
+                                systemImage: "arrow.clockwise"
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("Session Guidance", systemImage: "text.alignleft")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
+    private var recognitionHintsSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Exact terminology")
+                            .font(.body.weight(.semibold))
+                        Text("One product name, acronym, or technical term per line.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $controller.keywordsText)
+                            .font(.body)
+                            .frame(minHeight: 95)
+                            .padding(6)
+                            .background(
+                                Color(nsColor: .textBackgroundColor).opacity(0.55),
+                                in: RoundedRectangle(cornerRadius: 8)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(.separator.opacity(0.75), lineWidth: 1)
+                            }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Expected languages")
+                                .font(.body.weight(.semibold))
+                            Text("Comma-separated language codes, such as en, ja.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            TextField("en, ja", text: $controller.languagesText)
+                                .textFieldStyle(.roundedBorder)
+                                .controlSize(.large)
+                        }
+
+                        Picker(
+                            "Live accuracy / latency",
+                            selection: $controller.delay
+                        ) {
+                            ForEach(TranscriptionDelay.allCases) { value in
+                                Text(value.rawValue.capitalized).tag(value)
+                            }
+                        }
+                        .controlSize(.large)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Label(
+                    "Terminology and language hints are shared with Quick Dictation, Meeting, and Interview. Session Guidance above remains separate for each mode.",
+                    systemImage: "info.circle"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
+            .padding(8)
+        } label: {
+            Label("Speech Recognition Hints", systemImage: "waveform")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
     private var folderSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Text(
+                        "This document library is shared by Meeting Assistant, Answer Mirror, and both generated replays."
+                    )
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if controller.referenceLibraryState.phase == .scanning {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(controller.referenceLibraryState.phaseLabel)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(phaseColor)
+                }
+
                 if let folderURL = controller.referenceLibraryState.folderURL {
                     HStack(alignment: .center, spacing: 14) {
                         Image(systemName: "folder.fill")
@@ -157,7 +325,7 @@ struct ReferenceMaterialView: View {
             }
             .padding(8)
         } label: {
-            Label("Source Folder", systemImage: "folder")
+            Label("Reference Library", systemImage: "books.vertical.fill")
                 .font(.title3.weight(.semibold))
         }
     }
@@ -279,7 +447,7 @@ struct ReferenceMaterialView: View {
 
     private var privacyNote: some View {
         Label(
-            "Document contents stay in the Mac host and are sent only as model context when a cloud assistant or generated replay is used. The browser companion receives citations, not the source files.",
+            "Session guidance and document contents stay owned by the Mac host and are sent only as model context when a cloud assistant or generated replay is used. The browser companion receives citations, not the source files or setup text.",
             systemImage: "lock.shield.fill"
         )
         .font(.body)
@@ -331,6 +499,19 @@ struct ReferenceMaterialView: View {
             .green
         case .failed:
             .red
+        }
+    }
+
+    private var purpose: CapturePurpose {
+        controller.preparationPurpose
+    }
+
+    private var contextPromptBinding: Binding<String> {
+        switch purpose {
+        case .meeting:
+            $controller.meetingContextPrompt
+        case .interview:
+            $controller.interviewContextPrompt
         }
     }
 

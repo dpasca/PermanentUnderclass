@@ -12,8 +12,6 @@ struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
-    @State private var meetingContextExpanded = false
-    @State private var interviewContextExpanded = false
     /// Dictation leads: it is the part that works with no account, no key, and
     /// no configuration.
     @State private var selectedTab: AppTab = .quickDictation
@@ -85,7 +83,7 @@ struct ContentView: View {
                     onResolve: showSettings
                 )
 
-                referenceMaterialAccessPanel(for: purpose)
+                preparationAccessPanel(for: purpose)
 
                 generatedReplayPanel(for: purpose)
                     .locked(
@@ -131,7 +129,6 @@ struct ContentView: View {
 
                 transcriptPanel(for: purpose)
                     .frame(minHeight: 180)
-                contextPanel(for: purpose)
             }
             .padding(16)
         }
@@ -540,17 +537,18 @@ struct ContentView: View {
         }
     }
 
-    private func referenceMaterialAccessPanel(
+    private func preparationAccessPanel(
         for purpose: CapturePurpose
     ) -> some View {
         let state = controller.referenceLibraryState
         let snapshot = state.snapshot
 
         return Button {
-            openWindow(id: PUnderclassWindow.referenceMaterial)
+            controller.preparationPurpose = purpose
+            openWindow(id: PUnderclassWindow.preparation)
         } label: {
             HStack(spacing: 14) {
-                Image(systemName: "books.vertical.fill")
+                Image(systemName: "checklist")
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 42, height: 42)
@@ -560,12 +558,12 @@ struct ContentView: View {
                     )
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Reference material")
+                    Text("Prepare " + purpose.title)
                         .font(.title3.weight(.semibold))
                     Text(
                         purpose == .meeting
-                            ? "Ground Meeting Assistant answers and mock-meeting responses in your documents."
-                            : "Ground Answer Mirror and generated interview responses in your documents."
+                            ? "Add a brief, exact terms, languages, and reference documents for transcription and Meeting Assistant."
+                            : "Add role context, exact terms, languages, and reference documents for transcription and Answer Mirror."
                     )
                     .font(.body)
                     .foregroundStyle(.secondary)
@@ -575,7 +573,7 @@ struct ContentView: View {
                 Spacer(minLength: 16)
 
                 VStack(alignment: .trailing, spacing: 5) {
-                    Text(state.phaseLabel)
+                    Text("Session guidance + references")
                         .font(.callout.weight(.medium))
                     if let folderURL = state.folderURL {
                         Text(referenceSummary(snapshot: snapshot, folderURL: folderURL))
@@ -589,7 +587,7 @@ struct ContentView: View {
                     }
                 }
 
-                Label("Manage References…", systemImage: "arrow.up.right.square")
+                Label("Open Setup…", systemImage: "arrow.up.right.square")
                     .font(.body.weight(.semibold))
                     .padding(.horizontal, 13)
                     .padding(.vertical, 9)
@@ -611,7 +609,7 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
         }
-        .accessibilityLabel("Manage reference material for \(purpose.title)")
+        .accessibilityLabel("Prepare \(purpose.title)")
     }
 
     private func generatedReplayPanel(
@@ -826,106 +824,6 @@ struct ContentView: View {
             }
         }
         .frame(maxHeight: .infinity)
-    }
-
-    private func contextPanel(
-        for purpose: CapturePurpose
-    ) -> some View {
-        DisclosureGroup(isExpanded: contextExpandedBinding(for: purpose)) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(
-                            purpose == .meeting
-                                ? "Meeting context"
-                                : "Role, company, and interview context"
-                        )
-                            .font(.callout.weight(.medium))
-                        TextEditor(text: contextPromptBinding(for: purpose))
-                            .font(.body)
-                            .frame(minHeight: 64)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(.separator.opacity(0.7), lineWidth: 1)
-                            }
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Terminology — one literal term per line")
-                            .font(.callout.weight(.medium))
-                        TextEditor(text: $controller.keywordsText)
-                            .font(.body)
-                            .frame(minHeight: 64)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(.separator.opacity(0.7), lineWidth: 1)
-                            }
-                    }
-                }
-
-                HStack {
-                    Text("Terminology and expected languages are shared across dictation, meetings, and interviews.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Button("Settings…") {
-                        showSettings(.general)
-                    }
-                    Spacer()
-                    Picker("Accuracy / latency", selection: $controller.delay) {
-                        ForEach(TranscriptionDelay.allCases) { value in
-                            Text(value.rawValue.capitalized).tag(value)
-                        }
-                    }
-                    .frame(width: 180)
-                    Button("Apply Context") {
-                        controller.applyContext(for: purpose)
-                    }
-                    .disabled(
-                        controller.isListening
-                            && controller.capturePurpose != purpose
-                    )
-                }
-                Text(
-                    purpose == .meeting
-                        ? "Describe the meeting and add exact vocabulary. Meeting context also guides the grounded response assistant."
-                        : "Describe the role and likely subject areas, then add exact technical vocabulary. Interview context also guides Answer Mirror."
-                )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 10)
-        } label: {
-            Label(
-                purpose == .meeting
-                    ? "Meeting transcription and assistant context"
-                    : "Interview transcription and assistant context",
-                systemImage: "slider.horizontal.3"
-            )
-                .font(.headline)
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func contextExpandedBinding(
-        for purpose: CapturePurpose
-    ) -> Binding<Bool> {
-        switch purpose {
-        case .meeting:
-            $meetingContextExpanded
-        case .interview:
-            $interviewContextExpanded
-        }
-    }
-
-    private func contextPromptBinding(
-        for purpose: CapturePurpose
-    ) -> Binding<String> {
-        switch purpose {
-        case .meeting:
-            $controller.meetingContextPrompt
-        case .interview:
-            $controller.interviewContextPrompt
-        }
     }
 
     private func referenceSummary(

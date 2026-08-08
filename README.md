@@ -55,8 +55,9 @@ and requests; Interview mode runs Answer Mirror for interviewer speech.
 
 PUnderclass now embeds a loopback-only HTTP/SSE gateway and serves the
 cross-platform thin display itself. Start the Mac app, open **Meeting** or
-**Interview**, choose **Manage References…**, select a reference folder in the
-dedicated Reference Material window, then open the mode's assistant. The same
+**Interview**, choose **Open Setup…** on the prominent preparation card, and
+add the session guidance or shared reference folder you need. Then open the
+mode's assistant. The same
 display is also available at <http://127.0.0.1:4173>. The Mac owns the selected
 behavior, local references, OpenAI request, usage tracking, event ordering, and
 replay; the browser receives only transcript text, reference status, citations,
@@ -141,17 +142,33 @@ changing the deterministic transcript timeline; that requires the ElevenLabs
 voice ID and an API key, and should cache generated audio so test replays do not
 incur repeated synthesis calls.
 
-## Reference material
+## Meeting and interview preparation
 
-Use the large **Reference material** card on either Meeting or Interview to open
-the dedicated Reference Material window. Choose one shared folder there; the
-window shows its indexed documents, revision, ignored files, and warnings with
-full-size controls for changing, revealing, rescanning, or disconnecting it.
-The Swift app restores and ingests that folder at launch, watches it recursively
-for changes, and debounces change bursts into a fresh deterministic revision. It
-currently reads PDF, RTF, Markdown, plain text, CSV/TSV, JSON/JSONL, YAML, XML,
-and HTML files. Unsupported files are counted; unreadable or truncated files
-are reported instead of silently disappearing.
+Use the large **Prepare Meeting** or **Prepare Interview** card near the top of
+either capture tab. It opens one full-size preparation window directly on the
+selected mode; a large segmented control switches modes without closing it.
+All setup controls live in this window instead of a collapsed control at the
+bottom of the capture tab.
+
+The window keeps related setup in one place while making the distinction
+explicit:
+
+- **Session Guidance** is a short, mode-specific brief. Meeting and Interview
+  retain separate text, and the selected brief guides transcription plus the
+  corresponding live assistant.
+- **Reference Library** is the durable, shared document folder used for
+  grounding Meeting Assistant, Answer Mirror, and both generated replays.
+- **Speech Recognition Hints** contains exact terminology, expected languages,
+  and the live accuracy/latency choice. These hints are shared with Quick
+  Dictation and both capture modes.
+
+The Reference Library section shows indexed documents, revision, ignored files,
+and warnings with full-size controls for changing, revealing, rescanning, or
+disconnecting the folder. The Swift app restores and ingests it at launch,
+watches it recursively for changes, and debounces change bursts into a fresh
+deterministic revision. It currently reads PDF, RTF, Markdown, plain text,
+CSV/TSV, JSON/JSONL, YAML, XML, and HTML files. Unsupported files are counted;
+unreadable or truncated files are reported instead of silently disappearing.
 
 Reference contents are owned by the Mac host and are never copied to the thin
 display. The prompt builder places stable behavior and reference material

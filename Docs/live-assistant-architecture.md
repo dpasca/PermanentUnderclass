@@ -266,6 +266,14 @@ on path, type, and normalized content—not timestamps. Touching a file without
 changing its contents therefore does not create a new prompt prefix. A future
 sandboxed build must persist a security-scoped bookmark rather than a raw path.
 
+The native UI exposes this through a single prominent preparation flow rather
+than a small disclosure at the bottom of each capture tab. The window separates
+three concepts: purpose-specific Session Guidance, shared speech-recognition
+hints, and the shared Reference Library. Opening it from Meeting or Interview
+selects that purpose automatically, while a large segmented control permits an
+explicit switch. This keeps all pre-session setup reachable without implying
+that a short meeting brief and a durable document corpus are the same data.
+
 For a reasonably small reference folder, build model input in this order:
 
 ```text

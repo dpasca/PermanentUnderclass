@@ -17,8 +17,8 @@ struct MeetingCopilotApp: App {
         .defaultSize(width: 1_160, height: 900)
 
         Window(
-            "Reference Material",
-            id: PUnderclassWindow.referenceMaterial
+            "Meeting & Interview Preparation",
+            id: PUnderclassWindow.preparation
         ) {
             if let controller = applicationModel.controller {
                 ReferenceMaterialView(controller: controller)
@@ -26,7 +26,7 @@ struct MeetingCopilotApp: App {
                 Color.clear
             }
         }
-        .defaultSize(width: 860, height: 720)
+        .defaultSize(width: 900, height: 820)
 
         // Every setting has one home, reachable with the standard ⌘, rather
         // than through several header popovers.
