@@ -1,5 +1,5 @@
 {
-  "originHash" : "0b8bffc1370100beabd50a3236178653e36408bd021f3969b6552eeaf97b7688",
+  "originHash" : "3fe5a3ba2b1b272682b1542ca7f60e7d50db70f103b14ace2aa7b48e618d88f6",
   "pins" : [
     {
       "identity" : "argmax-oss-swift",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/FluidInference/FluidAudio",
       "state" : {
-        "revision" : "b9d43724cbdb5a980e441fd54180964e94d470f7",
-        "version" : "0.15.4"
+        "revision" : "19600a485baa4998812e4654b70d2bab8f2c9949",
+        "version" : "0.15.5"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/hummingbird-project/hummingbird.git",
       "state" : {
-        "revision" : "a2ed0a0294de56e18ba55344eafc801a7a385a90",
-        "version" : "2.22.0"
+        "revision" : "55bc9025a4825ee2a234b1f82b51b87be6ef74e4",
+        "version" : "2.26.0"
       }
     },
     {

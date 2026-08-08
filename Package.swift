@@ -13,7 +13,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/FluidInference/FluidAudio",
-            exact: "0.15.4"
+            exact: "0.15.5"
         ),
         .package(
             url: "https://github.com/argmaxinc/argmax-oss-swift",
@@ -21,7 +21,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/hummingbird-project/hummingbird.git",
-            exact: "2.22.0"
+            exact: "2.26.0"
         )
     ],
     targets: [
