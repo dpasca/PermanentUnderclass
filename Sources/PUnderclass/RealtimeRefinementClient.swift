@@ -122,7 +122,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     private static let streamFlushBytes = pcm16BytesPerSecond / 4
     static let connectionTimeoutSeconds: TimeInterval = 30
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "GPTTranscribe"
     )
 
@@ -205,7 +205,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         streamFailureHandler = onStreamFailed
         uploadProgressHandler = onUploadProgress
         let socketQueue = DispatchQueue(
-            label: "MeetingCopilot.GPTTranscribe.\(label)",
+            label: "PUnderclass.GPTTranscribe.\(label)",
             qos: .userInitiated
         )
         self.socketQueue = socketQueue
@@ -440,7 +440,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
                 )
             )
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode the GPT-Transcribe session."
                 )
             }
@@ -473,7 +473,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.inputAudioAppendJSON(audio)
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode GPT-Transcribe audio."
                 )
             }
@@ -511,7 +511,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.inputAudioCommitJSON()
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode the GPT-Transcribe commit."
                 )
             }
@@ -745,7 +745,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.sessionUpdateJSON(request)
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode the GPT-Transcribe session."
                 )
             }
@@ -790,7 +790,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.inputAudioAppendJSON(chunk)
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode GPT-Transcribe audio."
                 )
             }
@@ -840,7 +840,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.inputAudioCommitJSON()
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode the GPT-Transcribe commit."
                 )
             }
@@ -1151,7 +1151,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         do {
             let data = try Self.sessionUpdateJSON()
             guard let text = String(data: data, encoding: .utf8) else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Could not encode the GPT-Transcribe session."
                 )
             }

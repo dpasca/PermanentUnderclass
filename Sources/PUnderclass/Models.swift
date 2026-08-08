@@ -807,7 +807,7 @@ enum TranscriptionOutputStyle: Equatable {
     case cleanDictation
 }
 
-enum MeetingCopilotError: LocalizedError {
+enum PUnderclassError: LocalizedError {
     case noAPIKey
     case invalidKeyword(String)
     case coreAudio(operation: String, status: OSStatus)

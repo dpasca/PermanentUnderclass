@@ -1,7 +1,7 @@
 import AVFAudio
 import Foundation
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
 final class LiveRealtimeTests: XCTestCase {
     func testSyntheticSpeechRoundTrip() throws {
@@ -10,7 +10,7 @@ final class LiveRealtimeTests: XCTestCase {
         }
         let key = try XCTUnwrap(ProcessInfo.processInfo.environment["OPENAI_API_KEY"])
         let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-copilot-\(UUID().uuidString).aiff")
+            .appendingPathComponent("punderclass-\(UUID().uuidString).aiff")
         defer {
             try? FileManager.default.removeItem(at: audioURL)
         }
@@ -68,7 +68,7 @@ final class LiveRealtimeTests: XCTestCase {
         var client: RealtimeTranscriptionClient!
         var refiner: RealtimeRefinementClient!
         let pipeline = AudioTrackPipeline(
-            label: "MeetingCopilotTests.LiveAudio",
+            label: "PUnderclassTests.LiveAudio",
             onChunk: { data in
                 client.sendAudio(data)
             },

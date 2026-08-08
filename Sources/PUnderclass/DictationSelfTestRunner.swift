@@ -144,7 +144,7 @@ final class DictationSelfTestRunner {
         guard !isVerifyingPaste else { return }
         isVerifyingPaste = true
 
-        let marker = "MeetingCopilotPasteSelfTest"
+        let marker = "PUnderclassPasteSelfTest"
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 80))
         textView.string = ""
         let window = NSWindow(

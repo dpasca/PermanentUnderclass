@@ -3,7 +3,7 @@ import Hummingbird
 import HummingbirdTesting
 import HTTPTypes
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
 final class CompanionTests: XCTestCase {
     func testCompositeCursorRoundTrips() throws {

@@ -141,10 +141,10 @@ private final class PCM16Converter {
             channels: 1,
             interleaved: true
         ) else {
-            throw MeetingCopilotError.audio("Could not create the 24 kHz transcription format.")
+            throw PUnderclassError.audio("Could not create the 24 kHz transcription format.")
         }
         guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not convert \(Int(sourceFormat.sampleRate)) Hz audio to 24 kHz PCM16."
             )
         }
@@ -166,7 +166,7 @@ private final class PCM16Converter {
             pcmFormat: outputFormat,
             frameCapacity: estimatedFrames
         ) else {
-            throw MeetingCopilotError.audio("Could not allocate the audio conversion buffer.")
+            throw PUnderclassError.audio("Could not allocate the audio conversion buffer.")
         }
 
         var suppliedInput = false
@@ -185,7 +185,7 @@ private final class PCM16Converter {
             throw conversionError
         }
         guard status != .error else {
-            throw MeetingCopilotError.audio("Audio conversion failed.")
+            throw PUnderclassError.audio("Audio conversion failed.")
         }
         guard
             output.frameLength > 0,

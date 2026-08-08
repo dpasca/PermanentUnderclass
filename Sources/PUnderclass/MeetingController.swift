@@ -97,23 +97,23 @@ final class MeetingController: ObservableObject {
     private let syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore
 
     private static let dictationEnabledDefaultsKey =
-        "MeetingCopilot.HoldToDictateEnabled"
+        "PUnderclass.HoldToDictateEnabled"
     private static let dictationPreviewEnabledDefaultsKey =
-        "MeetingCopilot.QuickDictationPreviewEnabled"
+        "PUnderclass.QuickDictationPreviewEnabled"
     private static let dictationCleanupEnabledDefaultsKey =
-        "MeetingCopilot.QuickDictationCleanupEnabled"
+        "PUnderclass.QuickDictationCleanupEnabled"
     private static let referenceFolderDefaultsKey =
-        "MeetingCopilot.ReferenceFolderPath"
+        "PUnderclass.ReferenceFolderPath"
     static let privacyLockDefaultsKey =
-        "MeetingCopilot.PrivacyLock"
+        "PUnderclass.PrivacyLock"
     static let refinementEngineDefaultsKey =
-        "MeetingCopilot.RefinementEngine"
+        "PUnderclass.RefinementEngine"
     /// Renamed when local-only stopped being the primary gate and became a
     /// privacy override.
     static let legacyLocalOnlyModeDefaultsKey =
-        "MeetingCopilot.LocalOnlyMode"
+        "PUnderclass.LocalOnlyMode"
     private static let liveAssistantLogger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "LiveAssistant"
     )
 
@@ -275,7 +275,7 @@ final class MeetingController: ObservableObject {
     func saveAPIKey() {
         let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
-            present(MeetingCopilotError.noAPIKey)
+            present(PUnderclassError.noAPIKey)
             return
         }
         do {
@@ -299,7 +299,7 @@ final class MeetingController: ObservableObject {
         guard !isListening else {
             let activeTitle = capturePurpose?.title.lowercased() ?? "live"
             present(
-                MeetingCopilotError.audio(
+                PUnderclassError.audio(
                     "The \(activeTitle) capture is already running."
                 )
             )
@@ -307,12 +307,12 @@ final class MeetingController: ObservableObject {
         }
         do {
             guard !syntheticInterviewState.isActive else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Stop the generated \(syntheticInterviewState.purpose.title.lowercased()) replay before starting live capture."
                 )
             }
             guard !isDictating else {
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Release the Quick Dictation shortcut before starting live capture."
                 )
             }
@@ -322,17 +322,17 @@ final class MeetingController: ObservableObject {
                 ? .meetingCapture
                 : .answerMirror
             if let message = capability.lockMessage(for: requiredFeature) {
-                throw MeetingCopilotError.audio(message)
+                throw PUnderclassError.audio(message)
             }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw MeetingCopilotError.noAPIKey }
+            guard !key.isEmpty else { throw PUnderclassError.noAPIKey }
             let selectedProcess: AudioProcessInfo?
             if let selectedProcessID {
                 guard let previousSelection = processes.first(where: {
                     $0.id == selectedProcessID
                 }) else {
                     self.selectedProcessID = nil
-                    throw MeetingCopilotError.audio(
+                    throw PUnderclassError.audio(
                         "The selected app is no longer available. All system audio is now selected; start again."
                     )
                 }
@@ -460,7 +460,7 @@ final class MeetingController: ObservableObject {
             }
 
             let localPipeline = AudioTrackPipeline(
-                label: "MeetingCopilot.Audio.You",
+                label: "PUnderclass.Audio.You",
                 onChunk: { [weak localClient] chunk in
                     localClient?.sendAudio(chunk)
                 },
@@ -470,7 +470,7 @@ final class MeetingController: ObservableObject {
                 }
             )
             let remotePipeline = AudioTrackPipeline(
-                label: "MeetingCopilot.Audio.Other",
+                label: "PUnderclass.Audio.Other",
                 onChunk: { [weak remoteClient] chunk in
                     remoteClient?.sendAudio(chunk)
                 },
@@ -555,7 +555,7 @@ final class MeetingController: ObservableObject {
         do {
             guard !isListening || capturePurpose == purpose else {
                 let activeTitle = capturePurpose?.title.lowercased() ?? "live"
-                throw MeetingCopilotError.audio(
+                throw PUnderclassError.audio(
                     "Stop the active \(activeTitle) capture before applying \(purpose.title.lowercased()) context."
                 )
             }
@@ -988,7 +988,7 @@ final class MeetingController: ObservableObject {
         guard !syntheticInterviewState.isActive else { return }
         guard !isListening else {
             present(
-                MeetingCopilotError.audio(
+                PUnderclassError.audio(
                     "Stop live capture before starting the generated \(purpose.title.lowercased()) replay."
                 )
             )
@@ -996,7 +996,7 @@ final class MeetingController: ObservableObject {
         }
         guard !isDictationBusy else {
             present(
-                MeetingCopilotError.audio(
+                PUnderclassError.audio(
                     "Finish Quick Dictation before starting the generated \(purpose.title.lowercased()) replay."
                 )
             )
@@ -1007,7 +1007,7 @@ final class MeetingController: ObservableObject {
             ? .mockMeeting
             : .mockInterview
         if let message = capability.lockMessage(for: feature) {
-            present(MeetingCopilotError.audio(message))
+            present(PUnderclassError.audio(message))
             return
         }
         let apiKey = apiKeyDraft.trimmingCharacters(
@@ -1653,7 +1653,7 @@ final class MeetingController: ObservableObject {
             || keyword.contains(">")
             || keyword.contains("\r")
             || keyword.contains("\n") {
-            throw MeetingCopilotError.invalidKeyword(keyword)
+            throw PUnderclassError.invalidKeyword(keyword)
         }
 
         let separators = CharacterSet(charactersIn: ", \n\t")
@@ -2441,7 +2441,7 @@ final class MeetingController: ObservableObject {
             candidates: refreshed
         ) else {
             selectedProcessID = nil
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "\(previous.name) stopped or restarted and its new audio process could not be matched. All system audio is now selected; start again."
             )
         }

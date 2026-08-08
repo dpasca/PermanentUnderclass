@@ -2,11 +2,11 @@ import AppKit
 import AVFAudio
 import CoreGraphics
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
-final class MeetingCopilotTests: XCTestCase {
+final class PUnderclassTests: XCTestCase {
     func testVisibleAppTerminatesAfterItsLastWindowCloses() {
-        let delegate = MeetingCopilotAppDelegate()
+        let delegate = PUnderclassAppDelegate()
 
         XCTAssertTrue(
             delegate.applicationShouldTerminateAfterLastWindowClosed(.shared)
@@ -14,7 +14,7 @@ final class MeetingCopilotTests: XCTestCase {
     }
 
     func testAppDelegateHandlesReopenWithoutDefaultWindowCreation() {
-        let delegate = MeetingCopilotAppDelegate()
+        let delegate = PUnderclassAppDelegate()
 
         XCTAssertFalse(
             delegate.applicationShouldHandleReopen(
@@ -567,7 +567,7 @@ final class MeetingCopilotTests: XCTestCase {
         let lock = NSLock()
         var sizes: [Int] = []
         let pipeline = AudioTrackPipeline(
-            label: "MeetingCopilotTests.Audio",
+            label: "PUnderclassTests.Audio",
             onChunk: { data in
                 lock.lock()
                 sizes.append(data.count)
@@ -1774,7 +1774,7 @@ final class MeetingCopilotTests: XCTestCase {
     // MARK: - Settings migration
 
     private func scratchDefaults() throws -> UserDefaults {
-        let name = "MeetingCopilotTests.\(UUID().uuidString)"
+        let name = "PUnderclassTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { defaults.removePersistentDomain(forName: name) }
         return defaults

@@ -1,7 +1,7 @@
 import AVFAudio
 import Foundation
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
 final class LocalParakeetTests: XCTestCase {
     func testSyntheticTechnicalSpeechRoundTrip() throws {
@@ -12,7 +12,7 @@ final class LocalParakeetTests: XCTestCase {
         }
 
         let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-copilot-parakeet-\(UUID().uuidString).aiff")
+            .appendingPathComponent("punderclass-parakeet-\(UUID().uuidString).aiff")
         defer {
             try? FileManager.default.removeItem(at: audioURL)
         }
@@ -43,7 +43,7 @@ final class LocalParakeetTests: XCTestCase {
         let lock = NSLock()
         var pcm16Audio = Data()
         let pipeline = AudioTrackPipeline(
-            label: "MeetingCopilotTests.ParakeetAudio",
+            label: "PUnderclassTests.ParakeetAudio",
             onChunk: { chunk in
                 lock.lock()
                 pcm16Audio.append(chunk)

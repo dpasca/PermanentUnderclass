@@ -61,7 +61,7 @@ final class ModifierHoldMonitor {
     static let diagnosticEventTag: Int64 = 0x4D_43_44_54
     static let pasteEventTag: Int64 = 0x4D_43_50_53
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "QuickDictationHotkey"
     )
     private let signalHandler: SignalHandler
@@ -86,7 +86,7 @@ final class ModifierHoldMonitor {
     func start() throws {
         guard eventTap == nil else { return }
         guard AXIsProcessTrusted() else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Accessibility permission is required for the global dictation shortcut."
             )
         }
@@ -111,7 +111,7 @@ final class ModifierHoldMonitor {
         ) else {
             retained.release()
             retainedSelf = nil
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "The global dictation shortcut could not be installed. Check Accessibility permission."
             )
         }
@@ -442,7 +442,7 @@ final class HoldToDictateService {
     typealias ContextProvider = () throws -> TranscriptionContext
 
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "QuickDictationCapture"
     )
     private let canRecord: () -> Bool
@@ -1056,7 +1056,7 @@ final class HoldToDictateService {
             : "dictation-\(UUID().uuidString)"
 
         let pipeline = AudioTrackPipeline(
-            label: "MeetingCopilot.Audio.Dictation",
+            label: "PUnderclass.Audio.Dictation",
             onChunk: { chunk in
                 buffer.append(chunk)
                 if let streamHandle, let streamID {
@@ -2650,7 +2650,7 @@ final class PasteInjector {
     }
 
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "QuickDictationPaste"
     )
     private static let focusRetryDelay = DispatchTimeInterval.milliseconds(50)
@@ -2746,7 +2746,7 @@ final class PasteInjector {
             )
             finishActiveRequest(
                 with: .failure(
-                    MeetingCopilotError.audio(
+                    PUnderclassError.audio(
                         "You switched to \(currentApplication) before Quick Dictation could paste this text."
                     )
                 ),
@@ -2773,7 +2773,7 @@ final class PasteInjector {
         guard request.target.isAvailable else {
             finishActiveRequest(
                 with: .failure(
-                    MeetingCopilotError.audio(
+                    PUnderclassError.audio(
                         "\(request.target.applicationName) closed before Quick Dictation could paste the text."
                     )
                 ),
@@ -2813,7 +2813,7 @@ final class PasteInjector {
         guard remainingAttempts > 1 else {
             finishActiveRequest(
                 with: .failure(
-                    MeetingCopilotError.audio(
+                    PUnderclassError.audio(
                         "Quick Dictation could not return to the original field in \(request.target.applicationName), so no text was pasted."
                     )
                 ),
@@ -2882,7 +2882,7 @@ final class PasteInjector {
             )
             finishActiveRequest(
                 with: .failure(
-                    MeetingCopilotError.audio(
+                    PUnderclassError.audio(
                         "Quick Dictation sent the paste to \(request.target.applicationName) but could not confirm that the text was inserted. The completed text was saved in Quick Dictation history."
                     )
                 ),
@@ -3051,7 +3051,7 @@ final class PasteInjector {
         inheritedPreviousItems: [NSPasteboardItem]?
     ) throws -> PasteAttempt {
         guard AXIsProcessTrusted() else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Accessibility permission is required to paste dictation into another app."
             )
         }
@@ -3067,7 +3067,7 @@ final class PasteInjector {
                 keyDown: false
             )
         else {
-            throw MeetingCopilotError.audio("Could not create the paste keyboard event.")
+            throw PUnderclassError.audio("Could not create the paste keyboard event.")
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
@@ -3088,7 +3088,7 @@ final class PasteInjector {
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             restore(items: previousItems, to: pasteboard)
-            throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+            throw PUnderclassError.audio("Could not place the dictation on the clipboard.")
         }
         var insertedChangeCount = pasteboard.changeCount
 
@@ -3114,7 +3114,7 @@ final class PasteInjector {
             pasteboard.clearContents()
             guard pasteboard.setString(text, forType: .string) else {
                 restore(items: previousItems, to: pasteboard)
-                throw MeetingCopilotError.audio("Could not place the dictation on the clipboard.")
+                throw PUnderclassError.audio("Could not place the dictation on the clipboard.")
             }
             insertedChangeCount = pasteboard.changeCount
         }

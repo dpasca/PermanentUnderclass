@@ -172,7 +172,7 @@ verification and never invent commitments, metrics, deadlines, decisions, or
 status. A grounding warning remains in copied diagnostic output.
 
 The host also writes privacy-safe lifecycle markers under the
-`com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
+`com.newtypekk.punderclass` subsystem and `LiveAssistant` category.
 They record scheduling, starts, skips, completion outcome, cancellation,
 trigger kind, trigger-to-start time, model time, and transcript-to-result time
 without recording transcript content or credentials.

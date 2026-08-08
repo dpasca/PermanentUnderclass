@@ -113,7 +113,7 @@ enum PCM16WaveFile {
 
 struct QuickDictationRecoveryStore {
     private static let applicationDirectoryName =
-        "com.permanentunderclass.meetingcopilot"
+        "com.newtypekk.punderclass"
     private static let recoveryDirectoryName = "QuickDictationRecoveries"
     private static let packageExtension = "quickdictation"
     private static let metadataFileName = "metadata.json"

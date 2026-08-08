@@ -32,7 +32,7 @@ enum CoreAudioUtilities {
 
     static func check(_ status: OSStatus, operation: String) throws {
         guard status == noErr else {
-            throw MeetingCopilotError.coreAudio(operation: operation, status: status)
+            throw PUnderclassError.coreAudio(operation: operation, status: status)
         }
     }
 

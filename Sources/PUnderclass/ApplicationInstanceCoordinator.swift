@@ -8,9 +8,9 @@ final class ApplicationInstanceCoordinator: NSObject {
     static let shared = ApplicationInstanceCoordinator()
 
     private static let bundleIdentifier =
-        "com.permanentunderclass.meetingcopilot"
+        "com.newtypekk.punderclass"
     private static let reopenNotification = Notification.Name(
-        "com.permanentunderclass.meetingcopilot.reopen"
+        "com.newtypekk.punderclass.reopen"
     )
     private static let logger = Logger(
         subsystem: bundleIdentifier,

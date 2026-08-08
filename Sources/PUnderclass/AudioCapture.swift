@@ -31,7 +31,7 @@ final class MicrophoneCapture {
                 DispatchQueue.main.async {
                     guard let self, !self.isCancelled else { return }
                     guard granted else {
-                        completion(.failure(MeetingCopilotError.audio(
+                        completion(.failure(PUnderclassError.audio(
                             "Microphone permission was denied."
                         )))
                         return
@@ -44,7 +44,7 @@ final class MicrophoneCapture {
                 }
             }
         default:
-            completion(.failure(MeetingCopilotError.audio(
+            completion(.failure(PUnderclassError.audio(
                 "Microphone access is disabled. Enable it in System Settings → Privacy & Security → Microphone."
             )))
         }
@@ -78,7 +78,7 @@ final class MicrophoneCapture {
             let inputNode = engine.inputNode
             let inputFormat = inputNode.inputFormat(forBus: 0)
             guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
-                throw MeetingCopilotError.audio("The selected default microphone has no usable input format.")
+                throw PUnderclassError.audio("The selected default microphone has no usable input format.")
             }
 
             inputNode.installTap(
@@ -128,11 +128,11 @@ final class CaptureSessionMicrophoneCapture: NSObject,
 
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(
-        label: "MeetingCopilot.Dictation.CaptureSession",
+        label: "PUnderclass.Dictation.CaptureSession",
         qos: .userInitiated
     )
     private let outputQueue = DispatchQueue(
-        label: "MeetingCopilot.Dictation.AudioOutput",
+        label: "PUnderclass.Dictation.AudioOutput",
         qos: .userInteractive
     )
     private let stateLock = NSLock()
@@ -159,14 +159,14 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                     self.configureAndStart(completion: completion)
                 } else {
                     DispatchQueue.main.async {
-                        completion(.failure(MeetingCopilotError.audio(
+                        completion(.failure(PUnderclassError.audio(
                             "Microphone permission was denied."
                         )))
                     }
                 }
             }
         default:
-            completion(.failure(MeetingCopilotError.audio(
+            completion(.failure(PUnderclassError.audio(
                 "Microphone access is disabled. Enable it in System Settings → Privacy & Security → Microphone."
             )))
         }
@@ -197,7 +197,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
             guard let self, !self.cancelled else { return }
             do {
                 guard let device = AVCaptureDevice.default(for: .audio) else {
-                    throw MeetingCopilotError.audio("No default microphone is available.")
+                    throw PUnderclassError.audio("No default microphone is available.")
                 }
                 let input = try AVCaptureDeviceInput(device: device)
                 let output = AVCaptureAudioDataOutput()
@@ -206,11 +206,11 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                 self.session.beginConfiguration()
                 do {
                     guard self.session.canAddInput(input) else {
-                        throw MeetingCopilotError.audio("Could not attach the default microphone.")
+                        throw PUnderclassError.audio("Could not attach the default microphone.")
                     }
                     self.session.addInput(input)
                     guard self.session.canAddOutput(output) else {
-                        throw MeetingCopilotError.audio("Could not create microphone audio output.")
+                        throw PUnderclassError.audio("Could not create microphone audio output.")
                     }
                     self.session.addOutput(output)
                     self.audioOutput = output
@@ -223,7 +223,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                 guard !self.cancelled else { return }
                 self.session.startRunning()
                 guard self.session.isRunning else {
-                    throw MeetingCopilotError.audio("The microphone capture session did not start.")
+                    throw PUnderclassError.audio("The microphone capture session did not start.")
                 }
                 DispatchQueue.main.async {
                     completion(.success(device.localizedName))
@@ -294,7 +294,7 @@ final class ProcessTapCapture {
     typealias BufferHandler = (AVAudioPCMBuffer) -> Void
 
     private let queue = DispatchQueue(
-        label: "MeetingCopilot.ProcessTap",
+        label: "PUnderclass.ProcessTap",
         qos: .userInteractive
     )
     private var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -338,7 +338,7 @@ final class ProcessTapCapture {
                 selector: kAudioTapPropertyFormat
             )
             guard let audioFormat = AVAudioFormat(streamDescription: &basicDescription) else {
-                throw MeetingCopilotError.audio("Core Audio returned an unsupported process-tap format.")
+                throw PUnderclassError.audio("Core Audio returned an unsupported process-tap format.")
             }
             format = audioFormat
 

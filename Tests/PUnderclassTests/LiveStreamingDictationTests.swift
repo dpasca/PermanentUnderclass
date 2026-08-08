@@ -1,7 +1,7 @@
 import AVFAudio
 import Foundation
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
 /// Exercises the streamed dictation path against the real API. This is the only
 /// place the 16 kHz wire format, the mid-recording segment commits, and the
@@ -138,7 +138,7 @@ final class LiveStreamingDictationTests: XCTestCase {
         try speech.run()
         speech.waitUntilExit()
         guard speech.terminationStatus == 0 else {
-            throw MeetingCopilotError.audio("say failed")
+            throw PUnderclassError.audio("say failed")
         }
 
         let file = try AVAudioFile(forReading: audioURL)

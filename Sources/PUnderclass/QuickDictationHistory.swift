@@ -17,7 +17,7 @@ struct QuickDictationHistoryEntry: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct QuickDictationHistoryStore {
-    private static let directoryName = "com.permanentunderclass.meetingcopilot"
+    private static let directoryName = "com.newtypekk.punderclass"
     private static let fileName = "QuickDictationHistory.json"
 
     let fileURL: URL

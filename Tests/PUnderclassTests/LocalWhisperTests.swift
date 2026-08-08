@@ -1,7 +1,7 @@
 import AVFAudio
 import Foundation
 import XCTest
-@testable import MeetingCopilot
+@testable import PUnderclass
 
 final class LocalWhisperTests: XCTestCase {
     func testSyntheticTechnicalSpeechRoundTrip() async throws {
@@ -12,7 +12,7 @@ final class LocalWhisperTests: XCTestCase {
         }
 
         let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting-copilot-whisper-\(UUID().uuidString).aiff")
+            .appendingPathComponent("punderclass-whisper-\(UUID().uuidString).aiff")
         defer {
             try? FileManager.default.removeItem(at: audioURL)
         }
@@ -42,7 +42,7 @@ final class LocalWhisperTests: XCTestCase {
         let lock = NSLock()
         var pcm16Audio = Data()
         let audioPipeline = AudioTrackPipeline(
-            label: "MeetingCopilotTests.WhisperAudio",
+            label: "PUnderclassTests.WhisperAudio",
             onChunk: { chunk in
                 lock.withLock {
                     pcm16Audio.append(chunk)

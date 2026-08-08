@@ -423,7 +423,7 @@ final class ReferenceLibraryService {
 
     private let scanner: ReferenceLibraryScanner
     private let scanQueue = DispatchQueue(
-        label: "MeetingCopilot.ReferenceLibrary.Scan",
+        label: "PUnderclass.ReferenceLibrary.Scan",
         qos: .utility
     )
     private let monitor = ReferenceFolderMonitor()
@@ -514,7 +514,7 @@ final class ReferenceLibraryService {
 }
 
 private final class ReferenceFolderMonitor {
-    private let queue = DispatchQueue(label: "MeetingCopilot.ReferenceLibrary.Events")
+    private let queue = DispatchQueue(label: "PUnderclass.ReferenceLibrary.Events")
     private var stream: FSEventStreamRef?
     private var onChange: (() -> Void)?
 

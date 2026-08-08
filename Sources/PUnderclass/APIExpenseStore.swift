@@ -4,7 +4,7 @@ import Foundation
 /// survives relaunches — during development the app starts many times a day,
 /// and a per-launch total answers no question anyone actually has.
 struct APIExpenseStore {
-    private static let directoryName = "com.permanentunderclass.meetingcopilot"
+    private static let directoryName = "com.newtypekk.punderclass"
     private static let fileName = "APIExpenses.json"
 
     let fileURL: URL

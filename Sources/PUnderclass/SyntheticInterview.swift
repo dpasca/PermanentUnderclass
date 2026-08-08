@@ -57,7 +57,7 @@ struct SyntheticInterviewState: Equatable {
 }
 
 struct SyntheticInterviewScenarioStore {
-    private static let directoryName = "com.permanentunderclass.meetingcopilot"
+    private static let directoryName = "com.newtypekk.punderclass"
     private static func fileName(for purpose: CapturePurpose) -> String {
         switch purpose {
         case .meeting:

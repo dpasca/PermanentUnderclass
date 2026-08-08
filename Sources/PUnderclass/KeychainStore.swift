@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainStore {
-    private static let service = "com.permanentunderclass.meetingcopilot"
+    private static let service = "com.newtypekk.punderclass"
     private static let account = "openai-api-key"
 
     static func loadAPIKey() -> String? {

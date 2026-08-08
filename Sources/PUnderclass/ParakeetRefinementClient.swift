@@ -15,7 +15,7 @@ final class ParakeetRefinementClient: TranscriptRefining, @unchecked Sendable {
     private let refinedHandler: RefinedHandler
     private let failureHandler: FailureHandler
     private let stateQueue = DispatchQueue(
-        label: "MeetingCopilot.Parakeet.Refinement",
+        label: "PUnderclass.Parakeet.Refinement",
         qos: .userInitiated
     )
     private let transcriber = ParakeetTranscriber.shared
@@ -243,7 +243,7 @@ actor ParakeetTranscriber {
     static let shared = ParakeetTranscriber()
     static let encoderComputeUnits: MLComputeUnits = .cpuOnly
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "ParakeetPreparation"
     )
 
@@ -308,7 +308,7 @@ actor ParakeetTranscriber {
         expectedLanguages: [String]
     ) async throws -> String {
         guard let manager else {
-            throw MeetingCopilotError.audio("The local Parakeet model is not ready.")
+            throw PUnderclassError.audio("The local Parakeet model is not ready.")
         }
         let audioBuffer = try Self.audioBuffer(from: pcm16Audio)
         let decoderLayers = await manager.decoderLayerCount
@@ -397,13 +397,13 @@ actor ParakeetTranscriber {
                 )
             )
         else {
-            throw MeetingCopilotError.audio("Could not construct local transcription audio.")
+            throw PUnderclassError.audio("Could not construct local transcription audio.")
         }
 
         buffer.frameLength = buffer.frameCapacity
         let audioBuffer = buffer.mutableAudioBufferList.pointee.mBuffers
         guard let destination = audioBuffer.mData else {
-            throw MeetingCopilotError.audio("Could not access local transcription audio.")
+            throw PUnderclassError.audio("Could not access local transcription audio.")
         }
         pcm16Audio.withUnsafeBytes { source in
             guard let sourceAddress = source.baseAddress else { return }

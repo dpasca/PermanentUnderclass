@@ -23,7 +23,7 @@ final class WhisperRefinementClient: TranscriptRefining, @unchecked Sendable {
     private let refinedHandler: RefinedHandler
     private let failureHandler: FailureHandler
     private let stateQueue = DispatchQueue(
-        label: "MeetingCopilot.Whisper.Refinement",
+        label: "PUnderclass.Whisper.Refinement",
         qos: .userInitiated
     )
     private let transcriber = WhisperTranscriber.shared
@@ -240,7 +240,7 @@ actor WhisperTranscriber {
     static let modelFolderName = "openai_whisper-large-v3-v20240930_626MB"
 
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "WhisperPreparation"
     )
 
@@ -313,7 +313,7 @@ actor WhisperTranscriber {
 
     func transcribe(_ request: RealtimeRefinementRequest) async throws -> String {
         guard let pipeline else {
-            throw MeetingCopilotError.audio("The local Whisper model is not ready.")
+            throw PUnderclassError.audio("The local Whisper model is not ready.")
         }
 
         let audioSamples = try Self.audioSamples(from: request.pcm16Audio)
@@ -353,7 +353,7 @@ actor WhisperTranscriber {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not locate Application Support for the local Whisper model."
             )
         }
@@ -414,7 +414,7 @@ actor WhisperTranscriber {
                 to: destinationFormat
             )
         else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not construct audio for local Whisper transcription."
             )
         }
@@ -422,7 +422,7 @@ actor WhisperTranscriber {
         sourceBuffer.frameLength = sourceBuffer.frameCapacity
         let sourceAudioBuffer = sourceBuffer.mutableAudioBufferList.pointee.mBuffers
         guard let destination = sourceAudioBuffer.mData else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not access audio for local Whisper transcription."
             )
         }
@@ -441,7 +441,7 @@ actor WhisperTranscriber {
             pcmFormat: destinationFormat,
             frameCapacity: destinationCapacity
         ) else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not allocate resampled audio for local Whisper transcription."
             )
         }
@@ -461,12 +461,12 @@ actor WhisperTranscriber {
             return sourceBuffer
         }
         guard conversionStatus != .error, conversionError == nil else {
-            throw conversionError ?? MeetingCopilotError.audio(
+            throw conversionError ?? PUnderclassError.audio(
                 "Could not resample audio for local Whisper transcription."
             )
         }
         guard let samples = destinationBuffer.floatChannelData?[0] else {
-            throw MeetingCopilotError.audio(
+            throw PUnderclassError.audio(
                 "Could not access resampled audio for local Whisper transcription."
             )
         }

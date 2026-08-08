@@ -8,7 +8,7 @@ let package = Package(
         .macOS("14.2")
     ],
     products: [
-        .executable(name: "punderclass", targets: ["MeetingCopilot"])
+        .executable(name: "punderclass", targets: ["PUnderclass"])
     ],
     dependencies: [
         .package(
@@ -26,7 +26,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "MeetingCopilot",
+            name: "PUnderclass",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Hummingbird", package: "hummingbird"),
@@ -46,9 +46,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "MeetingCopilotTests",
+            name: "PUnderclassTests",
             dependencies: [
-                "MeetingCopilot",
+                "PUnderclass",
                 .product(name: "HummingbirdTesting", package: "hummingbird")
             ]
         )

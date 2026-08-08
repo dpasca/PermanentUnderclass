@@ -170,7 +170,7 @@ final class RealtimeTranscriptionClient: NSObject {
         finalHandler = onFinal
         speechPauseHandler = onSpeechPause
         usageHandler = onUsage
-        socketQueue = DispatchQueue(label: "MeetingCopilot.Realtime.\(label)")
+        socketQueue = DispatchQueue(label: "PUnderclass.Realtime.\(label)")
         super.init()
     }
 
@@ -552,7 +552,7 @@ extension RealtimeTranscriptionClient: URLSessionWebSocketDelegate {
             do {
                 let data = try Self.sessionUpdateJSON(self.context)
                 guard let text = String(data: data, encoding: .utf8) else {
-                    throw MeetingCopilotError.audio("Could not encode the Realtime session.")
+                    throw PUnderclassError.audio("Could not encode the Realtime session.")
                 }
                 self.enqueue(text, isAudio: false, priority: true)
                 self.publishState(.connected)

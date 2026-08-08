@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-bundle_identifier="com.permanentunderclass.meetingcopilot"
+bundle_identifier="com.newtypekk.punderclass"
 
 # `open` reuses an existing GUI process even after its executable has been
 # rebuilt on disk. Quit every build with this bundle identifier, including one

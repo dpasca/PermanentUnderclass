@@ -15,7 +15,7 @@ struct HeadlessModeHotKey {
 
 extension Notification.Name {
     static let headlessModeDidChange = Notification.Name(
-        "MeetingCopilot.HeadlessModeDidChange"
+        "PUnderclass.HeadlessModeDidChange"
     )
 }
 
@@ -167,7 +167,7 @@ private final class HeadlessModeHotKeyMonitor {
 /// application switcher while leaving its capture and companion services alive.
 final class HeadlessModeController {
     private static let logger = Logger(
-        subsystem: "com.permanentunderclass.meetingcopilot",
+        subsystem: "com.newtypekk.punderclass",
         category: "HeadlessMode"
     )
 

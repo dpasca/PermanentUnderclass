@@ -1,10 +1,10 @@
 import SwiftUI
 
 @main
-struct MeetingCopilotApp: App {
-    @NSApplicationDelegateAdaptor(MeetingCopilotAppDelegate.self)
+struct PUnderclassApp: App {
+    @NSApplicationDelegateAdaptor(PUnderclassAppDelegate.self)
     private var appDelegate
-    @StateObject private var applicationModel = MeetingCopilotApplicationModel()
+    @StateObject private var applicationModel = PUnderclassApplicationModel()
 
     var body: some Scene {
         WindowGroup("PUnderclass") {
@@ -41,7 +41,7 @@ struct MeetingCopilotApp: App {
 }
 
 /// Owns the shared services used by the app's main and auxiliary windows.
-final class MeetingCopilotApplicationModel: ObservableObject {
+final class PUnderclassApplicationModel: ObservableObject {
     let controller: MeetingController?
 
     init() {
@@ -53,7 +53,7 @@ final class MeetingCopilotApplicationModel: ObservableObject {
     }
 }
 
-final class MeetingCopilotAppDelegate: NSObject, NSApplicationDelegate {
+final class PUnderclassAppDelegate: NSObject, NSApplicationDelegate {
     private let instanceCoordinator = ApplicationInstanceCoordinator.shared
     private var dictationSelfTest: DictationSelfTestRunner?
     private var meetingCaptureSelfTest: MeetingCaptureSelfTestRunner?
