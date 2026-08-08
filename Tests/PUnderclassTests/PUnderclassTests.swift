@@ -430,6 +430,49 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
+    func testCancelledTranscriptionEventsCannotEnterTheNextDictation() {
+        var filter = CancelledTranscriptionEventFilter()
+        filter.abandon(
+            acknowledgedItemIDs: ["item_known"],
+            unacknowledgedCommitCount: 1
+        )
+
+        XCTAssertTrue(
+            filter.shouldIgnore(
+                .transcriptionDelta(itemID: "item_known", delta: "Old")
+            )
+        )
+        XCTAssertTrue(
+            filter.shouldIgnore(.audioCommitted(itemID: "item_late"))
+        )
+        XCTAssertTrue(
+            filter.shouldIgnore(
+                .transcriptionCompleted(
+                    itemID: "item_known",
+                    transcript: "Old text",
+                    languages: ["en"]
+                )
+            )
+        )
+        XCTAssertTrue(
+            filter.shouldIgnore(
+                .transcriptionFailed(
+                    itemID: "item_late",
+                    message: "Cancelled"
+                )
+            )
+        )
+
+        XCTAssertFalse(
+            filter.shouldIgnore(.audioCommitted(itemID: "item_current"))
+        )
+        XCTAssertFalse(
+            filter.shouldIgnore(
+                .transcriptionDelta(itemID: "item_current", delta: "New")
+            )
+        )
+    }
+
     func testRefinementSessionUsesGPTTranscribe() throws {
         XCTAssertEqual(RealtimeRefinementClient.model, "gpt-transcribe")
         XCTAssertEqual(
@@ -502,6 +545,12 @@ final class PUnderclassTests: XCTestCase {
             JSONSerialization.jsonObject(with: commitData) as? [String: String]
         )
         XCTAssertEqual(commit["type"], "input_audio_buffer.commit")
+
+        let clearData = try RealtimeRefinementClient.inputAudioClearJSON()
+        let clear = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: clearData) as? [String: String]
+        )
+        XCTAssertEqual(clear["type"], "input_audio_buffer.clear")
     }
 
     func testRefinementRejectsTurnsAfterFinishing() {
@@ -828,16 +877,59 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertFalse(state.isHeld)
     }
 
-    func testTypingAnotherKeyCancelsModifierOnlyDictation() {
+    func testTypingAnotherKeyLeavesModifierOnlyDictationRunning() {
         var state = ModifierHoldState()
 
         XCTAssertEqual(
             state.update(flags: [.maskCommand, .maskAlternate]),
             .pressed
         )
-        XCTAssertEqual(state.cancelForKeyDown(), .cancelled)
+        let shouldInterrupt = ModifierHoldMonitor.shouldInterruptForKeyDown(
+            keyCode: 0,
+            eventTag: 0,
+            isDiagnosticHold: false
+        )
+        if shouldInterrupt {
+            _ = state.interruptForEscape()
+        }
+
+        XCTAssertFalse(shouldInterrupt)
+        XCTAssertTrue(state.isHeld)
+    }
+
+    func testAddedModifierLeavesActiveDictationRunning() {
+        var state = ModifierHoldState()
+
+        XCTAssertEqual(
+            state.update(flags: [.maskCommand, .maskAlternate]),
+            .pressed
+        )
+        XCTAssertNil(
+            state.update(
+                flags: [.maskCommand, .maskAlternate, .maskShift]
+            )
+        )
+        XCTAssertTrue(state.isHeld)
+        XCTAssertEqual(state.update(flags: [.maskCommand, .maskShift]), .released)
+    }
+
+    func testEscapeInterruptsModifierOnlyDictation() {
+        var state = ModifierHoldState()
+
+        XCTAssertEqual(
+            state.update(flags: [.maskCommand, .maskAlternate]),
+            .pressed
+        )
+        XCTAssertTrue(
+            ModifierHoldMonitor.shouldInterruptForKeyDown(
+                keyCode: ModifierHoldMonitor.escapeKeyCode,
+                eventTag: 0,
+                isDiagnosticHold: false
+            )
+        )
+        XCTAssertEqual(state.interruptForEscape(), .interrupted)
         XCTAssertFalse(state.isHeld)
-        XCTAssertNil(state.cancelForKeyDown())
+        XCTAssertNil(state.interruptForEscape())
     }
 
     func testAutomaticPasteDoesNotCancelParallelDictation() {
@@ -847,20 +939,22 @@ final class PUnderclassTests: XCTestCase {
             .pressed
         )
 
-        let shouldCancel = ModifierHoldMonitor.shouldCancelForKeyDown(
+        let shouldInterrupt = ModifierHoldMonitor.shouldInterruptForKeyDown(
+            keyCode: ModifierHoldMonitor.escapeKeyCode,
             eventTag: ModifierHoldMonitor.pasteEventTag,
             isDiagnosticHold: false
         )
-        if shouldCancel {
-            _ = state.cancelForKeyDown()
+        if shouldInterrupt {
+            _ = state.interruptForEscape()
         }
 
-        XCTAssertFalse(shouldCancel)
+        XCTAssertFalse(shouldInterrupt)
         XCTAssertTrue(state.isHeld)
-        XCTAssertTrue(
-            ModifierHoldMonitor.shouldCancelForKeyDown(
+        XCTAssertFalse(
+            ModifierHoldMonitor.shouldInterruptForKeyDown(
+                keyCode: ModifierHoldMonitor.escapeKeyCode,
                 eventTag: 0,
-                isDiagnosticHold: false
+                isDiagnosticHold: true
             )
         )
     }
@@ -1693,6 +1787,29 @@ final class PUnderclassTests: XCTestCase {
 
         state.resolve(delivery: .pasted)
         XCTAssertFalse(state.content.needsAcknowledgement)
+    }
+
+    func testInterruptedDeliveryOffersCopyOrDismissWithoutResolving() {
+        var state = QuickDictationPreviewState()
+        state.handle(phase: .transcribing)
+        state.show(result: "Text captured before Escape")
+
+        state.resolve(delivery: .interrupted)
+
+        XCTAssertTrue(state.content.needsAcknowledgement)
+        XCTAssertEqual(
+            state.content,
+            .result(
+                QuickDictationResultPresentation(
+                    text: "Text captured before Escape",
+                    delivery: .interrupted
+                )
+            )
+        )
+        XCTAssertEqual(
+            QuickDictationDeliveryOutcome.interrupted.detail,
+            "Recording stopped with Escape. Copy the text, or dismiss this message."
+        )
     }
 
     // MARK: - Local-first capability

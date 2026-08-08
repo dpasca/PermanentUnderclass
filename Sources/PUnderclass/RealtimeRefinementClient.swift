@@ -86,6 +86,53 @@ enum RealtimeRefinementServerEvent: Equatable {
     }
 }
 
+/// Quarantines server events that belong to a request or stream the user has
+/// abandoned. Clearing the input buffer prevents uncommitted audio from
+/// carrying over, but an earlier commit can still finish asynchronously after
+/// a new dictation has started.
+struct CancelledTranscriptionEventFilter {
+    private var ignoredItemIDs: Set<String> = []
+    private var unacknowledgedCommitCount = 0
+
+    mutating func abandon(
+        acknowledgedItemIDs: [String],
+        unacknowledgedCommitCount: Int
+    ) {
+        ignoredItemIDs.formUnion(acknowledgedItemIDs)
+        self.unacknowledgedCommitCount += max(
+            0,
+            unacknowledgedCommitCount
+        )
+    }
+
+    mutating func shouldIgnore(
+        _ event: RealtimeRefinementServerEvent
+    ) -> Bool {
+        switch event {
+        case let .audioCommitted(itemID):
+            guard unacknowledgedCommitCount > 0 else { return false }
+            unacknowledgedCommitCount -= 1
+            ignoredItemIDs.insert(itemID)
+            return true
+
+        case let .transcriptionDelta(itemID, _):
+            return ignoredItemIDs.contains(itemID)
+
+        case let .transcriptionCompleted(itemID, _, _),
+             let .transcriptionFailed(itemID, _):
+            return ignoredItemIDs.remove(itemID) != nil
+
+        case .sessionCreated, .sessionUpdated, .error, .ignored:
+            return false
+        }
+    }
+
+    mutating func reset() {
+        ignoredItemIDs.removeAll()
+        unacknowledgedCommitCount = 0
+    }
+}
+
 final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptStreaming {
     typealias StateHandler = (SocketState) -> Void
     typealias RefinedHandler = (_ transcriptID: String, _ text: String) -> Void
@@ -159,6 +206,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     /// buffers here and takes over as soon as the previous transcript lands.
     private var pendingStream: StreamState?
     private var isAwaitingStreamConfiguration = false
+    private var cancelledEventFilter = CancelledTranscriptionEventFilter()
 
     /// A dictation that is uploading while the user speaks. Segments are
     /// committed as the user pauses, so several items can be transcribing at
@@ -282,11 +330,21 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     func cancelPendingRequests() {
         socketQueue.async { [weak self] in
             guard let self else { return }
+            let hadActiveRequest = self.activeRequest != nil
+            if self.activeCommitDispatchUptime != nil {
+                self.cancelledEventFilter.abandon(
+                    acknowledgedItemIDs: self.activeItemID.map { [$0] } ?? [],
+                    unacknowledgedCommitCount: self.activeItemID == nil ? 1 : 0
+                )
+            }
             self.queuedRequests.removeAll()
             // Results for the in-flight request are dropped rather than
             // published; the socket keeps its session so the next request does
             // not pay for a reconnect.
             self.resetActiveRequest()
+            if hadActiveRequest {
+                _ = self.sendInputAudioClear()
+            }
         }
     }
 
@@ -392,8 +450,18 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
                 return
             }
             guard self.stream?.streamID == streamID else { return }
+            if let stream = self.stream {
+                self.cancelledEventFilter.abandon(
+                    acknowledgedItemIDs: stream.assembly.order,
+                    unacknowledgedCommitCount: max(
+                        0,
+                        stream.commitsSent - stream.assembly.order.count
+                    )
+                )
+            }
             self.stream = nil
             self.isAwaitingStreamConfiguration = false
+            _ = self.sendInputAudioClear()
             self.promotePendingStream()
         }
     }
@@ -429,6 +497,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
 
     private func sendStreamConfiguration() {
         guard let stream, let task else { return }
+        guard sendInputAudioClear() else { return }
         do {
             let data = try Self.sessionUpdateJSON(
                 RealtimeRefinementRequest(
@@ -697,6 +766,12 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         )
     }
 
+    static func inputAudioClearJSON() throws -> Data {
+        try JSONSerialization.data(
+            withJSONObject: ["type": "input_audio_buffer.clear"]
+        )
+    }
+
     static func transcriptionPrompt(for request: RealtimeRefinementRequest) -> String {
         var sections: [String] = []
         let meetingContext = request.context.prompt
@@ -742,6 +817,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
 
     private func sendConfiguration(for request: RealtimeRefinementRequest) {
         guard let task else { return }
+        guard sendInputAudioClear() else { return }
         do {
             let data = try Self.sessionUpdateJSON(request)
             guard let text = String(data: data, encoding: .utf8) else {
@@ -758,6 +834,33 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
             }
         } catch {
             failConnection(error.localizedDescription)
+        }
+    }
+
+    /// Every request starts with an explicitly empty server-side input buffer.
+    /// A cancelled stream may already have appended audio to the persistent
+    /// realtime session; without this boundary, the next commit can combine
+    /// that abandoned audio with the next dictation.
+    @discardableResult
+    private func sendInputAudioClear() -> Bool {
+        guard let task else { return false }
+        do {
+            let data = try Self.inputAudioClearJSON()
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw PUnderclassError.audio(
+                    "Could not encode the GPT-Transcribe buffer reset."
+                )
+            }
+            task.send(.string(text)) { [weak self] error in
+                self?.socketQueue.async {
+                    guard let self, let error else { return }
+                    self.failConnection(error.localizedDescription)
+                }
+            }
+            return true
+        } catch {
+            failConnection(error.localizedDescription)
+            return false
         }
     }
 
@@ -902,6 +1005,9 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         _ event: RealtimeRefinementServerEvent,
         completionUsage: TranscriptionCompletionUsage?
     ) {
+        if cancelledEventFilter.shouldIgnore(event) {
+            return
+        }
         if handleStreamEvent(event, completionUsage: completionUsage) {
             return
         }
@@ -1079,6 +1185,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         task = nil
         session?.invalidateAndCancel()
         session = nil
+        cancelledEventFilter.reset()
         publishState(.failed(message))
     }
 
@@ -1113,6 +1220,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         task = nil
         session?.invalidateAndCancel()
         session = nil
+        cancelledEventFilter.reset()
         publishState(.idle)
     }
 
