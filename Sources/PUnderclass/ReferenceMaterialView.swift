@@ -299,7 +299,7 @@ struct ReferenceMaterialView: View {
                             Text("Choose a folder of working documents")
                                 .font(.title3.weight(.semibold))
                             Text(
-                                "PUnderclass indexes supported files locally and watches the folder for changes."
+                                "PermanentUnderclass indexes supported files locally and watches the folder for changes."
                             )
                             .font(.body)
                             .foregroundStyle(.secondary)

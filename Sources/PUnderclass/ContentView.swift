@@ -12,9 +12,26 @@ struct ContentView: View {
     @ObservedObject var controller: MeetingController
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
+    private let documentationDemoMode: DocumentationDemoMode?
     /// Dictation leads: it is the part that works with no account, no key, and
     /// no configuration.
     @State private var selectedTab: AppTab = .quickDictation
+
+    init(
+        controller: MeetingController,
+        documentationDemoMode: DocumentationDemoMode? = nil
+    ) {
+        self.controller = controller
+        self.documentationDemoMode = documentationDemoMode
+        switch documentationDemoMode {
+        case .meeting:
+            _selectedTab = State(initialValue: .meeting)
+        case .interview:
+            _selectedTab = State(initialValue: .interview)
+        case .quickDictation, nil:
+            _selectedTab = State(initialValue: .quickDictation)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,7 +59,10 @@ struct ContentView: View {
                     .tag(AppTab.interview)
             }
         }
-        .frame(minWidth: 1_000, minHeight: 760)
+        .frame(
+            minWidth: 1_000,
+            minHeight: documentationDemoMode == .quickDictation ? 520 : 760
+        )
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -151,7 +171,7 @@ struct ContentView: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("PUnderclass")
+                Text("PermanentUnderclass")
                     .font(.system(size: 22, weight: .semibold))
                 Text(visibleStatusMessage)
                     .font(.caption)

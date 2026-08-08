@@ -1241,7 +1241,7 @@ function updateElapsedTime() {
 
 async function initialize() {
   bindControls();
-  setConnectionStatus("reconnecting", "Finding PUnderclass on this Mac", "CONNECTING");
+  setConnectionStatus("reconnecting", "Finding PermanentUnderclass on this Mac", "CONNECTING");
   try {
     await enterLiveMode();
   } catch (error) {

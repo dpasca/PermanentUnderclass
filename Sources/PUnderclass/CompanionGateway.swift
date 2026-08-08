@@ -107,7 +107,7 @@ enum CompanionGatewayRoutes {
             return try jsonResponse(
                 CompanionHealth(
                     v: 1,
-                    producer: "PUnderclass",
+                    producer: "PermanentUnderclass",
                     streamID: hub.streamID,
                     ready: assets.isReady
                 )
@@ -308,7 +308,7 @@ final class CompanionGateway: @unchecked Sendable {
             responder: router.buildResponder(),
             configuration: .init(
                 address: .hostname(Self.host, port: Self.port),
-                serverName: "PUnderclass Companion"
+                serverName: "PermanentUnderclass Companion"
             ),
             onServerRunning: { _ in callbacks.onReady() }
         )

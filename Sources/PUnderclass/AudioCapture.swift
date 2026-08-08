@@ -313,12 +313,12 @@ final class ProcessTapCapture {
             tapDescription = CATapDescription(
                 monoMixdownOfProcesses: [processObjectID]
             )
-            tapDescription.name = "PUnderclass call audio"
+            tapDescription.name = "PermanentUnderclass call audio"
         } else {
             tapDescription = CATapDescription(
                 monoGlobalTapButExcludeProcesses: []
             )
-            tapDescription.name = "PUnderclass system audio"
+            tapDescription.name = "PermanentUnderclass system audio"
         }
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
@@ -343,7 +343,7 @@ final class ProcessTapCapture {
             format = audioFormat
 
             let aggregateDescription: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "PUnderclass Capture",
+                kAudioAggregateDeviceNameKey: "PermanentUnderclass Capture",
                 kAudioAggregateDeviceUIDKey: UUID().uuidString,
                 kAudioAggregateDeviceIsPrivateKey: true,
                 kAudioAggregateDeviceTapAutoStartKey: true,

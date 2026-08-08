@@ -39,7 +39,7 @@ if [[ -n "$existing_pids" ]]; then
     done
     for pid in ${(f)existing_pids}; do
         if kill -0 "$pid" >/dev/null 2>&1; then
-            print -u2 "error: PUnderclass process $pid did not quit"
+            print -u2 "error: PermanentUnderclass process $pid did not quit"
             exit 1
         fi
     done

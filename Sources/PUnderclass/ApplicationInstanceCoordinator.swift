@@ -1,7 +1,7 @@
 import AppKit
 import OSLog
 
-/// Keeps independently built copies of PUnderclass from running concurrently.
+/// Keeps independently built copies of PermanentUnderclass from running concurrently.
 /// Launch Services normally reopens an existing app, but development worktrees
 /// contain distinct app bundles that can otherwise launch as separate processes.
 final class ApplicationInstanceCoordinator: NSObject {

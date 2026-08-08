@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build ad hoc app bundle
+        env:
+          PUNDERCLASS_ARCH: arm64
+          PUNDERCLASS_SIGNING_IDENTITY: '-'
+        run: ./scripts/build-app.sh debug
+
+      - name: Verify bundled licenses
+        run: |
+          test -f .build/PermanentUnderclass.app/Contents/Resources/LICENSE.txt
+          test -f .build/PermanentUnderclass.app/Contents/Resources/THIRD_PARTY_NOTICES.md
+          test -f .build/PermanentUnderclass.app/Contents/Resources/ThirdPartyLicenses/FluidAudio/LICENSE
+          test -f .build/PermanentUnderclass.app/Contents/Resources/ThirdPartyLicenses/argmax-oss-swift/NOTICES
+
+      - name: Verify Apple silicon release archive
+        run: ./scripts/archive-release.sh 0.1.0

@@ -454,7 +454,7 @@ private final class QuickDictationOverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Presents dictation feedback without activating PUnderclass or taking focus
+/// Presents dictation feedback without activating PermanentUnderclass or taking focus
 /// away from the application that will receive the pasted text.
 final class QuickDictationOverlayController {
     private let model = QuickDictationOverlayModel()

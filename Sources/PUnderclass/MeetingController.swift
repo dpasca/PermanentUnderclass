@@ -95,6 +95,7 @@ final class MeetingController: ObservableObject {
     private let apiExpenseStore: APIExpenseStore
     private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
     private let syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore
+    private let documentationDemoMode: DocumentationDemoMode?
 
     private static let dictationEnabledDefaultsKey =
         "PUnderclass.HoldToDictateEnabled"
@@ -124,13 +125,19 @@ final class MeetingController: ObservableObject {
             .applicationSupport(for: .interview),
         syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore =
             .applicationSupport(for: .meeting),
-        apiExpenseStore: APIExpenseStore = .applicationSupport()
+        apiExpenseStore: APIExpenseStore = .applicationSupport(),
+        documentationDemoMode: DocumentationDemoMode? = nil
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
         self.quickDictationRecoveryStore = quickDictationRecoveryStore
         self.syntheticInterviewScenarioStore = syntheticInterviewScenarioStore
         self.syntheticMeetingScenarioStore = syntheticMeetingScenarioStore
         self.apiExpenseStore = apiExpenseStore
+        self.documentationDemoMode = documentationDemoMode
+        if let documentationDemoMode {
+            configureDocumentationDemo(documentationDemoMode)
+            return
+        }
         // A spend estimate that resets on every launch cannot answer "how much
         // did today cost", so the running total outlives the process.
         apiExpenses = (try? apiExpenseStore.load()) ?? APIExpenseSummary()
@@ -215,6 +222,7 @@ final class MeetingController: ObservableObject {
     }
 
     func refreshProcesses() {
+        guard documentationDemoMode == nil else { return }
         do {
             let previous = selectedProcessID.flatMap { selectedID in
                 processes.first(where: { $0.id == selectedID })
@@ -240,7 +248,92 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    private func configureDocumentationDemo(_ mode: DocumentationDemoMode) {
+        let now = Date()
+        apiKeyDraft = "documentation-demo-not-a-real-key"
+        keyStatus = "Synthetic documentation data"
+        statusMessage = "Documentation demo · synthetic data only"
+        microphoneName = "Demo microphone"
+        microphoneAvailable = true
+        audioOutputName = "Demo system output"
+        audioOutputAvailable = true
+        dictationEnabled = true
+        dictationPhase = .ready
+        dictationPermissions = DictationPermissionState(
+            canMonitorKeyboard: true,
+            canPasteIntoOtherApps: true,
+            canUseMicrophone: true
+        )
+        quickDictationHistory = [
+            QuickDictationHistoryEntry(
+                id: UUID(uuidString: "55899823-975C-4AD7-90B4-F870793A9E11")!,
+                createdAt: now.addingTimeInterval(-240),
+                text: "Draft the release notes and include the compatibility caveat."
+            ),
+            QuickDictationHistoryEntry(
+                id: UUID(uuidString: "613260B7-DA82-4970-8BE1-77C1E093E5DC")!,
+                createdAt: now.addingTimeInterval(-3_660),
+                text: "Follow up with the design review after lunch."
+            ),
+            QuickDictationHistoryEntry(
+                id: UUID(uuidString: "3D1120B5-E2A4-433D-B81E-F5B309A5A02D")!,
+                createdAt: now.addingTimeInterval(-86_400),
+                text: "The prototype should remain local-first and work without an account."
+            )
+        ]
+        lastDictation = quickDictationHistory.first?.text ?? ""
+        transcript = Self.documentationTranscript(now: now)
+        companionGatewayStatus = "Documentation demo"
+        preparationPurpose = mode == .interview ? .interview : .meeting
+    }
+
+    private static func documentationTranscript(now: Date) -> [TranscriptTurn] {
+        [
+            TranscriptTurn(
+                id: "documentation-meeting-other",
+                purpose: .meeting,
+                speaker: .other,
+                startedAt: now.addingTimeInterval(-150),
+                endedAt: now.addingTimeInterval(-142),
+                liveText: "Can we keep the first release focused on the local workflow?",
+                text: "Can we keep the first release focused on the local workflow?",
+                refinement: .refined
+            ),
+            TranscriptTurn(
+                id: "documentation-meeting-you",
+                purpose: .meeting,
+                speaker: .you,
+                startedAt: now.addingTimeInterval(-138),
+                endedAt: now.addingTimeInterval(-128),
+                liveText: "Yes. Quick Dictation works locally, and hosted features remain optional.",
+                text: "Yes. Quick Dictation works locally, and hosted features remain optional.",
+                refinement: .refined
+            ),
+            TranscriptTurn(
+                id: "documentation-interview-other",
+                purpose: .interview,
+                speaker: .other,
+                startedAt: now.addingTimeInterval(-90),
+                endedAt: now.addingTimeInterval(-82),
+                liveText: "How would you make an audio pipeline resilient to a dropped connection?",
+                text: "How would you make an audio pipeline resilient to a dropped connection?",
+                refinement: .refined
+            ),
+            TranscriptTurn(
+                id: "documentation-interview-you",
+                purpose: .interview,
+                speaker: .you,
+                startedAt: now.addingTimeInterval(-78),
+                endedAt: now.addingTimeInterval(-65),
+                liveText: "I would preserve finalized local state, reconnect with bounded backoff, and make recovery visible.",
+                text: "I would preserve finalized local state, reconnect with bounded backoff, and make recovery visible.",
+                refinement: .refined
+            )
+        ]
+    }
+
     func refreshAudioDevices() {
+        guard documentationDemoMode == nil else { return }
         do {
             inputDevices = try CoreAudioUtilities.availableInputDevices()
             outputDevices = try CoreAudioUtilities.availableOutputDevices()
@@ -250,6 +343,37 @@ final class MeetingController: ObservableObject {
 
         handleDefaultInputDeviceChange(CoreAudioUtilities.defaultInputDevice())
         handleDefaultOutputDeviceChange(CoreAudioUtilities.defaultOutputDevice())
+    }
+
+    static func documentationDemo(
+        _ mode: DocumentationDemoMode,
+        fileManager: FileManager = .default
+    ) -> MeetingController {
+        let rootURL = fileManager.temporaryDirectory.appendingPathComponent(
+            "PermanentUnderclass-DocumentationDemo-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        return MeetingController(
+            quickDictationHistoryStore: QuickDictationHistoryStore(
+                fileURL: rootURL.appendingPathComponent("QuickDictationHistory.json")
+            ),
+            quickDictationRecoveryStore: QuickDictationRecoveryStore(
+                directoryURL: rootURL.appendingPathComponent(
+                    "QuickDictationRecoveries",
+                    isDirectory: true
+                )
+            ),
+            syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore(
+                fileURL: rootURL.appendingPathComponent("SyntheticInterviewScenario.json")
+            ),
+            syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore(
+                fileURL: rootURL.appendingPathComponent("SyntheticMeetingScenario.json")
+            ),
+            apiExpenseStore: APIExpenseStore(
+                fileURL: rootURL.appendingPathComponent("APIExpenses.json")
+            ),
+            documentationDemoMode: mode
+        )
     }
 
     func selectInputDevice(_ deviceID: AudioObjectID) {
@@ -779,6 +903,7 @@ final class MeetingController: ObservableObject {
     }
 
     func refreshDictationPermissions() {
+        guard documentationDemoMode == nil else { return }
         dictationPermissions = HoldToDictateService.currentPermissions()
         if dictationEnabled, dictationPermissions.allGranted {
             startDictationService(requestAccess: false)
@@ -897,7 +1022,7 @@ final class MeetingController: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = "Choose Reference Material Folder"
         panel.message =
-            "PUnderclass reads supported documents locally and watches this folder for changes."
+            "PermanentUnderclass reads supported documents locally and watches this folder for changes."
         panel.prompt = "Use Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

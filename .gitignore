@@ -1,3 +1,50 @@
+# Swift Package Manager
 .build/
-.DS_Store
+.swiftpm/
+dist/
+Package.resolved.tmp
+
+# Xcode and Apple tooling
+DerivedData/
 *.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local configuration, credentials, and generated diagnostics
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.mobileprovision
+*.log
+*.trace
+*.profraw
+*.profdata
+
+# Local recordings, transcripts, and reference corpora
+*.wav
+*.m4a
+*.mp3
+*.caf
+*.quickdictation/
+QuickDictationHistory.json
+QuickDictationRecoveries/
+APIExpenses.json
+SyntheticInterviewScenario.json
+SyntheticMeetingScenario.json

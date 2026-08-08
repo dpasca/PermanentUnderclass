@@ -1,0 +1,24 @@
+name: Dependency vulnerability scan
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - Package.resolved
+      - .github/workflows/osv-scanner.yml
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@8deb546fdb875b9996d27d4950be7312dac076a1 # v2.5.0
+    with:
+      scan-args: |-
+        --lockfile=Package.resolved
+      upload-sarif: ${{ !github.event.repository.private }}

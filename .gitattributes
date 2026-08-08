@@ -1,0 +1,2 @@
+# Preserve collected upstream legal texts verbatim.
+AppBundle/ThirdPartyLicenses/** -whitespace

@@ -134,7 +134,7 @@ struct QuickDictationControlPanel: View {
                 Text("Quick Dictation needs your permission")
                     .font(.headline)
                 Text(
-                    "Allow PUnderclass to detect the global shortcut and use your microphone."
+                    "Allow PermanentUnderclass to detect the global shortcut and use your microphone."
                 )
                 .font(.callout)
 
@@ -161,7 +161,7 @@ struct QuickDictationControlPanel: View {
                 .controlSize(.large)
                 .tint(.orange)
 
-                Text("Enable PUnderclass in System Settings, then return here.")
+                Text("Enable PermanentUnderclass in System Settings, then return here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)

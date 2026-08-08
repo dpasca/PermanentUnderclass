@@ -1,6 +1,6 @@
 # Live Assistant interactive prototype
 
-The native PUnderclass app serves these assets at <http://127.0.0.1:4173> and
+The native PermanentUnderclass app serves these assets at <http://127.0.0.1:4173> and
 connects them to its snapshot/SSE/command protocol. For a UI-only standalone
 preview, run from the repository root:
 

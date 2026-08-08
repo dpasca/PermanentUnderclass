@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use vX.Y.Z" >&2
+            exit 1
+          fi
+          echo "PUNDERCLASS_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "PUNDERCLASS_BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${MACOS_SIGN_P12:?MACOS_SIGN_P12 is required}"
+          : "${MACOS_SIGN_PASSWORD:?MACOS_SIGN_PASSWORD is required}"
+
+          certificate_path="$RUNNER_TEMP/punderclass-signing.p12"
+          keychain_path="$RUNNER_TEMP/punderclass-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+
+          printf '%s' "$MACOS_SIGN_P12" | /usr/bin/base64 -D > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$MACOS_SIGN_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          echo "PUNDERCLASS_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Build signed Apple silicon app
+        env:
+          PUNDERCLASS_ARCH: arm64
+          PUNDERCLASS_REQUIRE_DEVELOPER_ID: '1'
+        run: ./scripts/build-app.sh release
+
+      - name: Notarize and staple app
+        shell: bash
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          : "${MACOS_NOTARY_KEY:?MACOS_NOTARY_KEY is required}"
+          : "${MACOS_NOTARY_KEY_ID:?MACOS_NOTARY_KEY_ID is required}"
+          : "${MACOS_NOTARY_ISSUER_ID:?MACOS_NOTARY_ISSUER_ID is required}"
+
+          app_path="$GITHUB_WORKSPACE/.build/PermanentUnderclass.app"
+          notary_key="$RUNNER_TEMP/AuthKey_${MACOS_NOTARY_KEY_ID}.p8"
+          notary_archive="$RUNNER_TEMP/PermanentUnderclass-notarization.zip"
+
+          printf '%s' "$MACOS_NOTARY_KEY" | /usr/bin/base64 -D > "$notary_key"
+          /usr/bin/ditto \
+            -c -k --sequesterRsrc --keepParent \
+            "$app_path" "$notary_archive"
+          xcrun notarytool submit "$notary_archive" \
+            --key "$notary_key" \
+            --key-id "$MACOS_NOTARY_KEY_ID" \
+            --issuer "$MACOS_NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+
+      - name: Create verified release archive
+        env:
+          PUNDERCLASS_REQUIRE_NOTARIZATION: '1'
+        run: ./scripts/archive-release.sh "$PUNDERCLASS_VERSION"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/PermanentUnderclass-macOS-arm64.zip \
+            dist/checksums.txt \
+            --verify-tag \
+            --generate-notes \
+            --title "PermanentUnderclass $GITHUB_REF_NAME"
+
+      - name: Remove temporary signing material
+        if: ${{ always() }}
+        shell: bash
+        env:
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+        run: |
+          if [[ -n "${PUNDERCLASS_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$PUNDERCLASS_KEYCHAIN_PATH" || true
+          fi
+          rm -f \
+            "$RUNNER_TEMP/punderclass-signing.p12" \
+            "$RUNNER_TEMP/AuthKey_${MACOS_NOTARY_KEY_ID}.p8"

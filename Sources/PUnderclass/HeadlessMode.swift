@@ -163,7 +163,7 @@ private final class HeadlessModeHotKeyMonitor {
     }
 }
 
-/// Hides every application window and removes PUnderclass from the Dock and
+/// Hides every application window and removes PermanentUnderclass from the Dock and
 /// application switcher while leaving its capture and companion services alive.
 final class HeadlessModeController {
     private static let logger = Logger(

@@ -5,7 +5,7 @@ Decision date: 2026-08-01
 
 ## Decision
 
-Keep PUnderclass as the host, assistant brain, and sole source of truth. The
+Keep PermanentUnderclass as the host, assistant brain, and sole source of truth. The
 Swift process owns local reference ingestion, transcript state, assistant model
 calls, prompt construction, credentials, usage accounting, and recovery. Add a
 small HTTP service inside that process and serve a thin browser display from
@@ -56,7 +56,7 @@ do not improve this single-producer/local-client case.
 
 ```text
 System/app audio ──┐
-Microphone ────────┼─> PUnderclass macOS host
+Microphone ────────┼─> PermanentUnderclass macOS host
 Reference folder ─┘      ├─ capture + transcription
                          ├─ local document ingestion + change monitoring
                          ├─ prompt assembly + assistant model calls
@@ -208,7 +208,7 @@ transcript events may be coalesced in the buffer, but final/revised transcript,
 suggestion, command-result, and usage events must not be dropped.
 
 This protects against a companion connection loss. It does not protect against
-the PUnderclass process crashing because transcripts are currently in memory.
+the PermanentUnderclass process crashing because transcripts are currently in memory.
 If crash recovery is in scope, journal the same envelopes to local SQLite in
 WAL mode before publishing them, expose retention controls, and update the
 product's current in-memory-only privacy promise.
@@ -260,7 +260,7 @@ OpenAI key do not.
 ## Reference folder and prompt assembly
 
 The folder is a host-side feature. The user selects one directory in the Swift
-app; PUnderclass stores its path for the current non-sandboxed prototype,
+app; PermanentUnderclass stores its path for the current non-sandboxed prototype,
 rescans it at launch, and watches recursively with FSEvents. File bursts are
 debounced into one scan. A failed scan does not discard the previous good
 snapshot.
