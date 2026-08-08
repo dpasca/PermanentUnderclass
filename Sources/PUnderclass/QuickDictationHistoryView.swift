@@ -22,12 +22,12 @@ struct QuickDictationControlPanel: View {
                 Spacer()
                 Text("Hold ⌘ + ⌥")
                     .font(.callout.monospaced().weight(.semibold))
-                Button(
-                    controller.dictationPermissions.allGranted
-                        ? "Check Access"
-                        : "Grant Access",
-                    action: controller.requestDictationPermissions
-                )
+                if controller.dictationPermissions.allGranted {
+                    Button(
+                        "Check Access",
+                        action: controller.requestDictationPermissions
+                    )
+                }
                 Button("Settings…") {
                     controller.requestSettings(.dictation)
                     openSettings()
@@ -41,6 +41,10 @@ struct QuickDictationControlPanel: View {
                 )
                 .toggleStyle(.switch)
                 .fixedSize()
+            }
+
+            if !controller.dictationPermissions.allGranted {
+                permissionCallout
             }
 
             if controller.dictationEnabled {
@@ -103,10 +107,7 @@ struct QuickDictationControlPanel: View {
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
         } else if !controller.dictationPermissions.allGranted {
-            Text(
-                "\(controller.dictationPermissions.detail) Grant access in System Settings, then quit and reopen PUnderclass."
-            )
-            .foregroundStyle(.secondary)
+            EmptyView()
         } else if !controller.lastDictation.isEmpty {
             Text("Last: \(controller.lastDictation)")
                 .foregroundStyle(.secondary)
@@ -120,6 +121,80 @@ struct QuickDictationControlPanel: View {
             )
             .foregroundStyle(.secondary)
         }
+    }
+
+    private var permissionCallout: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Quick Dictation needs your permission")
+                    .font(.headline)
+                Text(
+                    "Allow PUnderclass to detect the global shortcut and use your microphone."
+                )
+                .font(.callout)
+
+                HStack(spacing: 16) {
+                    permissionStatus(
+                        "Accessibility",
+                        isGranted: accessibilityPermissionGranted
+                    )
+                    permissionStatus(
+                        "Microphone",
+                        isGranted: controller.dictationPermissions.canUseMicrophone
+                    )
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            VStack(alignment: .trailing, spacing: 7) {
+                Button(action: controller.requestDictationPermissions) {
+                    Label("Grant Required Access", systemImage: "lock.open.fill")
+                        .frame(minWidth: 175)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.orange)
+
+                Text("Enable PUnderclass in System Settings, then return here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 250, alignment: .trailing)
+            }
+        }
+        .padding(14)
+        .background(
+            Color.orange.opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.55), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var accessibilityPermissionGranted: Bool {
+        controller.dictationPermissions.canMonitorKeyboard
+            && controller.dictationPermissions.canPasteIntoOtherApps
+    }
+
+    private func permissionStatus(
+        _ title: String,
+        isGranted: Bool
+    ) -> some View {
+        Label(
+            isGranted ? "\(title) allowed" : "\(title) required",
+            systemImage: isGranted ? "checkmark.circle.fill" : "xmark.circle.fill"
+        )
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(isGranted ? Color.green : Color.orange)
     }
 
     private var phaseColor: Color {

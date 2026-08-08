@@ -745,7 +745,10 @@ final class HoldToDictateService {
     static func requestPermissions(
         onMicrophoneDecision: (() -> Void)? = nil
     ) -> DictationPermissionState {
-        if !AXIsProcessTrusted() {
+        let accessibilityTrusted = AXIsProcessTrusted()
+        let microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+
+        if !accessibilityTrusted {
             let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
             let options = [promptKey: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
@@ -754,12 +757,14 @@ final class HoldToDictateService {
                 openAccessibilitySettings()
             }
         }
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+        if microphoneStatus == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in
                 DispatchQueue.main.async {
                     onMicrophoneDecision?()
                 }
             }
+        } else if accessibilityTrusted, microphoneStatus != .authorized {
+            openMicrophoneSettings()
         }
         return currentPermissions()
     }
@@ -768,6 +773,19 @@ final class HoldToDictateService {
         let candidates = [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ]
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+    }
+
+    private static func openMicrophoneSettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
         ]
         for candidate in candidates {
             guard let url = URL(string: candidate) else { continue }
