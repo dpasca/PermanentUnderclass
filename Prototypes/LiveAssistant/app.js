@@ -185,6 +185,9 @@ function renderInferenceStatus() {
   const reference = snapshot?.reference;
   const checkCount = snapshot?.usage?.assistantGenerations ?? 0;
   const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
+  const meeting = session?.purpose === "meeting";
+  const assistantName = meeting ? "Meeting Assistant" : "Answer Mirror";
+  const otherSpeaker = meeting ? "other participant" : "interviewer";
 
   if (state.mode === "mock") {
     setInferenceStatus(
@@ -217,22 +220,11 @@ function renderInferenceStatus() {
     return;
   }
 
-  if (session?.purpose === "meeting") {
-    setInferenceStatus(
-      "off",
-      "MEETING TRANSCRIPTION ONLY",
-      "Answer Mirror is off",
-      "Meeting capture records and transcribes both speakers without generating response cues.",
-      checkCount
-    );
-    return;
-  }
-
   if (session?.isPreparingSyntheticInterview) {
     setInferenceStatus(
       "working",
-      "BUILDING GENERATED INTERVIEW",
-      "Generating five exchanges from the indexed references",
+      meeting ? "BUILDING GENERATED MEETING" : "BUILDING GENERATED INTERVIEW",
+      `Generating five ${meeting ? "meeting" : "interview"} exchanges from the indexed references`,
       session.status || "The replay will begin as soon as the document-grounded scenario is ready.",
       checkCount
     );
@@ -244,7 +236,7 @@ function renderInferenceStatus() {
       "off",
       "INFERENCE PAUSED",
       "No inference is happening",
-      "Transcript capture continues, but interviewer moments are not sent to Answer Mirror.",
+      `Transcript capture continues, but ${otherSpeaker} moments are not sent to ${assistantName}.`,
       checkCount
     );
     return;
@@ -255,7 +247,7 @@ function renderInferenceStatus() {
       "off",
       "CAPTURE STOPPED · INFERENCE OFF",
       "No inference is happening",
-      "Start a live interview or generated replay in the Mac app.",
+      `Start a live ${meeting ? "meeting" : "interview"} or generated replay in the Mac app.`,
       checkCount
     );
     return;
@@ -295,9 +287,11 @@ function renderInferenceStatus() {
     setInferenceStatus(
       hasLocalReferences ? "working" : "general",
       hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
-      hasLocalReferences ? `Drafting comparison beats from the latest ${trigger}` : `Drafting an approach-oriented outline from the latest ${trigger}`,
       hasLocalReferences
-        ? `${timing} Only interviewer speech triggers a new answer outline.`
+        ? `Drafting ${meeting ? "grounded response" : "comparison"} beats from the latest ${trigger}`
+        : `Drafting an honest response outline from the latest ${trigger}`,
+      hasLocalReferences
+        ? `${timing} Only ${otherSpeaker} speech triggers a new answer outline.`
         : `${timing} The result will be clearly labeled and should be verified.`,
       checkCount
     );
@@ -313,10 +307,12 @@ function renderInferenceStatus() {
         ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
         : "INFERENCE ACTIVE · LOCALLY GROUNDED",
       usesGeneralKnowledge
-        ? "Comparison outline ready without local support"
+        ? `${assistantName} outline ready without local support`
         : "A locally grounded answer outline is ready",
       usesGeneralKnowledge
-        ? "The outline is approach-oriented and avoids unverified personal claims."
+        ? meeting
+          ? "The outline marks what should be verified and avoids invented project facts."
+          : "The outline is approach-oriented and avoids unverified personal claims."
         : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · compare it with your transcript on the right.`,
       checkCount
     );
@@ -333,7 +329,7 @@ function renderInferenceStatus() {
     setInferenceStatus(
       hasLocalReferences ? "active" : "general",
       "INFERENCE ACTIVE · LATEST TURN CHECKED",
-      "The model ran but did not have a clear interviewer question",
+      `The model ran but did not find a clear ${meeting ? "meeting" : "interview"} question`,
       `Latest ${triggerLabel(assistant.lastEvaluationTrigger)} checked${latency}${checkedAt}. ${hasLocalReferences ? "Local material was available." : "General-knowledge fallback was available."}`,
       checkCount
     );
@@ -344,8 +340,8 @@ function renderInferenceStatus() {
     setInferenceStatus(
       "armed",
       "INFERENCE ARMED · LOCAL REFERENCES READY",
-      "Waiting for the interviewer",
-      "An interviewer pause can produce grounded shorthand beats; your own speech stays in the transcript.",
+      `Waiting for the ${otherSpeaker}`,
+      `A ${otherSpeaker} pause can produce grounded shorthand beats; your own speech stays in the transcript.`,
       checkCount
     );
   } else {
@@ -353,7 +349,7 @@ function renderInferenceStatus() {
       "general",
       "INFERENCE ARMED · GENERAL KNOWLEDGE",
       "No local supporting material",
-      "Interviewer moments can still produce clearly labeled approach-oriented outlines.",
+      `${meeting ? "Meeting questions" : "Interviewer moments"} can still produce clearly labeled, cautious response outlines.`,
       checkCount
     );
   }
@@ -385,26 +381,29 @@ function renderSession(session) {
   if (!session) return;
   const synthetic = session.source === "syntheticInterview";
   const meeting = session.purpose === "meeting";
-  $("#behaviorName").textContent = session.behaviorName || "Answer mirror";
+  $("#behaviorName").textContent = session.behaviorName
+    || (meeting ? "Meeting assistant" : "Answer mirror");
   $("#behaviorDetail").textContent = session.behaviorDetail
-    || "Show 3–5 shorthand beats when the interviewer pauses";
+    || (meeting
+      ? "Ground concise response cues in the meeting references"
+      : "Show 3–5 shorthand beats when the interviewer pauses");
   $("#assistantToggle").checked = !session.suggestionsPaused;
   $("#assistantState").textContent = session.isPreparingSyntheticInterview
-    ? "Generating interview from references"
-    : (meeting
-      ? "Answer Mirror off for meetings"
-      : session.suggestionsPaused
+    ? `Generating ${meeting ? "meeting" : "interview"} from references`
+    : (session.suggestionsPaused
       ? "Transcript only"
-      : (session.isListening ? "Waiting for interviewer pauses" : "Inference stops with capture"));
+      : (session.isListening
+        ? `Waiting for ${meeting ? "meeting questions" : "interviewer pauses"}`
+        : "Inference stops with capture"));
   $("#meetingTitle").textContent = session.title
     || (synthetic
-      ? "Reference-grounded generated interview"
-      : meeting ? "Meeting transcript" : "Live interview");
+      ? `Reference-grounded generated ${meeting ? "meeting" : "interview"}`
+      : meeting ? "Live meeting" : "Live interview");
   if (state.mode === "live") {
     $("#modeRibbon").textContent = synthetic
-      ? "GENERATED REPLAY · grounded in references · live answer comparison"
+      ? `GENERATED ${meeting ? "MEETING" : "INTERVIEW"} REPLAY · grounded in references · live response comparison`
       : meeting
-        ? "MEETING TRANSCRIPTION · Answer Mirror off · replayable SSE"
+        ? "LIVE MEETING · grounded Meeting Assistant · replayable SSE"
         : "LIVE INTERVIEW · host-owned assistant · replayable SSE";
   }
   const liveMeta = $(".transcript-meta span:first-child");
@@ -571,8 +570,11 @@ function outlineText(suggestion) {
 function groundingText(suggestion) {
   const citationCount = (suggestion.citations || []).length;
   const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
+  const meeting = state.snapshot?.session?.purpose === "meeting";
   return usesGeneralKnowledge
-    ? "Approach-oriented · no personal claims added"
+    ? meeting
+      ? "Needs verification · no project facts invented"
+      : "Approach-oriented · no personal claims added"
     : `Grounded in ${citationCount} Mac-hosted reference${citationCount === 1 ? "" : "s"}`;
 }
 
@@ -622,12 +624,21 @@ function renderSuggestionStack(assistant) {
   }
 
   $("#answerQuestion").textContent = current.question;
-  $("#answerLead").textContent = "Speak from here";
+  const meeting = state.snapshot?.session?.purpose === "meeting";
+  $("#answerLead").textContent = meeting ? "Respond from here" : "Speak from here";
   replaceAnswerBeats($("#answerBeats"), current.beats);
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
   $("#groundingNotice").hidden = !usesGeneralKnowledge;
+  if (usesGeneralKnowledge) {
+    $("#groundingNotice strong").textContent = meeting
+      ? "VERIFY BEFORE STATING"
+      : "GENERAL GUIDANCE";
+    $("#groundingNotice small").textContent = meeting
+      ? "The references did not establish a factual answer."
+      : "This cue is phrased as an approach, not as personal history.";
+  }
   $("#groundingLabel").lastChild.textContent = ` ${groundingText(current)}`;
   $("#generationTime").textContent = generationTimingText(current);
   const citation = current.citations?.[0];
@@ -656,18 +667,7 @@ function renderSuggestionStack(assistant) {
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
   renderInferenceStatus();
   const empty = $("#pausedState");
-  if (state.snapshot?.session?.purpose === "meeting") {
-    state.currentSuggestion = null;
-    state.visibleSuggestions = [];
-    $("#answerStack").hidden = true;
-    $("#answerHistory").hidden = true;
-    $("#listeningStrip").hidden = true;
-    empty.hidden = false;
-    $("#emptyStateSymbol").textContent = "TXT";
-    $("#emptyStateTitle").textContent = "Meeting transcription only";
-    $("#emptyStateDetail").textContent = "Answer Mirror is off. Start an interview in the Mac app when you want response cues.";
-    return;
-  }
+  const meeting = state.snapshot?.session?.purpose === "meeting";
   const suggestion = renderSuggestionStack(assistant);
   $("#listeningStrip").hidden = true;
 
@@ -675,8 +675,8 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     empty.hidden = Boolean(suggestion);
     if (!suggestion) {
       $("#emptyStateSymbol").textContent = "Ⅱ";
-      $("#emptyStateTitle").textContent = "Live answer outlines paused";
-      $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume when you want comparison outlines again.";
+      $("#emptyStateTitle").textContent = "Live response outlines paused";
+      $("#emptyStateDetail").textContent = "The transcript is still arriving. Resume when you want response cues again.";
     }
     return;
   }
@@ -706,23 +706,23 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     const checkedWithoutGuidance = assistant?.lastEvaluationOutcome === "noSuggestion";
     if (session?.isPreparingSyntheticInterview) {
       $("#emptyStateSymbol").textContent = "AI";
-      $("#emptyStateTitle").textContent = "Building the generated interview";
-      $("#emptyStateDetail").textContent = "The first interviewer question will appear when the five document-grounded exchanges are ready.";
+      $("#emptyStateTitle").textContent = `Building the generated ${meeting ? "meeting" : "interview"}`;
+      $("#emptyStateDetail").textContent = `The first ${meeting ? "meeting" : "interviewer"} question will appear when the five document-grounded exchanges are ready.`;
     } else if (!session?.isListening) {
       $("#emptyStateSymbol").textContent = "■";
-      $("#emptyStateTitle").textContent = "Interview capture is stopped";
-      $("#emptyStateDetail").textContent = "Start a live interview or generated replay in the Mac app.";
+      $("#emptyStateTitle").textContent = `${meeting ? "Meeting" : "Interview"} capture is stopped`;
+      $("#emptyStateDetail").textContent = `Start a live ${meeting ? "meeting" : "interview"} or generated replay in the Mac app.`;
     } else {
       const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
       $("#emptyStateSymbol").textContent = checkedWithoutGuidance ? "✓" : "AI";
       $("#emptyStateTitle").textContent = checkedWithoutGuidance
-        ? "Interviewer moment checked"
-        : "Waiting for the interviewer";
+        ? `${meeting ? "Meeting" : "Interviewer"} moment checked`
+        : `Waiting for the ${meeting ? "other participant" : "interviewer"}`;
       $("#emptyStateDetail").textContent = checkedWithoutGuidance
         ? "The model ran but did not have a sufficiently clear question to outline."
         : hasLocalReferences
-          ? "An interviewer pause can start a grounded answer outline before turn finalization."
-          : "Interviewer pauses can produce clearly labeled approach-oriented outlines.";
+          ? `A ${meeting ? "participant" : "interviewer"} pause can start a grounded answer outline before turn finalization.`
+          : `${meeting ? "Meeting questions" : "Interviewer pauses"} can produce clearly labeled, cautious response outlines.`;
     }
     return;
   }
@@ -876,9 +876,9 @@ function openEventStream() {
     const synthetic = state.snapshot?.session?.source === "syntheticInterview";
     const meeting = state.snapshot?.session?.purpose === "meeting";
     $("#modeRibbon").textContent = synthetic
-      ? "GENERATED REPLAY · grounded in references · live answer comparison"
+      ? `GENERATED ${meeting ? "MEETING" : "INTERVIEW"} REPLAY · grounded in references · live response comparison`
       : meeting
-        ? "MEETING TRANSCRIPTION · Answer Mirror off · replayable SSE"
+        ? "LIVE MEETING · grounded Meeting Assistant · replayable SSE"
         : "LIVE INTERVIEW · host-owned assistant · replayable SSE";
     if (state.reconnectStartSequence !== null) {
       const resumedAfter = state.reconnectStartSequence;

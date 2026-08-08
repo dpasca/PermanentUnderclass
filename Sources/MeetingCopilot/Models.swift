@@ -33,6 +33,15 @@ enum CapturePurpose: String, Codable, CaseIterable, Identifiable, Sendable {
             "Interview"
         }
     }
+
+    var assistantTitle: String {
+        switch self {
+        case .meeting:
+            "Meeting Assistant"
+        case .interview:
+            "Answer Mirror"
+        }
+    }
 }
 
 struct TranscriptTurn: Identifiable, Equatable {

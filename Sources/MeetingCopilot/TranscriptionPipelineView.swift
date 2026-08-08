@@ -208,10 +208,12 @@ struct ModelUsageSummary: View {
                     : "needs a key"
             )
             row(
-                workflow: "Interview · cues",
-                model: InterviewWingmanClient.model,
+                workflow: "Live assistants · cues",
+                model: LiveAssistantClient.model,
                 isCloud: true,
-                note: controller.capability.isCloudEnabled ? "interview only" : "needs a key"
+                note: controller.capability.isCloudEnabled
+                    ? "meeting + interview"
+                    : "needs a key"
             )
         }
     }
@@ -254,7 +256,7 @@ struct TranscriptionPipelineDiagram: View {
         VStack(alignment: .leading, spacing: 14) {
                 workflowTitle(
                     "Meetings and interviews",
-                    detail: "Both use the same capture pipeline. Interview mode additionally evaluates interviewer moments with Answer Mirror."
+                    detail: "Both use the same capture pipeline and evaluate other-speaker moments with a purpose-specific response assistant."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(

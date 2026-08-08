@@ -48,26 +48,33 @@ Open the shared transcription settings from the gear button, paste an API key,
 and press **Save to Keychain**, then start a meeting or interview. Both live
 capture modes use all system audio by default. To limit capture to one app,
 choose it from **Audio to transcribe**; it may appear under a helper-process
-name. Meeting mode only transcribes; Interview mode additionally runs Answer
-Mirror for interviewer speech.
+name. Meeting mode runs Meeting Assistant for the other participant's questions
+and requests; Interview mode runs Answer Mirror for interviewer speech.
 
 ## Live Assistant companion
 
 PUnderclass now embeds a loopback-only HTTP/SSE gateway and serves the
-cross-platform thin display itself. Start the Mac app, open the **Interview**
-tab, expand **References and interview context**, choose a reference folder,
-then press **Open Assistant** or open <http://127.0.0.1:4173>. The Mac owns the active behavior,
-local references, OpenAI request, usage tracking, event ordering, and replay;
-the browser receives only transcript text, reference status, citations, and a
-presentation-ready comparison outline.
+cross-platform thin display itself. Start the Mac app, open **Meeting** or
+**Interview**, choose **Manage References…**, select a reference folder in the
+dedicated Reference Material window, then open the mode's assistant. The same
+display is also available at <http://127.0.0.1:4173>. The Mac owns the selected
+behavior, local references, OpenAI request, usage tracking, event ordering, and
+replay; the browser receives only transcript text, reference status, citations,
+and a presentation-ready response outline.
 
-The first real behavior is **Answer Mirror**. An 800 ms pause in the
-interviewer's audio can trigger a structured `gpt-5.6-luna` Responses API
-outline from the current partial transcript before the 3 second final-turn
-boundary. The final interviewer turn remains a fallback, and an exact
-partial/final duplicate is coalesced rather than billed twice. Candidate
-speech stays visible in the transcript but does not replace the model outline,
-so the two can be compared in real time. Speaker identity provides this
+There are two explicit live behaviors. **Meeting Assistant** drafts a concise,
+first-person response outline when the other participant asks a clear question,
+makes a request, or raises a decision. It prefers local project facts and marks
+unsupported factual answers for verification rather than inventing commitments,
+metrics, deadlines, or status. **Answer Mirror** drafts an interview answer
+outline without inventing personal experience.
+
+In either mode, an 800 ms pause in the other speaker's audio can trigger a
+structured `gpt-5.6-luna` Responses API outline from the current partial
+transcript before the 3 second final-turn boundary. The finalized turn remains
+a fallback, and an exact partial/final duplicate is coalesced rather than billed
+twice. The user's speech stays visible in the transcript but does not replace
+the model outline. Explicit speaker and capture-purpose state provides this
 routing; there is no keyword or regex gate.
 Each result is three to five labeled, telegraphic beats rather than polished
 prose, using plain conversational wording instead of corporate interview
@@ -96,25 +103,25 @@ and idempotent pause/pin/dismiss commands. The protocol, retry contract,
 pairing boundary, and follow-up durability work are in
 `Docs/live-assistant-architecture.md`.
 
-## Generated interview replay
+## Generated meeting and interview replays
 
-The Interview tab includes a **Generated interview replay**. Choose a reference
-folder and wait for indexing, then press **Run Replay**. On the first run for
-a reference revision, the host uses a structured model call to create five
-question/answer exchanges grounded in exact indexed paths. The final two probe
-CUDA in depth when that subject is supported by the references; otherwise they
-use the deepest supported technical topic. Two macOS voices speak the resulting
-ten turns while the host streams their known words as
-partial transcript events. After every interviewer question, the real Answer
-Mirror independently drafts the shorthand model outline shown beside the generated
-candidate response. The companion reports both model time and end-to-end
-`transcript → card` time.
+Both capture tabs include a generated replay. Meeting creates five realistic
+working-meeting questions or requests and grounded participant responses;
+Interview creates five interview question/answer exchanges and probes CUDA in
+depth when the references support it, otherwise using the deepest supported
+technical topic. Choose a reference folder, wait for indexing, and press **Run
+Replay**. On the first run for a reference revision, the host grounds every
+exchange in exact indexed paths. Two macOS voices speak the resulting ten turns
+while the host streams their known words as partial transcript events. After
+every question, the active Meeting Assistant or Answer Mirror independently
+drafts the response outline shown beside the generated reply. The companion
+reports both model time and end-to-end `transcript → card` time.
 
-The generated scenario is stored locally in Application Support and reused
-while the reference revision and scenario format match, making latency reruns
-repeatable without another scenario-generation call. **New Questions** forces
-a fresh document-grounded scenario. Changing any indexed document naturally
-produces a new revision and invalidates the cached scenario.
+Meeting and interview scenarios have separate local caches in Application
+Support. Each is reused while the reference revision and scenario format match,
+making latency reruns repeatable without another generation call. **New
+Scenario** or **New Questions** forces a fresh document-grounded replay.
+Changing any indexed document naturally invalidates the matching cache.
 
 This mode deliberately bypasses microphone capture and speech recognition. It
 isolates answer cadence and model latency so the same conversation can be
@@ -136,12 +143,15 @@ incur repeated synthesis calls.
 
 ## Reference material
 
-Expand **References and interview context** on the Interview tab and choose one
-reference folder. The Swift app restores and ingests that folder at launch,
-watches it recursively for changes, and debounces change bursts into a fresh
-deterministic revision. It currently reads PDF, RTF, Markdown, plain text,
-CSV/TSV, JSON/JSONL, YAML, XML, and HTML files. Unsupported files are counted;
-unreadable or truncated files are reported instead of silently disappearing.
+Use the large **Reference material** card on either Meeting or Interview to open
+the dedicated Reference Material window. Choose one shared folder there; the
+window shows its indexed documents, revision, ignored files, and warnings with
+full-size controls for changing, revealing, rescanning, or disconnecting it.
+The Swift app restores and ingests that folder at launch, watches it recursively
+for changes, and debounces change bursts into a fresh deterministic revision. It
+currently reads PDF, RTF, Markdown, plain text, CSV/TSV, JSON/JSONL, YAML, XML,
+and HTML files. Unsupported files are counted; unreadable or truncated files
+are reported instead of silently disappearing.
 
 Reference contents are owned by the Mac host and are never copied to the thin
 display. The prompt builder places stable behavior and reference material
@@ -233,8 +243,8 @@ one of these cases the text is also saved to history, so nothing is lost.
 While a dictation is being transcribed, the overlay reports what it is waiting
 on — streamed text as it arrives, upload percentage on the fallback path, then
 `Transcribing…` — so a slow provider is never indistinguishable from a hang.
-Quick Dictation is paused during meeting or interview capture and during a
-generated interview replay.
+Quick Dictation is paused during meeting or interview capture and during either
+generated replay.
 
 The main window's **Quick Dictation** tab owns the shortcut, permission,
 preview, live microphone, and history controls. Completed text appears there in
@@ -313,10 +323,11 @@ The proof of concept includes:
   second end-of-turn pause, and explicit turn commits. Partial text continues
   streaming during the finalization pause. A **Finish My Turn** button supplies
   a manual boundary for controlled comparisons.
-- In Interview mode, Answer Mirror checks an interviewer partial after an 800 ms audio pause,
-  immediately checks a new finalized interviewer turn, and coalesces an
-  unchanged partial/final pair. Candidate turns never replace the comparison
-  answer.
+- Meeting Assistant and Answer Mirror check an other-speaker partial after an
+  800 ms audio pause, immediately check a new finalized turn, and coalesce an
+  unchanged partial/final pair. The selected capture purpose chooses the
+  model-backed behavior explicitly; the user's turns never replace the current
+  response outline.
   Privacy-safe lifecycle logs include trigger-to-start, model, and total
   transcript-to-result timings.
 - Context prompt, literal terminology hints, language hints, and delay control.
@@ -343,9 +354,10 @@ The proof of concept includes:
   An OpenAI key is presented as an optional upgrade, not a prerequisite.
 - **Capability-based gating.** What works is derived from whether a key exists,
   not from a mode the user has to find. The features that genuinely cannot run
-  on-device — meeting capture, live interviews, generated interview replay — show one
-  consistent locked card explaining why in plain language, with a button that
-  opens Settings at the API-key field. Everything else keeps working.
+  on-device — meeting capture, live interviews, and both generated replays —
+  show one consistent locked card explaining why in plain language, with a
+  button that opens Settings at the API-key field. Everything else keeps
+  working.
 - A **Never contact OpenAI** switch in Settings › Privacy for someone who has a
   key but wants a hard guarantee. It is an override, not the primary gate.
 - Settings live in one standard ⌘, window (General, Dictation, OpenAI, Privacy,

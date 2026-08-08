@@ -111,7 +111,7 @@ Initial event set:
 - `assistant.working`: generation started for a transcript watermark.
 - `assistant.suggestion`: newest structured answer outline with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
-  the latest interviewer moment produced no outline. This prevents silence from
+  the latest other-speaker moment produced no outline. This prevents silence from
   being confused with a disconnected assistant.
 - `usage.updated`: cumulative reported usage and estimated USD by model.
 - `reference.status`: folder display name, document count, revision, and
@@ -150,10 +150,10 @@ these objects, but it does not
 receive retrieved chunks and does not run a second interpretation step.
 
 An 800 ms audio pause from `Other` schedules a structured shorthand outline
-from the current interviewer partial before the 3 second final-turn boundary.
+from the current other-speaker partial before the 3 second final-turn boundary.
 A finalized `Other` turn schedules immediately as the reliable fallback. `You`
 turns remain visible in the transcript for comparison but do not schedule or
-replace the model outline. Exact partial/final duplicates for one interviewer
+replace the model outline. Exact partial/final duplicates for one other-speaker
 turn are coalesced. This is structural speaker routing, not a language
 heuristic; there is no keyword or pattern gate in front of the model. A
 completed decision that returns no outline leaves the previous suggestion intact and
@@ -165,9 +165,11 @@ The structured decision labels every displayed outline as either
 `localReferences` or `generalKnowledge`. Local grounding requires at least one
 validated citation path from the current indexed snapshot. If no indexed file
 supports a useful outline, the model may use the live discussion as context and
-general model knowledge with an empty citation list. Those cues use hypothetical
-first-person language (for example, "I would…") rather than invented past
-experience. A grounding warning remains in copied diagnostic output.
+general model knowledge with an empty citation list. Interview cues use
+hypothetical first-person language (for example, "I would…") rather than
+invented past experience. Meeting cues explicitly mark unsupported facts for
+verification and never invent commitments, metrics, deadlines, decisions, or
+status. A grounding warning remains in copied diagnostic output.
 
 The host also writes privacy-safe lifecycle markers under the
 `com.permanentunderclass.meetingcopilot` subsystem and `LiveAssistant` category.
@@ -315,9 +317,12 @@ privacy boundary.
 ## Assistant behavior boundary
 
 Behaviors are model-backed structured configurations, not keyword triggers.
-The user selects the behavior boundary explicitly: Meeting capture is
-transcript-only, while Interview capture enables Answer Mirror. The host never
-tries to infer that a meeting is an interview from its words.
+The user selects the behavior boundary explicitly: Meeting capture enables
+Meeting Assistant, while Interview capture enables Answer Mirror. Meeting
+Assistant handles clear questions, requests, and decisions from the other
+participant using project-safe grounding rules; Answer Mirror handles
+interviewer questions using interview-safe grounding rules. The host never
+tries to infer one behavior from the transcript's words.
 Each behavior defines:
 
 - goal and audience;
@@ -329,13 +334,14 @@ Each behavior defines:
 - a model choice and per-session spend ceiling.
 
 The host passes the cached stable reference prefix, recent finalized turns,
-the current partial, and an explicit interviewer response target to a fast
+the current partial, and an explicit other-speaker response target to a fast
 model and requires structured output. It converts the model result into three
 to five concise, first-person speaking cues in plain, conversational language
 before publishing it. Each cue stands on its own because the teleprompter hides
 the internal labels. It should cancel or
-supersede stale generations when a newer interviewer moment arrives. No regex
-or keyword gate should decide whether the meeting "looks like" an interview.
+supersede stale generations when a newer other-speaker moment arrives. No regex
+or keyword gate decides whether the moment needs a response; the selected
+behavior's model makes that structured decision.
 
 ### Initial model hypothesis
 
@@ -344,7 +350,7 @@ is the efficient, high-volume member of the current GPT-5.6 family and fits the
 frequent short-generation shape better than using the flagship model for every
 transcript change. The latency harness currently uses `reasoning.effort: none`
 and a 350-token output ceiling with the compact outline schema. Compare that
-configuration against `low` on the same cached interview moments before trading
+configuration against `low` on the same cached meeting and interview moments before trading
 latency for more reasoning.
 
 Treat this as an eval hypothesis, not a permanent routing rule. Measure
@@ -365,7 +371,7 @@ The initial meter covers:
 - `gpt-live-transcribe` for each live audio track;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` scenario-generation and Answer Mirror calls from each model
+- `gpt-5.6-luna` scenario-generation and live-assistant calls from each model
   response's own token usage (tracked separately until a dollar rate is
   configured).
 
@@ -383,13 +389,15 @@ the source of truth.
    host-side reference-folder ingestion/watch, deterministic prompt prefix
    builder, and host-side transcription cost meter.
 2. **Completed loopback vertical slice:** Hummingbird service, event hub,
-   snapshot, real transcript/reference/usage events, structured Answer Mirror
-   behavior, idempotent commands, and reconnect/replay tests.
+   snapshot, real transcript/reference/usage events, structured Meeting
+   Assistant and Answer Mirror behaviors, idempotent commands, and
+   reconnect/replay tests.
 3. **Completed synthetic latency slice:** a structured model generates five
-   grounded exchanges from the indexed document revision, with two deep CUDA
-   questions when the references support that subject. A versioned local cache
-   keeps reruns stable, two audible macOS voices replay the ten turns, and independent
-   Answer Mirror output is shown beside the generated candidate response with
+   grounded exchanges for either a working meeting or an interview from the
+   indexed document revision. Interview replays include two deep CUDA questions
+   when the references support that subject. Separate versioned local caches
+   keep reruns stable, two audible macOS voices replay the ten turns, and the
+   purpose-specific live assistant is shown beside the generated response with
    visible end-to-end timings.
 4. **Reliability:** durable replay across host restarts, app-sleep tests, fault
    injection, and an optional SQLite journal decision. The loopback slice
@@ -410,7 +418,8 @@ the source of truth.
 - Stop all clients; capture and transcript finalization continue unaffected.
 - Switch finalization to Parakeet; the cloud-finalization cost stops increasing
   while live-transcription cost continues.
-- Run the document-grounded synthetic interview; each interviewer partial can
-  start inference before its simulated final boundary, candidate turns leave
-  the outline stack intact, the unchanged final does not create a duplicate
-  generation, and the display reports model and transcript-to-card milliseconds.
+- Run each document-grounded generated replay; every question partial can start
+  its purpose-specific assistant before the simulated final boundary, generated
+  response turns leave the outline stack intact, the unchanged final does not
+  create a duplicate generation, and the display reports model and
+  transcript-to-card milliseconds.

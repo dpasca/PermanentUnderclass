@@ -16,6 +16,18 @@ struct MeetingCopilotApp: App {
         }
         .defaultSize(width: 1_160, height: 900)
 
+        Window(
+            "Reference Material",
+            id: PUnderclassWindow.referenceMaterial
+        ) {
+            if let controller = applicationModel.controller {
+                ReferenceMaterialView(controller: controller)
+            } else {
+                Color.clear
+            }
+        }
+        .defaultSize(width: 860, height: 720)
+
         // Every setting has one home, reachable with the standard ⌘, rather
         // than through several header popovers.
         Settings {
@@ -28,7 +40,7 @@ struct MeetingCopilotApp: App {
     }
 }
 
-/// Owns services for the lifetime of the app's single window.
+/// Owns the shared services used by the app's main and auxiliary windows.
 final class MeetingCopilotApplicationModel: ObservableObject {
     let controller: MeetingController?
 

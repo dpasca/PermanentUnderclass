@@ -12,7 +12,10 @@ enum AssistantEvaluationPolicy {
         speaker: SpeakerTag,
         purpose: CapturePurpose
     ) -> Bool {
-        purpose == .interview && speaker == .other
+        switch purpose {
+        case .meeting, .interview:
+            speaker == .other
+        }
     }
 
     static func delayMilliseconds(

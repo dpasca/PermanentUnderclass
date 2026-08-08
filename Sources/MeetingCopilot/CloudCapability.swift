@@ -7,6 +7,7 @@ enum CloudFeature: String, CaseIterable, Identifiable {
     /// equivalent, so meeting capture as a whole depends on it.
     case meetingCapture
     case answerMirror
+    case mockMeeting
     case mockInterview
     /// Not a locked feature but an upgrade: dictation already works locally.
     case bestAccuracyDictation
@@ -19,6 +20,8 @@ enum CloudFeature: String, CaseIterable, Identifiable {
             "Meeting capture"
         case .answerMirror:
             "Live interview"
+        case .mockMeeting:
+            "Generated meeting replay"
         case .mockInterview:
             "Generated interview replay"
         case .bestAccuracyDictation:
@@ -31,9 +34,11 @@ enum CloudFeature: String, CaseIterable, Identifiable {
     var cloudReason: String {
         switch self {
         case .meetingCapture:
-            "Live meeting transcription needs OpenAI's streaming model. There is no offline equivalent yet."
+            "Live meeting transcription and grounded response cues use OpenAI's streaming and language models."
         case .answerMirror:
             "Live interview transcription and suggested answers use OpenAI's streaming and language models."
+        case .mockMeeting:
+            "Replay questions and grounded meeting responses are written by language models that run on OpenAI's servers."
         case .mockInterview:
             "Replay questions and comparison answers are written by language models that run on OpenAI's servers."
         case .bestAccuracyDictation:

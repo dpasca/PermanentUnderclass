@@ -10,9 +10,10 @@ struct SyntheticInterviewTurn: Codable, Equatable, Sendable {
 
 struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
     static let launchArgument = "--synthetic-interview"
-    static let generationVersion = 2
+    static let generationVersion = 3
 
     let generationVersion: Int
+    let purpose: CapturePurpose
     let name: String
     let referenceRevision: String
     let referenceDocumentCount: Int
@@ -22,6 +23,7 @@ struct SyntheticInterviewScenario: Codable, Equatable, Sendable {
 }
 
 struct SyntheticInterviewState: Equatable {
+    var purpose: CapturePurpose = .interview
     var isGenerating = false
     var isRunning = false
     var hasRun = false
@@ -40,11 +42,30 @@ struct SyntheticInterviewState: Equatable {
         guard totalTurns > 0 else { return 0 }
         return Double(currentTurn) / Double(totalTurns)
     }
+
+    static func ready(for purpose: CapturePurpose) -> SyntheticInterviewState {
+        SyntheticInterviewState(
+            purpose: purpose,
+            title: purpose == .meeting
+                ? "Reference-grounded meeting ready"
+                : "Reference-grounded interview ready",
+            detail: purpose == .meeting
+                ? "Generate an audible mock meeting from the currently indexed reference documents."
+                : "Generate an audible interview replay from the currently indexed reference documents."
+        )
+    }
 }
 
 struct SyntheticInterviewScenarioStore {
     private static let directoryName = "com.permanentunderclass.meetingcopilot"
-    private static let fileName = "SyntheticInterviewScenario.json"
+    private static func fileName(for purpose: CapturePurpose) -> String {
+        switch purpose {
+        case .meeting:
+            "SyntheticMeetingScenario.json"
+        case .interview:
+            "SyntheticInterviewScenario.json"
+        }
+    }
 
     let fileURL: URL
     private let fileManager: FileManager
@@ -55,6 +76,7 @@ struct SyntheticInterviewScenarioStore {
     }
 
     static func applicationSupport(
+        for purpose: CapturePurpose = .interview,
         fileManager: FileManager = .default
     ) -> SyntheticInterviewScenarioStore {
         let applicationSupportURL = fileManager.urls(
@@ -64,12 +86,15 @@ struct SyntheticInterviewScenarioStore {
         return SyntheticInterviewScenarioStore(
             fileURL: applicationSupportURL
                 .appendingPathComponent(directoryName, isDirectory: true)
-                .appendingPathComponent(fileName),
+                .appendingPathComponent(fileName(for: purpose)),
             fileManager: fileManager
         )
     }
 
-    func load(referenceRevision: String) throws -> SyntheticInterviewScenario? {
+    func load(
+        referenceRevision: String,
+        purpose: CapturePurpose
+    ) throws -> SyntheticInterviewScenario? {
         guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
         let scenario = try JSONDecoder().decode(
@@ -79,6 +104,7 @@ struct SyntheticInterviewScenarioStore {
         guard
             scenario.generationVersion
                 == SyntheticInterviewScenario.generationVersion,
+            scenario.purpose == purpose,
             scenario.referenceRevision == referenceRevision
         else {
             return nil
@@ -104,9 +130,9 @@ enum SyntheticInterviewError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .referencesUnavailable:
-            "Choose and finish indexing a reference folder before generating the interview replay."
+            "Choose and finish indexing a reference folder before generating the replay."
         case .referencesChanged:
-            "The reference documents changed during interview generation. Run it again to use the new revision."
+            "The reference documents changed during replay generation. Run it again to use the new revision."
         }
     }
 }

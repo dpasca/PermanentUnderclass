@@ -1021,7 +1021,7 @@ final class HoldToDictateService {
         guard canRecord() else {
             phaseHandler(
                 .failed(
-                    "Quick Dictation is unavailable during live capture or a generated interview replay."
+                    "Quick Dictation is unavailable during live capture or a generated replay."
                 )
             )
             return

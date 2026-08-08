@@ -12,10 +12,10 @@ The standalone server automatically falls back to mock data and makes no model
 request. The page labels that state prominently so simulated answers cannot be
 mistaken for live inference.
 
-This is deliberately a thin display. In Meeting mode it shows a no-suggestions
-status while the Mac app holds the transcript. Interview mode uses the
-teleprompter-style display: the Mac ingests documents, calls the assistant
-model, and sends complete suggestion data;
+This is deliberately a thin display. Both Meeting Assistant and Interview's
+Answer Mirror use the teleprompter-style display: the Mac ingests documents,
+selects the explicit mode-specific behavior, calls the assistant model, and
+sends complete suggestion data;
 source files, prompts, audio, and credentials do not cross into the display
 client. The display reduces that data to a connection light and a stack of
 conversation rounds. The current question and its first-person cues stay large
@@ -34,12 +34,12 @@ Useful interactions:
 - The host still retains suggestion history, citations, inference state, and
   usage diagnostics. The focused display uses history to keep earlier rounds
   readable below the active cue without bringing back answer cards or metadata.
-- In Interview mode, an `Other` interviewer pause or final turn is eligible for
-  the host model's
-  structured outline decision. Each outline contains three to five concise,
-  first-person cues that can be read aloud without visible labels or a context
-  card. `You` turns do not replace it. The browser itself never decides via text
-  matching.
+- An `Other` pause or final turn is eligible for the host model's structured
+  outline decision. Meeting mode asks for a cautious, grounded response to a
+  question, request, or decision; Interview mode asks for an answer outline.
+  Each result contains three to five concise, first-person cues that can be read
+  aloud without visible labels or a context card. `You` turns do not replace
+  it. The browser itself never decides via text matching.
 - Approach-oriented cues remain available when local files do not support the
   topic, but they use hypothetical phrasing such as "I would…" rather than
   inventing personal history.

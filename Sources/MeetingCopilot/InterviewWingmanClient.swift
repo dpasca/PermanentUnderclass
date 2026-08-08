@@ -8,13 +8,13 @@ struct AssistantGenerationUsage: Codable, Equatable, Sendable {
     let reasoningTokens: Int
 }
 
-struct InterviewWingmanGeneration: Equatable, Sendable {
+struct LiveAssistantGeneration: Equatable, Sendable {
     let suggestion: CompanionAssistantSuggestion?
     let usage: AssistantGenerationUsage
     let generationMilliseconds: Int
 }
 
-enum InterviewWingmanError: LocalizedError, Equatable {
+enum LiveAssistantError: LocalizedError, Equatable {
     case invalidResponse
     case requestFailed(String)
     case incomplete(String)
@@ -34,7 +34,7 @@ enum InterviewWingmanError: LocalizedError, Equatable {
     }
 }
 
-private struct InterviewWingmanOutput: Decodable {
+private struct LiveAssistantOutput: Decodable {
     let shouldShow: Bool
     let grounding: CompanionSuggestionGrounding
     let question: String
@@ -43,11 +43,11 @@ private struct InterviewWingmanOutput: Decodable {
     let confidence: CompanionSuggestionConfidence
 }
 
-struct InterviewWingmanClient: Sendable {
+struct LiveAssistantClient: Sendable {
     static let model = "gpt-5.6-luna"
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
 
-    static let behaviorInstructions = """
+    static let interviewBehaviorInstructions = """
     You are Answer Mirror, a low-latency interview companion. The current response target is an interviewer moment captured after a speech pause or at turn finalization. When it contains a sufficiently clear question or prompt, return a compact answer outline the candidate can compare with their own live response and set shouldShow to true.
 
     Return three to five beats, ordered as they would be spoken. Each beat has a one-to-three-word internal label and one short first-person speaking cue of roughly six to sixteen words. The display hides the label, so every point must stand on its own and carry enough subject, setting, or action to make sense immediately. Write from the responder's point of view using "I", "I'm", "I've", or "my". For a grounded past experience, say what I did; for an approach or unsupported hypothetical, say what I would do and never turn it into invented history. Do not address the candidate as "you". Keep the cues conversational and concise; omit filler, transitions, and marginal wording.
@@ -56,6 +56,23 @@ struct InterviewWingmanClient: Sendable {
 
     Treat a partial as potentially incomplete and do not invent its missing ending. Prefer the supplied local reference documents for personal and context-specific facts. When they support the outline, set grounding to localReferences and cite every document used by its exact path. When they do not support the question, you may still give an approach-oriented outline using general model knowledge, set grounding to generalKnowledge, return no citations, and avoid claiming the candidate actually performed work not established in the references. Never invent achievements, metrics, employers, dates, or responsibilities. Set shouldShow to false when the interviewer moment is not clear enough to answer. Return the interviewer question in question and the shorthand outline in beats.
     """
+
+    static let meetingBehaviorInstructions = """
+    You are Meeting Assistant, a low-latency companion for a live working meeting. The current response target is a moment from the other participant captured after a speech pause or at turn finalization. When it contains a sufficiently clear question, request, or decision that the user should answer, return a compact response outline and set shouldShow to true. Do not generate a cue for greetings, acknowledgements, unfinished fragments, or ordinary statements that do not need a response.
+
+    Return three to five beats in the order they could be spoken. Each beat has a one-to-three-word internal label and one short first-person speaking cue of roughly six to eighteen words. The display hides the label, so each point must stand on its own. Use direct, conversational language suitable for colleagues in a real meeting. Prefer a direct answer, the supporting fact, an important constraint or caveat, and a concrete next step when those elements are relevant. Do not pad the outline with generic meeting language.
+
+    Treat a partial as potentially incomplete and do not invent its missing ending. Prefer the supplied local reference documents for project, product, organization, schedule, architecture, and status facts. When they support the answer, set grounding to localReferences and cite every document used by its exact indexed path. When the documents do not support a factual answer, you may still provide an honest response strategy using the live discussion and general model knowledge, set grounding to generalKnowledge, return no citations, and make the need to verify explicit. Never fabricate a commitment, metric, deadline, decision, customer fact, project status, or document content. Set shouldShow to false when the other participant's moment is not clear enough to answer. Return the question or request in question and the concise response outline in beats.
+    """
+
+    static func behaviorInstructions(for purpose: CapturePurpose) -> String {
+        switch purpose {
+        case .meeting:
+            meetingBehaviorInstructions
+        case .interview:
+            interviewBehaviorInstructions
+        }
+    }
 
     private let session: URLSession
 
@@ -68,23 +85,24 @@ struct InterviewWingmanClient: Sendable {
         references: ReferenceLibrarySnapshot?,
         recentTranscript: String,
         currentPartial: String,
-        interviewerText: String,
-        interviewContext: String = "",
+        otherSpeakerText: String,
+        sessionContext: String = "",
+        purpose: CapturePurpose,
         basedOnSequence: Int
-    ) async throws -> InterviewWingmanGeneration {
+    ) async throws -> LiveAssistantGeneration {
         let prefix = try AssistantPromptBuilder.cachedPrefix(
-            behaviorInstructions: Self.behaviorInstructions,
+            behaviorInstructions: Self.behaviorInstructions(for: purpose),
             references: references
         )
         let plan = AssistantPromptBuilder.plan(
             cachedPrefix: prefix,
             recentTranscript: recentTranscript,
             currentPartial: currentPartial,
-            sessionContext: interviewContext,
-            focusSpeaker: SpeakerTag.other.rawValue,
-            focusText: interviewerText
+            sessionContext: sessionContext,
+            focusSpeaker: SpeakerTag.other.displayName(for: purpose),
+            focusText: otherSpeakerText
         )
-        let body = try Self.requestBody(for: plan)
+        let body = try Self.requestBody(for: plan, purpose: purpose)
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -95,10 +113,10 @@ struct InterviewWingmanClient: Sendable {
         let startedAt = ContinuousClock.now
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw InterviewWingmanError.invalidResponse
+            throw LiveAssistantError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            throw InterviewWingmanError.requestFailed(Self.errorMessage(from: data))
+            throw LiveAssistantError.requestFailed(Self.errorMessage(from: data))
         }
         let elapsed = ContinuousClock.now - startedAt
         let milliseconds = Int(
@@ -113,7 +131,10 @@ struct InterviewWingmanClient: Sendable {
         )
     }
 
-    static func requestBody(for plan: AssistantPromptPlan) throws -> Data {
+    static func requestBody(
+        for plan: AssistantPromptPlan,
+        purpose: CapturePurpose
+    ) throws -> Data {
         let request: [String: Any] = [
             "model": model,
             "store": false,
@@ -145,7 +166,9 @@ struct InterviewWingmanClient: Sendable {
                 "verbosity": "low",
                 "format": [
                     "type": "json_schema",
-                    "name": "interview_answer_mirror",
+                    "name": purpose == .meeting
+                        ? "meeting_assistant"
+                        : "interview_answer_mirror",
                     "strict": true,
                     "schema": outputSchema
                 ]
@@ -162,13 +185,13 @@ struct InterviewWingmanClient: Sendable {
         allowedReferencePaths: Set<String>,
         basedOnSequence: Int,
         generationMilliseconds: Int
-    ) throws -> InterviewWingmanGeneration {
+    ) throws -> LiveAssistantGeneration {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw InterviewWingmanError.invalidResponse
+            throw LiveAssistantError.invalidResponse
         }
         if root["status"] as? String == "incomplete" {
             let details = root["incomplete_details"] as? [String: Any]
-            throw InterviewWingmanError.incomplete(
+            throw LiveAssistantError.incomplete(
                 details?["reason"] as? String ?? "unknown reason"
             )
         }
@@ -188,15 +211,15 @@ struct InterviewWingmanClient: Sendable {
             }
         }
         if let refusal {
-            throw InterviewWingmanError.refused(refusal)
+            throw LiveAssistantError.refused(refusal)
         }
         guard let outputText, let outputData = outputText.data(using: .utf8) else {
-            throw InterviewWingmanError.invalidResponse
+            throw LiveAssistantError.invalidResponse
         }
-        let output = try JSONDecoder().decode(InterviewWingmanOutput.self, from: outputData)
+        let output = try JSONDecoder().decode(LiveAssistantOutput.self, from: outputData)
         let usage = usage(from: root)
         guard output.shouldShow else {
-            return InterviewWingmanGeneration(
+            return LiveAssistantGeneration(
                 suggestion: nil,
                 usage: usage,
                 generationMilliseconds: generationMilliseconds
@@ -216,14 +239,14 @@ struct InterviewWingmanClient: Sendable {
             (3...5).contains(beats.count),
             beats.allSatisfy({ !$0.label.isEmpty && !$0.point.isEmpty })
         else {
-            throw InterviewWingmanError.invalidResponse
+            throw LiveAssistantError.invalidResponse
         }
 
         let allowedCitations = output.citations.filter {
             allowedReferencePaths.contains($0.path)
         }
         guard output.grounding != .localReferences || !allowedCitations.isEmpty else {
-            return InterviewWingmanGeneration(
+            return LiveAssistantGeneration(
                 suggestion: nil,
                 usage: usage,
                 generationMilliseconds: generationMilliseconds
@@ -241,7 +264,7 @@ struct InterviewWingmanClient: Sendable {
             generatedAt: Date(),
             generationMilliseconds: generationMilliseconds
         )
-        return InterviewWingmanGeneration(
+        return LiveAssistantGeneration(
             suggestion: suggestion,
             usage: usage,
             generationMilliseconds: generationMilliseconds

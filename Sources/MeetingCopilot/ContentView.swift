@@ -11,6 +11,7 @@ struct ContentView: View {
 
     @ObservedObject var controller: MeetingController
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @State private var meetingContextExpanded = false
     @State private var interviewContextExpanded = false
     /// Dictation leads: it is the part that works with no account, no key, and
@@ -64,17 +65,14 @@ struct ContentView: View {
     }
 
     private var meetingTab: some View {
-        captureTab(for: .meeting, includesReplay: false)
+        captureTab(for: .meeting)
     }
 
     private var interviewTab: some View {
-        captureTab(for: .interview, includesReplay: true)
+        captureTab(for: .interview)
     }
 
-    private func captureTab(
-        for purpose: CapturePurpose,
-        includesReplay: Bool
-    ) -> some View {
+    private func captureTab(for purpose: CapturePurpose) -> some View {
         ScrollView {
             VStack(spacing: 12) {
                 VStack(spacing: 12) {
@@ -87,14 +85,14 @@ struct ContentView: View {
                     onResolve: showSettings
                 )
 
-                if includesReplay {
-                    syntheticInterviewPanel
-                        .locked(
-                            .mockInterview,
-                            access: controller.access(to: .mockInterview),
-                            onResolve: showSettings
-                        )
-                }
+                referenceMaterialAccessPanel(for: purpose)
+
+                generatedReplayPanel(for: purpose)
+                    .locked(
+                        replayFeature(for: purpose),
+                        access: controller.access(to: replayFeature(for: purpose)),
+                        onResolve: showSettings
+                    )
 
                 if let error = controller.errorMessage {
                     errorBanner(error)
@@ -143,6 +141,10 @@ struct ContentView: View {
         purpose == .meeting ? .meetingCapture : .answerMirror
     }
 
+    private func replayFeature(for purpose: CapturePurpose) -> CloudFeature {
+        purpose == .meeting ? .mockMeeting : .mockInterview
+    }
+
     private var sharedHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
@@ -180,7 +182,7 @@ struct ContentView: View {
     }
 
     /// Meeting and interview share capture plumbing, while the declared purpose
-    /// controls labels and whether Answer Mirror may run.
+    /// selects the labels and model-backed assistant behavior.
     private func captureControlPanel(
         for purpose: CapturePurpose
     ) -> some View {
@@ -207,9 +209,12 @@ struct ContentView: View {
                         .controlSize(.small)
                 }
                 Spacer()
-                if purpose == .interview {
-                    Button("Open Assistant", action: controller.openCompanionDisplay)
-                }
+                Button(
+                    purpose == .meeting
+                        ? "Open Meeting Assistant"
+                        : "Open Answer Mirror",
+                    action: controller.openCompanionDisplay
+                )
                 Label("Headphones required", systemImage: "headphones")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -229,7 +234,7 @@ struct ContentView: View {
                 .tint(isActive ? .red : .accentColor)
                 .disabled(
                     controller.syntheticInterviewState.isActive
-                        && purpose == .interview
+                        && controller.syntheticInterviewState.purpose == purpose
                 )
             }
 
@@ -271,7 +276,9 @@ struct ContentView: View {
 
     private func captureStatusLabel(for purpose: CapturePurpose) -> String {
         if controller.syntheticInterviewState.isActive {
-            return purpose == .interview ? "Replay running" : "Interview replay running"
+            return controller.syntheticInterviewState.purpose == purpose
+                ? "Replay running"
+                : "\(controller.syntheticInterviewState.purpose.title) replay running"
         }
         if controller.isListening {
             return controller.capturePurpose == purpose
@@ -298,7 +305,7 @@ struct ContentView: View {
     private func captureDescription(for purpose: CapturePurpose) -> String {
         switch purpose {
         case .meeting:
-            "Captures both sides and builds a refined transcript. Answer Mirror stays off."
+            "Captures both sides and grounds Meeting Assistant response cues in your reference material."
         case .interview:
             "Captures both sides and sends interviewer moments to Answer Mirror for concise response cues."
         }
@@ -308,7 +315,9 @@ struct ContentView: View {
         for purpose: CapturePurpose
     ) -> String {
         if controller.syntheticInterviewState.isActive {
-            return purpose == .meeting ? "Open Interview" : "Replay Running"
+            return controller.syntheticInterviewState.purpose == purpose
+                ? "Replay Running"
+                : "Open \(controller.syntheticInterviewState.purpose.title)"
         }
         if controller.isListening {
             return controller.capturePurpose == purpose
@@ -320,7 +329,9 @@ struct ContentView: View {
 
     private func handlePrimaryCaptureAction(for purpose: CapturePurpose) {
         if controller.syntheticInterviewState.isActive {
-            selectedTab = .interview
+            selectedTab = controller.syntheticInterviewState.purpose == .meeting
+                ? .meeting
+                : .interview
         } else if controller.isListening {
             if controller.capturePurpose == purpose {
                 controller.stopCapture()
@@ -515,9 +526,13 @@ struct ContentView: View {
     private var visibleStatusMessage: String {
         switch selectedTab {
         case .meeting:
-            controller.statusMessage
+            controller.syntheticInterviewState.isActive
+                && controller.syntheticInterviewState.purpose == .meeting
+                ? controller.syntheticInterviewState.title
+                : controller.statusMessage
         case .interview:
             controller.syntheticInterviewState.isActive
+                && controller.syntheticInterviewState.purpose == .interview
                 ? controller.syntheticInterviewState.title
                 : controller.statusMessage
         case .quickDictation:
@@ -525,8 +540,88 @@ struct ContentView: View {
         }
     }
 
-    private var syntheticInterviewPanel: some View {
-        let state = controller.syntheticInterviewState
+    private func referenceMaterialAccessPanel(
+        for purpose: CapturePurpose
+    ) -> some View {
+        let state = controller.referenceLibraryState
+        let snapshot = state.snapshot
+
+        return Button {
+            openWindow(id: PUnderclassWindow.referenceMaterial)
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "books.vertical.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 42, height: 42)
+                    .background(
+                        Color.accentColor.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Reference material")
+                        .font(.title3.weight(.semibold))
+                    Text(
+                        purpose == .meeting
+                            ? "Ground Meeting Assistant answers and mock-meeting responses in your documents."
+                            : "Ground Answer Mirror and generated interview responses in your documents."
+                    )
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 16)
+
+                VStack(alignment: .trailing, spacing: 5) {
+                    Text(state.phaseLabel)
+                        .font(.callout.weight(.medium))
+                    if let folderURL = state.folderURL {
+                        Text(referenceSummary(snapshot: snapshot, folderURL: folderURL))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("No folder selected")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Label("Manage References…", systemImage: "arrow.up.right.square")
+                    .font(.body.weight(.semibold))
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                    .background(
+                        Color.accentColor,
+                        in: RoundedRectangle(cornerRadius: 9)
+                    )
+                    .foregroundStyle(.white)
+            }
+            .padding(14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            Color.accentColor.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
+        }
+        .accessibilityLabel("Manage reference material for \(purpose.title)")
+    }
+
+    private func generatedReplayPanel(
+        for purpose: CapturePurpose
+    ) -> some View {
+        let state = controller.generatedReplayState(for: purpose)
+        let otherReplayPurpose = controller.syntheticInterviewState.isActive
+            && controller.syntheticInterviewState.purpose != purpose
+            ? controller.syntheticInterviewState.purpose
+            : nil
 
         return HStack(alignment: .center, spacing: 12) {
             Image(systemName: "waveform")
@@ -538,7 +633,7 @@ struct ContentView: View {
                 HStack(spacing: 7) {
                     Text(state.title)
                         .font(.callout.weight(.semibold))
-                    Text("GENERATED INTERVIEW REPLAY")
+                    Text("GENERATED \(purpose.title.uppercased()) REPLAY")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.indigo)
                 }
@@ -557,7 +652,13 @@ struct ContentView: View {
                             .frame(maxWidth: 360)
                     }
                 } else {
-                    Text(controller.syntheticInterviewReadinessDetail)
+                    Text(
+                        otherReplayPurpose.map {
+                            "A generated \($0.title.lowercased()) replay is already running."
+                        } ?? controller.generatedReplayReadinessDetail(
+                            for: purpose
+                        )
+                    )
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -566,29 +667,35 @@ struct ContentView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 5) {
-                Text("5 GROUNDED Q&A · AUDIO PAUSE 800 ms")
+                Text("5 GROUNDED EXCHANGES · ASSISTANT PAUSE 800 ms")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button("Open Assistant", action: controller.openCompanionDisplay)
-                    if state.isActive {
-                        Button("Stop Replay", action: controller.stopSyntheticInterview)
+                    if let otherReplayPurpose {
+                        Button("Open \(otherReplayPurpose.title)") {
+                            selectedTab = otherReplayPurpose == .meeting
+                                ? .meeting
+                                : .interview
+                        }
+                    } else if state.isActive {
+                        Button("Stop Replay", action: controller.stopGeneratedReplay)
                             .tint(.red)
                     } else {
-                        Button("New Questions") {
+                        Button(purpose == .meeting ? "New Scenario" : "New Questions") {
                             controller.openCompanionDisplay()
-                            controller.regenerateSyntheticInterview()
+                            controller.regenerateGeneratedReplay(for: purpose)
                         }
-                        .disabled(!controller.canStartSyntheticInterview)
+                        .disabled(!controller.canStartGeneratedReplay(for: purpose))
                         Button {
                             controller.openCompanionDisplay()
-                            controller.startSyntheticInterview()
+                            controller.startGeneratedReplay(for: purpose)
                         } label: {
                             Label("Run Replay", systemImage: "play.fill")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.indigo)
-                        .disabled(!controller.canStartSyntheticInterview)
+                        .disabled(!controller.canStartGeneratedReplay(for: purpose))
                     }
                 }
             }
@@ -726,11 +833,6 @@ struct ContentView: View {
     ) -> some View {
         DisclosureGroup(isExpanded: contextExpandedBinding(for: purpose)) {
             VStack(alignment: .leading, spacing: 12) {
-                if purpose == .interview {
-                    referenceMaterialPanel
-                    Divider()
-                }
-
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(
@@ -784,7 +886,7 @@ struct ContentView: View {
                 }
                 Text(
                     purpose == .meeting
-                        ? "Add exact vocabulary before a specialized meeting. Medium is the recommended starting point for balanced accuracy and latency."
+                        ? "Describe the meeting and add exact vocabulary. Meeting context also guides the grounded response assistant."
                         : "Describe the role and likely subject areas, then add exact technical vocabulary. Interview context also guides Answer Mirror."
                 )
                     .font(.callout)
@@ -794,8 +896,8 @@ struct ContentView: View {
         } label: {
             Label(
                 purpose == .meeting
-                    ? "Meeting transcription context"
-                    : "References and interview context",
+                    ? "Meeting transcription and assistant context"
+                    : "Interview transcription and assistant context",
                 systemImage: "slider.horizontal.3"
             )
                 .font(.headline)
@@ -823,113 +925,6 @@ struct ContentView: View {
             $controller.meetingContextPrompt
         case .interview:
             $controller.interviewContextPrompt
-        }
-    }
-
-    private var referenceMaterialPanel: some View {
-        let state = controller.referenceLibraryState
-        let snapshot = state.snapshot
-
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 7) {
-                Label("Reference material", systemImage: "folder.fill")
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                if state.phase == .scanning {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if state.phase == .ready {
-                    Circle()
-                        .fill(state.isWatching ? Color.green : Color.orange)
-                        .frame(width: 7, height: 7)
-                }
-                Text(state.phaseLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: state.folderURL == nil ? "folder.badge.plus" : "folder")
-                    .font(.title3)
-                    .foregroundStyle(state.folderURL == nil ? Color.secondary : Color.accentColor)
-                    .frame(width: 28)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    if let folderURL = state.folderURL {
-                        Text(folderURL.lastPathComponent)
-                            .font(.callout.weight(.medium))
-                            .lineLimit(1)
-                        Text(referenceSummary(snapshot: snapshot, folderURL: folderURL))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .help((folderURL.path as NSString).abbreviatingWithTildeInPath)
-                    } else {
-                        Text("Choose one folder for resumes, project notes, and other context.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-                if state.folderURL != nil {
-                    Button("Reveal", action: controller.revealReferenceFolder)
-                    Button {
-                        controller.rescanReferenceFolder()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help("Rescan reference material now")
-                    Button("Change…", action: controller.chooseReferenceFolder)
-                    Button {
-                        controller.clearReferenceFolder()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .help("Stop using this reference folder")
-                } else {
-                    Button("Choose Folder…", action: controller.chooseReferenceFolder)
-                        .buttonStyle(.borderedProminent)
-                }
-            }
-            .padding(9)
-            .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(.separator.opacity(0.55), lineWidth: 1)
-            }
-
-            if case let .failed(message) = state.phase {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            } else if let snapshot, !snapshot.issues.isEmpty {
-                Text(
-                    "Indexed with \(snapshot.issues.count) warning"
-                        + (snapshot.issues.count == 1 ? "" : "s")
-                        + ": \(snapshot.issues[0].relativePath) — \(snapshot.issues[0].message)"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .lineLimit(2)
-                .help(snapshot.issues.map { "\($0.relativePath): \($0.message)" }.joined(separator: "\n"))
-            }
-
-            HStack(spacing: 8) {
-                Image(systemName: "display")
-                    .foregroundStyle(.green)
-                Text(controller.companionGatewayStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Spacer()
-                Button("Open Live Assistant", action: controller.openCompanionDisplay)
-            }
-
-            Text("The Mac ingests PDF, RTF, Markdown, and common UTF-8 text files at launch and after folder changes. Reference contents and the API key stay out of the display client.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 

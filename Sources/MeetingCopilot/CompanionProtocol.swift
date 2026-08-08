@@ -375,9 +375,9 @@ actor CompanionEventHub {
             isPreparingSyntheticInterview
         switch purpose {
         case .meeting:
-            state.session.behaviorName = "Meeting transcription"
+            state.session.behaviorName = "Meeting assistant"
             state.session.behaviorDetail =
-                "Capture both speakers without generating answer suggestions"
+                "Ground concise response cues in the meeting references"
         case .interview:
             state.session.behaviorName = "Answer mirror"
             state.session.behaviorDetail =
