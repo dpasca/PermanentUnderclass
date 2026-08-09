@@ -539,7 +539,7 @@ struct ContentView: View {
             .green
         case .checking, .dropping, .permissionRequired:
             .orange
-        case .unavailable, .noData:
+        case .unavailable, .noSignal, .noData:
             .red
         case .ready:
             .blue
@@ -1061,7 +1061,7 @@ private struct AudioHealthBadge: View {
             .green
         case .checking, .dropping, .permissionRequired:
             .orange
-        case .unavailable, .noData:
+        case .unavailable, .noSignal, .noData:
             .red
         case .ready:
             .secondary

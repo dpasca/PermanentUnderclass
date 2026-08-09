@@ -736,7 +736,8 @@ final class PUnderclassTests: XCTestCase {
                 sourceAvailable: true,
                 isMonitoring: true,
                 telemetry: telemetry,
-                now: now
+                now: now,
+                detectDigitalSilence: true
             ),
             .checking
         )
@@ -748,7 +749,8 @@ final class PUnderclassTests: XCTestCase {
                 sourceAvailable: true,
                 isMonitoring: true,
                 telemetry: telemetry,
-                now: now
+                now: now,
+                detectDigitalSilence: true
             ),
             .healthy
         )
@@ -759,7 +761,8 @@ final class PUnderclassTests: XCTestCase {
                 sourceAvailable: true,
                 isMonitoring: true,
                 telemetry: telemetry,
-                now: now
+                now: now,
+                detectDigitalSilence: true
             ),
             .dropping
         )
@@ -794,6 +797,131 @@ final class PUnderclassTests: XCTestCase {
                 telemetry: TrackTelemetry()
             ),
             .permissionRequired
+        )
+    }
+
+    func testAudioHealthDistinguishesDigitalSilenceFromStoppedPackets() {
+        let now = Date(timeIntervalSince1970: 100)
+        var telemetry = TrackTelemetry(
+            packets: 20,
+            monitoringStartedAt: now.addingTimeInterval(-8),
+            lastPacketAt: now
+        )
+
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now
+            ),
+            .healthy,
+            "Legitimate silence on the remote/system-audio track is not a microphone fault."
+        )
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now,
+                detectDigitalSilence: true
+            ),
+            .noSignal
+        )
+
+        telemetry.lastSignalAt = now.addingTimeInterval(-1)
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now,
+                detectDigitalSilence: true
+            ),
+            .healthy
+        )
+
+        telemetry.lastPacketAt = now.addingTimeInterval(-3)
+        XCTAssertEqual(
+            AudioStreamHealth.evaluate(
+                sourceAvailable: true,
+                isMonitoring: true,
+                telemetry: telemetry,
+                now: now,
+                detectDigitalSilence: true
+            ),
+            .noData
+        )
+    }
+
+    func testAudioCaptureLivenessWaitsForTheTimeoutAndResetsOnBuffers() {
+        let second: UInt64 = 1_000_000_000
+
+        XCTAssertFalse(
+            AudioCaptureLivenessPolicy.hasStalled(
+                startedAtUptime: 10 * second,
+                lastBufferAtUptime: nil,
+                nowUptime: 12 * second - 1
+            )
+        )
+        XCTAssertTrue(
+            AudioCaptureLivenessPolicy.hasStalled(
+                startedAtUptime: 10 * second,
+                lastBufferAtUptime: nil,
+                nowUptime: 12 * second
+            )
+        )
+        XCTAssertFalse(
+            AudioCaptureLivenessPolicy.hasStalled(
+                startedAtUptime: 10 * second,
+                lastBufferAtUptime: 11 * second,
+                nowUptime: 12 * second
+            )
+        )
+        XCTAssertTrue(
+            AudioCaptureLivenessPolicy.hasStalled(
+                startedAtUptime: 10 * second,
+                lastBufferAtUptime: 11 * second,
+                nowUptime: 13 * second
+            )
+        )
+    }
+
+    func testAudioCaptureWatchdogReportsMissingBufferDelivery() {
+        let stalled = expectation(description: "Audio capture stalled")
+        let watchdog = AudioBufferWatchdog(
+            timeout: 0.04,
+            checkInterval: 0.005
+        ) {
+            stalled.fulfill()
+        }
+
+        watchdog.start()
+        wait(for: [stalled], timeout: 0.5)
+        watchdog.stop()
+    }
+
+    func testAudioCaptureRecoveryUsesFastRetriesThenCapsTheBackoff() {
+        XCTAssertEqual(AudioCaptureRecoveryPolicy.quickDictationRestartLimit, 2)
+        XCTAssertEqual(
+            AudioCaptureRecoveryPolicy.meetingRestartDelay(after: 1),
+            0.28,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            AudioCaptureRecoveryPolicy.meetingRestartDelay(after: 2),
+            1,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            AudioCaptureRecoveryPolicy.meetingRestartDelay(after: 3),
+            3,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            AudioCaptureRecoveryPolicy.meetingRestartDelay(after: 20),
+            10,
+            accuracy: 0.001
         )
     }
 
@@ -1488,6 +1616,26 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
+    func testDictationNamesMicrophoneStartupAndRecoveryHonestly() {
+        XCTAssertEqual(
+            DictationPhase.startingMicrophone.label,
+            "Starting microphone…"
+        )
+        XCTAssertEqual(
+            DictationPhase.startingMicrophone.detail,
+            "Waiting for the selected microphone to deliver its first audio buffer."
+        )
+        XCTAssertEqual(
+            DictationPhase.recoveringMicrophone.label,
+            "Recovering microphone…"
+        )
+        XCTAssertTrue(
+            DictationPhase.recoveringMicrophone.detail?.contains(
+                "stopped delivering audio"
+            ) == true
+        )
+    }
+
     func testQuickDictationReconnectsAfterCloudSessionRollover() {
         var policy = QuickDictationReconnectPolicy()
 
@@ -1682,6 +1830,22 @@ final class PUnderclassTests: XCTestCase {
         state.hideBackground()
         XCTAssertEqual(state.content, .listening)
         XCTAssertNil(state.backgroundContent)
+    }
+
+    func testQuickDictationPreviewOnlyClaimsListeningAfterAudioStarts() {
+        var state = QuickDictationPreviewState()
+
+        state.handle(phase: .startingMicrophone)
+        XCTAssertEqual(state.content, .startingMicrophone)
+
+        state.handle(phase: .recording)
+        XCTAssertEqual(state.content, .listening)
+
+        state.handle(phase: .recoveringMicrophone)
+        XCTAssertEqual(state.content, .recoveringMicrophone)
+
+        state.handle(phase: .recording)
+        XCTAssertEqual(state.content, .listening)
     }
 
     func testQuickDictationPreviewHidesCancelledCapture() {

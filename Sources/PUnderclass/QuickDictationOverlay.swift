@@ -8,7 +8,9 @@ struct QuickDictationResultPresentation: Equatable {
 
 enum QuickDictationPreviewContent: Equatable {
     case hidden
+    case startingMicrophone
     case listening
+    case recoveringMicrophone
     case transcribing
     case result(QuickDictationResultPresentation)
     case failure(String)
@@ -38,8 +40,18 @@ struct QuickDictationPreviewState: Equatable {
     mutating func handle(phase: DictationPhase) {
         let previousContent = content
         switch phase {
+        case .startingMicrophone:
+            content = .startingMicrophone
+            if previousContent == .transcribing {
+                backgroundContent = .transcribing
+            }
         case .recording:
             content = .listening
+            if previousContent == .transcribing {
+                backgroundContent = .transcribing
+            }
+        case .recoveringMicrophone:
+            content = .recoveringMicrophone
             if previousContent == .transcribing {
                 backgroundContent = .transcribing
             }
@@ -64,7 +76,10 @@ struct QuickDictationPreviewState: Equatable {
     }
 
     mutating func show(result: String) {
-        if content == .listening {
+        if content == .startingMicrophone
+            || content == .listening
+            || content == .recoveringMicrophone
+        {
             backgroundContent = .result(result)
             return
         }
@@ -153,9 +168,16 @@ private struct QuickDictationOverlayView: View {
                 // Which microphone is heard and which model is doing the work
                 // are both worth knowing at a glance, and stay visible through
                 // transcription rather than only while recording.
-                if model.content == .listening || model.content == .transcribing {
+                if model.content == .startingMicrophone
+                    || model.content == .listening
+                    || model.content == .recoveringMicrophone
+                    || model.content == .transcribing
+                {
                     HStack(spacing: 9) {
-                        if model.content == .listening {
+                        if model.content == .startingMicrophone
+                            || model.content == .listening
+                            || model.content == .recoveringMicrophone
+                        {
                             Label {
                                 Text(model.microphoneName)
                                     .lineLimit(1)
@@ -302,6 +324,14 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden:
             EmptyView()
+        case .startingMicrophone:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Waiting for the first audio buffer…")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
         case .listening:
             VStack(alignment: .leading, spacing: 5) {
                 Text(
@@ -320,6 +350,15 @@ private struct QuickDictationOverlayView: View {
                     normalization: .adaptive
                 )
                 .frame(height: 19)
+            }
+        case .recoveringMicrophone:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("The microphone stopped sending audio. Reconnecting…")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         case .transcribing:
             VStack(alignment: .leading, spacing: 6) {
@@ -381,8 +420,12 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden:
             "Quick Dictation"
+        case .startingMicrophone:
+            "Starting microphone…"
         case .listening:
             "Listening…"
+        case .recoveringMicrophone:
+            "Recovering microphone…"
         case .transcribing:
             model.progress?.label ?? "Transcribing…"
         case let .result(presentation):
@@ -396,6 +439,8 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden, .listening:
             "mic.fill"
+        case .startingMicrophone, .recoveringMicrophone:
+            "arrow.clockwise"
         case .transcribing:
             "text.bubble.fill"
         case let .result(presentation):
@@ -412,6 +457,8 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden, .listening:
             .red
+        case .startingMicrophone, .recoveringMicrophone:
+            .orange
         case .transcribing:
             .orange
         case let .result(presentation):
@@ -428,11 +475,15 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden:
             return "Hidden"
+        case .startingMicrophone:
+            return "Waiting for the selected microphone to deliver its first audio buffer."
         case .listening:
             let status = model.partialTranscript.isEmpty
                 ? "Listening. Release Command and Option to transcribe."
                 : "Listening. Live transcript: \(model.partialTranscript)"
             return "\(status) Microphone: \(model.microphoneName)."
+        case .recoveringMicrophone:
+            return "The selected microphone stopped delivering audio. PermanentUnderclass is reconnecting it."
         case .transcribing:
             let status = model.progress?.label ?? "Transcribing the recording."
             return model.partialTranscript.isEmpty
@@ -552,6 +603,16 @@ final class QuickDictationOverlayController {
             cancelBackgroundDismissal()
             setInteractive(false)
             hide()
+        case .startingMicrophone:
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            setInteractive(false)
+            if previousContent != .startingMicrophone {
+                model.waveform = Array(repeating: 0, count: 180)
+                model.partialTranscript = ""
+                model.progress = nil
+            }
+            present()
         case .listening:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
@@ -564,6 +625,11 @@ final class QuickDictationOverlayController {
                 model.partialTranscript = ""
                 model.progress = nil
             }
+            present()
+        case .recoveringMicrophone:
+            dismissWorkItem?.cancel()
+            dismissWorkItem = nil
+            setInteractive(false)
             present()
         case .transcribing:
             dismissWorkItem?.cancel()
@@ -591,7 +657,8 @@ final class QuickDictationOverlayController {
     func update(partialTranscript: String) {
         guard isEnabled, !isSuppressed else { return }
         switch state.content {
-        case .listening, .transcribing:
+        case .startingMicrophone, .listening, .recoveringMicrophone,
+             .transcribing:
             model.partialTranscript = partialTranscript
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         case .hidden, .result, .failure:

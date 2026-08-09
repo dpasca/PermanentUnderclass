@@ -73,6 +73,11 @@ final class MeetingController: ObservableObject {
     private var outputDeviceMonitor: DefaultOutputDeviceMonitor?
     private var microphoneRestartWorkItem: DispatchWorkItem?
     private var microphoneCaptureGeneration: UUID?
+    private var microphoneRecoveryAttempts = 0
+    private var microphoneRecoveryErrorMessage: String?
+    private var microphoneSignalStartedAt: Date?
+    private var microphoneLastSignalAt: Date?
+    private var microphoneSignalErrorMessage: String?
     private var dictationService: HoldToDictateService?
     private var whisperWarmupTask: Task<Void, Never>?
     private var parakeetWarmupTask: Task<Void, Never>?
@@ -116,6 +121,10 @@ final class MeetingController: ObservableObject {
     private static let liveAssistantLogger = Logger(
         subsystem: "com.newtypekk.punderclass",
         category: "LiveAssistant"
+    )
+    private static let audioCaptureLogger = Logger(
+        subsystem: "com.newtypekk.punderclass",
+        category: "AudioCapture"
     )
 
     init(
@@ -478,6 +487,9 @@ final class MeetingController: ObservableObject {
             let sessionID = UUID()
             activeSessionID = sessionID
             activeContext = context
+            microphoneRecoveryAttempts = 0
+            clearMicrophoneRecoveryError()
+            clearMicrophoneSignalError()
             isListening = true
             statusMessage = "Starting \(purpose.title.lowercased()) capture…"
             publishCompanionSession()
@@ -590,7 +602,10 @@ final class MeetingController: ObservableObject {
                 },
                 onTelemetry: { [weak self] telemetry in
                     guard self?.activeSessionID == sessionID else { return }
-                    self?.localTrack.telemetry = telemetry
+                    self?.handleMicrophoneTelemetry(
+                        telemetry,
+                        sessionID: sessionID
+                    )
                 }
             )
             let remotePipeline = AudioTrackPipeline(
@@ -642,6 +657,7 @@ final class MeetingController: ObservableObject {
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil
+        microphoneRecoveryAttempts = 0
 
         microphoneCapture?.stop()
         processCapture?.stop()
@@ -850,7 +866,8 @@ final class MeetingController: ObservableObject {
             permissionGranted: dictationPermissions.canUseMicrophone,
             isMonitoring: isMicrophoneMonitoring,
             telemetry: visibleMicrophoneTelemetry,
-            now: now
+            now: now,
+            detectDigitalSilence: true
         )
     }
 
@@ -871,7 +888,8 @@ final class MeetingController: ObservableObject {
             permissionGranted: dictationPermissions.canUseMicrophone,
             isMonitoring: isListening && capturePurpose == purpose,
             telemetry: localTrack(for: purpose).telemetry,
-            now: now
+            now: now,
+            detectDigitalSilence: true
         )
     }
 
@@ -2691,6 +2709,11 @@ final class MeetingController: ObservableObject {
             dictationOverlay.update(microphoneName: microphoneName)
         }
 
+        if previousDeviceID != device?.id {
+            microphoneRecoveryAttempts = 0
+            clearMicrophoneRecoveryError()
+        }
+
         guard previousDeviceID != device?.id, isListening, let sessionID = activeSessionID else {
             return
         }
@@ -2703,7 +2726,12 @@ final class MeetingController: ObservableObject {
             localPipeline?.finish()
             localClient?.commitPendingAudio()
             localTrack.telemetry.sourceFormat = "Waiting for an input device"
+            let warning =
+                "The microphone disconnected. Remote audio is still being captured; reconnect it or select another input device."
+            microphoneRecoveryErrorMessage = warning
+            errorMessage = warning
             statusMessage = "Microphone disconnected — remote audio is still running"
+            publishCompanionSession()
             return
         }
 
@@ -2719,7 +2747,11 @@ final class MeetingController: ObservableObject {
         audioOutputAvailable = device != nil
     }
 
-    private func scheduleMicrophoneRestart(sessionID: UUID, message: String) {
+    private func scheduleMicrophoneRestart(
+        sessionID: UUID,
+        message: String,
+        delay: TimeInterval = 0.28
+    ) {
         guard
             isListening,
             activeSessionID == sessionID,
@@ -2742,7 +2774,7 @@ final class MeetingController: ObservableObject {
         }
         microphoneRestartWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(280),
+            deadline: .now() + delay,
             execute: work
         )
     }
@@ -2762,11 +2794,37 @@ final class MeetingController: ObservableObject {
 
         let generation = UUID()
         microphoneCaptureGeneration = generation
+        microphoneSignalStartedAt = Date()
+        microphoneLastSignalAt = nil
+        clearMicrophoneSignalError()
         let capture = MicrophoneCapture()
         microphoneCapture = capture
         capture.start(
             onBuffer: { buffer in
                 localPipeline.submit(buffer)
+            },
+            onFirstBuffer: { [weak self, weak capture] in
+                DispatchQueue.main.async {
+                    guard
+                        let self,
+                        let capture,
+                        self.activeSessionID == sessionID,
+                        self.microphoneCaptureGeneration == generation,
+                        self.microphoneCapture === capture
+                    else {
+                        return
+                    }
+                    if self.microphoneRecoveryAttempts > 0 {
+                        Self.audioCaptureLogger.notice(
+                            "microphone_recovery_succeeded attempts=\(self.microphoneRecoveryAttempts, privacy: .public)"
+                        )
+                    }
+                    self.microphoneRecoveryAttempts = 0
+                    self.clearMicrophoneRecoveryError()
+                    self.statusMessage =
+                        "Listening on \(self.microphoneName) — headphones required"
+                    self.publishCompanionSession()
+                }
             },
             onConfigurationChange: { [weak self] in
                 DispatchQueue.main.async {
@@ -2780,6 +2838,20 @@ final class MeetingController: ObservableObject {
                         sessionID: sessionID,
                         message: "Adapting to the new microphone configuration…"
                     )
+                }
+            },
+            onStall: { [weak self, weak capture] in
+                DispatchQueue.main.async {
+                    guard
+                        let self,
+                        let capture,
+                        self.activeSessionID == sessionID,
+                        self.microphoneCaptureGeneration == generation,
+                        self.microphoneCapture === capture
+                    else {
+                        return
+                    }
+                    self.recoverStalledMicrophone(sessionID: sessionID)
                 }
             },
             completion: { [weak self, weak capture] result in
@@ -2796,8 +2868,16 @@ final class MeetingController: ObservableObject {
 
                     switch result {
                     case .success:
-                        self.statusMessage =
-                            "Listening on \(self.microphoneName) — headphones required"
+                        if capture.hasReceivedBuffer {
+                            self.microphoneRecoveryAttempts = 0
+                            self.clearMicrophoneRecoveryError()
+                            self.statusMessage =
+                                "Listening on \(self.microphoneName) — headphones required"
+                        } else {
+                            self.statusMessage =
+                                "Checking \(self.microphoneName) for audio…"
+                        }
+                        self.publishCompanionSession()
 
                     case let .failure(error):
                         capture.stop()
@@ -2805,10 +2885,10 @@ final class MeetingController: ObservableObject {
                             self.microphoneCapture = nil
                         }
                         if isSwitch {
-                            self.errorMessage =
-                                "Could not switch to \(self.microphoneName): \(error.localizedDescription)"
-                            self.statusMessage =
-                                "Remote audio continues — waiting for a microphone"
+                            self.recoverMicrophoneAfterFailure(
+                                sessionID: sessionID,
+                                detail: error.localizedDescription
+                            )
                         } else {
                             self.stopCapture()
                             self.present(error)
@@ -2819,12 +2899,113 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    private func recoverStalledMicrophone(sessionID: UUID) {
+        recoverMicrophoneAfterFailure(
+            sessionID: sessionID,
+            detail: "No audio buffers arrived for \(Int(AudioCaptureLivenessPolicy.bufferTimeout)) seconds."
+        )
+    }
+
+    private func recoverMicrophoneAfterFailure(
+        sessionID: UUID,
+        detail: String
+    ) {
+        guard
+            isListening,
+            activeSessionID == sessionID,
+            selectedInputDeviceID != nil
+        else {
+            return
+        }
+
+        microphoneRecoveryAttempts += 1
+        let delay = AudioCaptureRecoveryPolicy.meetingRestartDelay(
+            after: microphoneRecoveryAttempts
+        )
+        let warning =
+            "The microphone stopped delivering audio. Remote audio is still being captured while PermanentUnderclass reconnects \(microphoneName)."
+        microphoneRecoveryErrorMessage = warning
+        errorMessage = warning
+        statusMessage = "Recovering microphone…"
+        localTrack.telemetry.sourceFormat =
+            "No microphone packets · retry \(microphoneRecoveryAttempts)"
+        Self.audioCaptureLogger.error(
+            "microphone_stalled attempt=\(self.microphoneRecoveryAttempts, privacy: .public) retry_delay_ms=\(Int(delay * 1_000), privacy: .public) detail=\(detail, privacy: .public)"
+        )
+        publishCompanionSession()
+        scheduleMicrophoneRestart(
+            sessionID: sessionID,
+            message: "Recovering microphone…",
+            delay: delay
+        )
+    }
+
+    private func clearMicrophoneRecoveryError() {
+        if errorMessage == microphoneRecoveryErrorMessage {
+            errorMessage = nil
+        }
+        microphoneRecoveryErrorMessage = nil
+    }
+
+    private func handleMicrophoneTelemetry(
+        _ telemetry: TrackTelemetry,
+        sessionID: UUID,
+        now: Date = Date()
+    ) {
+        guard isListening, activeSessionID == sessionID else { return }
+        localTrack.telemetry = telemetry
+
+        if telemetry.peak > 0 {
+            microphoneLastSignalAt = telemetry.lastSignalAt ?? now
+            if microphoneSignalErrorMessage != nil {
+                let signalWarningWasVisible =
+                    errorMessage == microphoneSignalErrorMessage
+                clearMicrophoneSignalError()
+                if signalWarningWasVisible {
+                    statusMessage =
+                        "Listening on \(microphoneName) — headphones required"
+                    publishCompanionSession()
+                }
+            }
+            return
+        }
+
+        let signalReference = microphoneLastSignalAt
+            ?? microphoneSignalStartedAt
+        guard
+            let signalReference,
+            now.timeIntervalSince(signalReference)
+                > AudioStreamHealth.defaultSignalStaleAfter,
+            microphoneSignalErrorMessage == nil
+        else {
+            return
+        }
+
+        let warning =
+            "Audio packets are arriving from \(microphoneName), but they contain only digital silence. Check LINE or system mute and the selected input route."
+        microphoneSignalErrorMessage = warning
+        errorMessage = warning
+        statusMessage = "No microphone signal — check mute and input routing"
+        Self.audioCaptureLogger.error("microphone_digital_silence")
+        publishCompanionSession()
+    }
+
+    private func clearMicrophoneSignalError() {
+        if errorMessage == microphoneSignalErrorMessage {
+            errorMessage = nil
+        }
+        microphoneSignalErrorMessage = nil
+    }
+
     private func stopImmediately() {
         assistantGenerationTask?.cancel()
         assistantGenerationTask = nil
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil
+        microphoneRecoveryAttempts = 0
+        microphoneSignalStartedAt = nil
+        microphoneLastSignalAt = nil
         microphoneCapture?.stop()
         processCapture?.stop()
         localClient?.disconnect()

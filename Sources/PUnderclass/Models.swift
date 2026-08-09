@@ -547,16 +547,20 @@ struct TrackTelemetry: Equatable {
     var droppedBuffers: UInt64 = 0
     var monitoringStartedAt: Date?
     var lastPacketAt: Date?
+    var lastSignalAt: Date?
     var sourceFormat = "Waiting for audio"
 }
 
 enum AudioStreamHealth: Equatable {
+    static let defaultSignalStaleAfter: TimeInterval = 5
+
     case unavailable
     case permissionRequired
     case ready
     case checking
     case healthy
     case dropping
+    case noSignal
     case noData
 
     var label: String {
@@ -573,6 +577,8 @@ enum AudioStreamHealth: Equatable {
             "Healthy"
         case .dropping:
             "Drops detected"
+        case .noSignal:
+            "No signal"
         case .noData:
             "No audio data"
         }
@@ -592,6 +598,8 @@ enum AudioStreamHealth: Equatable {
             "Audio packets are arriving normally."
         case .dropping:
             "Audio is arriving, but one or more buffers were dropped."
+        case .noSignal:
+            "Audio packets are arriving, but they contain only digital silence. Check mute and input routing."
         case .noData:
             "Capture is active, but audio packets have stopped arriving."
         }
@@ -603,7 +611,9 @@ enum AudioStreamHealth: Equatable {
         isMonitoring: Bool,
         telemetry: TrackTelemetry,
         now: Date = Date(),
-        staleAfter: TimeInterval = 2
+        staleAfter: TimeInterval = 2,
+        detectDigitalSilence: Bool = false,
+        signalStaleAfter: TimeInterval = defaultSignalStaleAfter
     ) -> AudioStreamHealth {
         guard sourceAvailable else { return .unavailable }
         guard permissionGranted else { return .permissionRequired }
@@ -612,6 +622,16 @@ enum AudioStreamHealth: Equatable {
         if let lastPacketAt = telemetry.lastPacketAt {
             guard now.timeIntervalSince(lastPacketAt) <= staleAfter else {
                 return .noData
+            }
+            if detectDigitalSilence {
+                let signalReference = telemetry.lastSignalAt
+                    ?? telemetry.monitoringStartedAt
+                if
+                    let signalReference,
+                    now.timeIntervalSince(signalReference) > signalStaleAfter
+                {
+                    return .noSignal
+                }
             }
             return telemetry.droppedBuffers > 0 ? .dropping : .healthy
         }
@@ -662,7 +682,9 @@ enum DictationPhase: Equatable {
     case needsPermission
     case preparing(TranscriptRefinementEngine)
     case ready
+    case startingMicrophone
     case recording
+    case recoveringMicrophone
     case transcribing
     case failed(String)
 
@@ -683,8 +705,12 @@ enum DictationPhase: Equatable {
             }
         case .ready:
             "Ready"
+        case .startingMicrophone:
+            "Starting microphone…"
         case .recording:
             "Listening…"
+        case .recoveringMicrophone:
+            "Recovering microphone…"
         case .transcribing:
             "Transcribing…"
         case .failed:
@@ -703,6 +729,10 @@ enum DictationPhase: Equatable {
             case .openAITranscribe:
                 return "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
             }
+        case .startingMicrophone:
+            return "Waiting for the selected microphone to deliver its first audio buffer."
+        case .recoveringMicrophone:
+            return "The selected microphone stopped delivering audio. Keep holding the shortcut while PermanentUnderclass reconnects it."
         case let .failed(message):
             return message
         default:

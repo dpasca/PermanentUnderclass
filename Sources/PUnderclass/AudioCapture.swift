@@ -4,26 +4,188 @@ import CoreAudio
 import CoreMedia
 import Foundation
 
+struct AudioCaptureLivenessPolicy {
+    static let bufferTimeout: TimeInterval = 2
+    static let checkInterval: TimeInterval = 0.25
+
+    static func hasStalled(
+        startedAtUptime: UInt64,
+        lastBufferAtUptime: UInt64?,
+        nowUptime: UInt64,
+        timeout: TimeInterval = bufferTimeout
+    ) -> Bool {
+        let referenceUptime = lastBufferAtUptime ?? startedAtUptime
+        guard nowUptime >= referenceUptime else { return false }
+        let elapsedNanoseconds = nowUptime - referenceUptime
+        let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+        return elapsedNanoseconds >= timeoutNanoseconds
+    }
+}
+
+struct AudioCaptureRecoveryPolicy {
+    static let quickDictationRestartLimit = 2
+
+    static func meetingRestartDelay(after attempt: Int) -> TimeInterval {
+        switch attempt {
+        case ...1:
+            0.28
+        case 2:
+            1
+        case 3:
+            3
+        default:
+            10
+        }
+    }
+}
+
+/// Watches buffer delivery rather than signal amplitude. A silent room still
+/// produces buffers, while a wedged Bluetooth route does not.
+final class AudioBufferWatchdog {
+    typealias StallHandler = () -> Void
+
+    private let timeout: TimeInterval
+    private let checkInterval: TimeInterval
+    private let callbackQueue: DispatchQueue
+    private let onStall: StallHandler
+    private let lock = NSLock()
+    private var timer: DispatchSourceTimer?
+    private var startedAtUptime: UInt64 = 0
+    private var lastBufferAtUptime: UInt64?
+    private var hasReportedCurrentStall = false
+    private var isRunning = false
+
+    init(
+        timeout: TimeInterval = AudioCaptureLivenessPolicy.bufferTimeout,
+        checkInterval: TimeInterval = AudioCaptureLivenessPolicy.checkInterval,
+        callbackQueue: DispatchQueue = .main,
+        onStall: @escaping StallHandler
+    ) {
+        self.timeout = timeout
+        self.checkInterval = checkInterval
+        self.callbackQueue = callbackQueue
+        self.onStall = onStall
+    }
+
+    func start() {
+        stop()
+
+        let timer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue.global(qos: .userInitiated)
+        )
+        timer.schedule(
+            deadline: .now() + checkInterval,
+            repeating: checkInterval,
+            leeway: .milliseconds(50)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.checkForStall()
+        }
+
+        lock.lock()
+        startedAtUptime = DispatchTime.now().uptimeNanoseconds
+        lastBufferAtUptime = nil
+        hasReportedCurrentStall = false
+        isRunning = true
+        self.timer = timer
+        lock.unlock()
+        timer.resume()
+    }
+
+    func noteBuffer() {
+        lock.lock()
+        guard isRunning else {
+            lock.unlock()
+            return
+        }
+        lastBufferAtUptime = DispatchTime.now().uptimeNanoseconds
+        hasReportedCurrentStall = false
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        isRunning = false
+        let timer = self.timer
+        self.timer = nil
+        lock.unlock()
+
+        timer?.setEventHandler {}
+        timer?.cancel()
+    }
+
+    private func checkForStall() {
+        lock.lock()
+        guard
+            isRunning,
+            !hasReportedCurrentStall,
+            AudioCaptureLivenessPolicy.hasStalled(
+                startedAtUptime: startedAtUptime,
+                lastBufferAtUptime: lastBufferAtUptime,
+                nowUptime: DispatchTime.now().uptimeNanoseconds,
+                timeout: timeout
+            )
+        else {
+            lock.unlock()
+            return
+        }
+        hasReportedCurrentStall = true
+        lock.unlock()
+
+        callbackQueue.async { [weak self] in
+            self?.deliverStallIfCurrent()
+        }
+    }
+
+    private func deliverStallIfCurrent() {
+        lock.lock()
+        let shouldDeliver = isRunning && hasReportedCurrentStall
+        lock.unlock()
+        guard shouldDeliver else { return }
+        onStall()
+    }
+
+    deinit {
+        stop()
+    }
+}
+
 final class MicrophoneCapture {
     typealias BufferHandler = (AVAudioPCMBuffer) -> Void
+    typealias FirstBufferHandler = () -> Void
     typealias ConfigurationChangeHandler = () -> Void
+    typealias StallHandler = () -> Void
 
     private let engine = AVAudioEngine()
+    private let bufferStateLock = NSLock()
     private var isStarted = false
     private var isCancelled = false
     private var configurationObserver: NSObjectProtocol?
+    private var watchdog: AudioBufferWatchdog?
+    private var receivedBuffer = false
+
+    var hasReceivedBuffer: Bool {
+        bufferStateLock.lock()
+        defer { bufferStateLock.unlock() }
+        return receivedBuffer
+    }
 
     func start(
         onBuffer: @escaping BufferHandler,
+        onFirstBuffer: @escaping FirstBufferHandler,
         onConfigurationChange: @escaping ConfigurationChangeHandler,
+        onStall: @escaping StallHandler,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         isCancelled = false
+        resetBufferState()
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             startEngine(
                 onBuffer: onBuffer,
+                onFirstBuffer: onFirstBuffer,
                 onConfigurationChange: onConfigurationChange,
+                onStall: onStall,
                 completion: completion
             )
         case .notDetermined:
@@ -38,7 +200,9 @@ final class MicrophoneCapture {
                     }
                     self.startEngine(
                         onBuffer: onBuffer,
+                        onFirstBuffer: onFirstBuffer,
                         onConfigurationChange: onConfigurationChange,
+                        onStall: onStall,
                         completion: completion
                     )
                 }
@@ -52,6 +216,8 @@ final class MicrophoneCapture {
 
     func stop() {
         isCancelled = true
+        watchdog?.stop()
+        watchdog = nil
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
@@ -65,7 +231,9 @@ final class MicrophoneCapture {
 
     private func startEngine(
         onBuffer: @escaping BufferHandler,
+        onFirstBuffer: @escaping FirstBufferHandler,
         onConfigurationChange: @escaping ConfigurationChangeHandler,
+        onStall: @escaping StallHandler,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard !isCancelled else { return }
@@ -81,14 +249,22 @@ final class MicrophoneCapture {
                 throw PUnderclassError.audio("The selected default microphone has no usable input format.")
             }
 
+            let watchdog = AudioBufferWatchdog(onStall: onStall)
+            self.watchdog = watchdog
             inputNode.installTap(
                 onBus: 0,
                 bufferSize: 960,
                 format: inputFormat
-            ) { buffer, _ in
+            ) { [weak self, weak watchdog] buffer, _ in
+                guard let self else { return }
+                watchdog?.noteBuffer()
+                if self.recordBufferArrival() {
+                    onFirstBuffer()
+                }
                 guard let copy = buffer.ownedCopy() else { return }
                 onBuffer(copy)
             }
+            watchdog.start()
             engine.prepare()
             try engine.start()
             isStarted = true
@@ -102,6 +278,8 @@ final class MicrophoneCapture {
             }
             completion(.success(()))
         } catch {
+            watchdog?.stop()
+            watchdog = nil
             inputNodeIfAvailable()?.removeTap(onBus: 0)
             engine.stop()
             completion(.failure(error))
@@ -110,6 +288,20 @@ final class MicrophoneCapture {
 
     private func inputNodeIfAvailable() -> AVAudioInputNode? {
         engine.inputNode
+    }
+
+    private func resetBufferState() {
+        bufferStateLock.lock()
+        receivedBuffer = false
+        bufferStateLock.unlock()
+    }
+
+    private func recordBufferArrival() -> Bool {
+        bufferStateLock.lock()
+        defer { bufferStateLock.unlock() }
+        guard !receivedBuffer else { return false }
+        receivedBuffer = true
+        return true
     }
 
     deinit {
@@ -125,6 +317,8 @@ final class CaptureSessionMicrophoneCapture: NSObject,
     AVCaptureAudioDataOutputSampleBufferDelegate
 {
     typealias BufferHandler = (AVAudioPCMBuffer) -> Void
+    typealias FirstBufferHandler = () -> Void
+    typealias StallHandler = () -> Void
 
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(
@@ -139,14 +333,29 @@ final class CaptureSessionMicrophoneCapture: NSObject,
     private var isCancelled = false
     private var audioOutput: AVCaptureAudioDataOutput?
     private var onBuffer: BufferHandler?
+    private var onFirstBuffer: FirstBufferHandler?
+    private var onStall: StallHandler?
+    private var watchdog: AudioBufferWatchdog?
+    private var receivedBuffer = false
+
+    var hasReceivedBuffer: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return receivedBuffer
+    }
 
     func start(
         onBuffer: @escaping BufferHandler,
+        onFirstBuffer: @escaping FirstBufferHandler,
+        onStall: @escaping StallHandler,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         stateLock.lock()
         isCancelled = false
         self.onBuffer = onBuffer
+        self.onFirstBuffer = onFirstBuffer
+        self.onStall = onStall
+        receivedBuffer = false
         stateLock.unlock()
 
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -175,7 +384,10 @@ final class CaptureSessionMicrophoneCapture: NSObject,
     func stop() {
         stateLock.lock()
         isCancelled = true
+        let watchdog = self.watchdog
+        self.watchdog = nil
         stateLock.unlock()
+        watchdog?.stop()
 
         sessionQueue.sync {
             audioOutput?.setSampleBufferDelegate(nil, queue: nil)
@@ -187,6 +399,8 @@ final class CaptureSessionMicrophoneCapture: NSObject,
         outputQueue.sync {}
         stateLock.lock()
         onBuffer = nil
+        onFirstBuffer = nil
+        onStall = nil
         stateLock.unlock()
     }
 
@@ -221,6 +435,13 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                 }
 
                 guard !self.cancelled else { return }
+                let watchdog = AudioBufferWatchdog { [weak self] in
+                    self?.notifyStall()
+                }
+                self.stateLock.lock()
+                self.watchdog = watchdog
+                self.stateLock.unlock()
+                watchdog.start()
                 self.session.startRunning()
                 guard self.session.isRunning else {
                     throw PUnderclassError.audio("The microphone capture session did not start.")
@@ -229,6 +450,7 @@ final class CaptureSessionMicrophoneCapture: NSObject,
                     completion(.success(device.localizedName))
                 }
             } catch {
+                self.stopWatchdog()
                 if self.session.isRunning {
                     self.session.stopRunning()
                 }
@@ -279,9 +501,31 @@ final class CaptureSessionMicrophoneCapture: NSObject,
         guard status == noErr else { return }
 
         stateLock.lock()
+        watchdog?.noteBuffer()
+        let isFirstBuffer = !receivedBuffer
+        receivedBuffer = true
+        let firstBufferHandler = onFirstBuffer
         let handler = onBuffer
         stateLock.unlock()
+        if isFirstBuffer {
+            firstBufferHandler?()
+        }
         handler?(buffer)
+    }
+
+    private func notifyStall() {
+        stateLock.lock()
+        let handler = isCancelled ? nil : onStall
+        stateLock.unlock()
+        handler?()
+    }
+
+    private func stopWatchdog() {
+        stateLock.lock()
+        let watchdog = self.watchdog
+        self.watchdog = nil
+        stateLock.unlock()
+        watchdog?.stop()
     }
 
     deinit {

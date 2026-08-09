@@ -59,10 +59,11 @@ final class AudioTrackPipeline {
 
                 let chunks = self.chunker.append(pcmData)
                 for chunk in chunks {
+                    let packetAt = Date()
                     self.telemetry.packets += 1
                     self.telemetry.bytes += UInt64(chunk.count)
-                    self.telemetry.lastPacketAt = Date()
-                    self.updateLevels(with: chunk)
+                    self.telemetry.lastPacketAt = packetAt
+                    self.updateLevels(with: chunk, at: packetAt)
                     self.onChunk(chunk)
                 }
                 self.publishTelemetryIfNeeded()
@@ -79,7 +80,7 @@ final class AudioTrackPipeline {
         publishTelemetry(force: true)
     }
 
-    private func updateLevels(with data: Data) {
+    private func updateLevels(with data: Data, at packetAt: Date) {
         var sumSquares: Double = 0
         var peak: Float = 0
         var samples: [Float] = []
@@ -101,6 +102,9 @@ final class AudioTrackPipeline {
         }
 
         telemetry.peak = peak
+        if peak > 0 {
+            telemetry.lastSignalAt = packetAt
+        }
         telemetry.waveform.append(contentsOf: samples.prefix(10))
         if telemetry.waveform.count > 180 {
             telemetry.waveform.removeFirst(telemetry.waveform.count - 180)

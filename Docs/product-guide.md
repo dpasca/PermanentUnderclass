@@ -215,7 +215,12 @@ Command-Option shortcuts do not become dictations.
 
 By default, Quick Dictation shows a small, non-activating preview near the
 bottom of the current screen, displaying the live microphone waveform while
-recording.
+recording. The preview says **Starting microphone** until the first audio buffer
+actually arrives. If another call or a Bluetooth profile change stops buffer
+delivery, it switches to **Recovering microphone** and rebuilds capture twice.
+If recovery fails, it keeps any audio already captured and shows an explicit
+failure instead of silently treating the recording as empty. Audio packets that
+contain only digital silence are also reported rather than shown as healthy.
 
 With GPT-Transcribe selected, audio streams to the transcription session **while
 the user speaks** rather than being uploaded after the shortcut is released. The
@@ -331,7 +336,9 @@ The proof of concept includes:
   driver. All system audio is the default source.
 - Default-microphone capture.
 - Live monitoring of the macOS default input, with automatic microphone
-  capture restart when devices are connected, removed, or reconfigured.
+  capture restart when devices are connected, removed, reconfigured, or stop
+  delivering audio buffers. Meeting and interview capture keep remote audio
+  running while microphone recovery retries with capped backoff.
 - 24 kHz mono PCM16 conversion and bounded 20 ms audio chunks.
 - Two independent `gpt-live-transcribe` WebSocket sessions.
 - A shared window bar that names every active model by role: the fixed Meeting
@@ -408,9 +415,10 @@ The proof of concept includes:
   readiness metadata, citations, and presentation-ready assistant results.
 - A main-screen audio-device dashboard with explicit microphone and system
   output names. Stream health distinguishes ready, checking, healthy, dropped
-  buffers, missing permission/device, and stopped packet flow. The microphone
-  and speaker pull-down buttons list compatible devices and change the current
-  macOS default input or output without opening System Settings.
+  buffers, digital silence, missing permission/device, and stopped packet flow.
+  The microphone and speaker pull-down buttons list compatible devices and
+  change the current macOS default input or output without opening System
+  Settings.
 - Optional global hold-to-dictate using the selected final transcription model,
   modifier-only Command-Option monitoring, and automatic paste into the app,
   window, and control that were focused when recording began.

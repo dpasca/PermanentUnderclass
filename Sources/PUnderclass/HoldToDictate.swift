@@ -503,6 +503,11 @@ final class HoldToDictateService {
         self?.handle(signal, initialApplication: application)
     }
     private var microphoneCapture: CaptureSessionMicrophoneCapture?
+    private var microphoneRestartAttempts = 0
+    private var microphoneCaptureHadBuffer = false
+    private var isRecoveringMicrophone = false
+    private var microphoneCaptureFailureMessage: String?
+    private var activeMicrophoneName = "the selected microphone"
     private var pipeline: AudioTrackPipeline?
     private var audioBuffer: LockedAudioBuffer?
     private var recordingID: UUID?
@@ -1125,12 +1130,17 @@ final class HoldToDictateService {
         let capture = CaptureSessionMicrophoneCapture()
 
         recordingID = currentRecordingID
+        microphoneRestartAttempts = 0
+        microphoneCaptureHadBuffer = false
+        isRecoveringMicrophone = false
+        microphoneCaptureFailureMessage = nil
+        activeMicrophoneName = "the selected microphone"
         recordingTarget = pasteTarget
         audioBuffer = buffer
         self.pipeline = pipeline
         microphoneCapture = capture
         recordingHandler(true)
-        phaseHandler(.recording)
+        phaseHandler(.startingMicrophone)
         partialHandler("")
         progressHandler(nil)
         beginDictationStream(
@@ -1162,6 +1172,37 @@ final class HoldToDictateService {
             onBuffer: { audio in
                 pipeline.submit(audio)
             },
+            onFirstBuffer: { [weak self, weak capture] in
+                DispatchQueue.main.async {
+                    guard
+                        let self,
+                        let capture,
+                        self.recordingID == currentRecordingID,
+                        self.microphoneCapture === capture
+                    else {
+                        return
+                    }
+                    if self.microphoneRestartAttempts > 0 {
+                        Self.logger.notice(
+                            "microphone_recovery_succeeded attempts=\(self.microphoneRestartAttempts, privacy: .public)"
+                        )
+                    }
+                    self.microphoneRestartAttempts = 0
+                    self.isRecoveringMicrophone = false
+                    self.phaseHandler(.recording)
+                }
+            },
+            onStall: { [weak self, weak capture] in
+                DispatchQueue.main.async {
+                    guard let self, let capture else { return }
+                    self.handleMicrophoneCaptureFailure(
+                        capture,
+                        recordingID: currentRecordingID,
+                        pipeline: pipeline,
+                        reason: "No audio buffers arrived from the microphone."
+                    )
+                }
+            },
             completion: { [weak self, weak capture] result in
                 DispatchQueue.main.async {
                     guard
@@ -1175,9 +1216,15 @@ final class HoldToDictateService {
                     }
                     switch result {
                     case let .success(microphoneName):
+                        self.activeMicrophoneName = microphoneName
                         self.microphoneHandler(microphoneName)
                     case let .failure(error):
-                        self.cancelRecording(nextPhase: .failed(error.localizedDescription))
+                        self.handleMicrophoneCaptureFailure(
+                            capture,
+                            recordingID: currentRecordingID,
+                            pipeline: pipeline,
+                            reason: error.localizedDescription
+                        )
                     }
                 }
             }
@@ -1190,12 +1237,16 @@ final class HoldToDictateService {
         let pipeline = pipeline
         let buffer = audioBuffer
         let pasteTarget = wasInterrupted ? nil : recordingTarget
+        let receivedMicrophoneBuffer = microphoneCaptureHadBuffer
+            || capture?.hasReceivedBuffer == true
 
         microphoneCapture = nil
         self.pipeline = nil
         audioBuffer = nil
         self.recordingID = nil
         recordingTarget = nil
+        isRecoveringMicrophone = false
+        microphoneCaptureFailureMessage = nil
         capture?.stop()
         pipeline?.finish()
         stopLivePreview()
@@ -1208,6 +1259,16 @@ final class HoldToDictateService {
         Self.logger.notice(
             "recording_finished bytes=\(audio.count, privacy: .public) peak=\(peak, privacy: .public)"
         )
+        guard receivedMicrophoneBuffer else {
+            Self.logger.error("recording_failed reason=no_microphone_buffers")
+            discardDictationStream()
+            if wasInterrupted {
+                phaseHandler(currentWorkPhase())
+            } else {
+                phaseHandler(.failed(noMicrophoneAudioMessage))
+            }
+            return
+        }
         guard transcribesAfterRecording else {
             discardDictationStream()
             phaseHandler(currentWorkPhase())
@@ -1222,7 +1283,11 @@ final class HoldToDictateService {
         guard peak >= 64 else {
             Self.logger.notice("recording_skipped reason=silence")
             discardDictationStream()
-            phaseHandler(currentWorkPhase())
+            if wasInterrupted {
+                phaseHandler(currentWorkPhase())
+            } else {
+                phaseHandler(.failed(noMicrophoneSignalMessage))
+            }
             return
         }
 
@@ -1993,7 +2058,13 @@ final class HoldToDictateService {
     }
 
     private func currentWorkPhase() -> DictationPhase {
-        workState.phase(
+        if recordingID != nil, let microphoneCaptureFailureMessage {
+            return .failed(microphoneCaptureFailureMessage)
+        }
+        if recordingID != nil, isRecoveringMicrophone {
+            return .recoveringMicrophone
+        }
+        return workState.phase(
             isRunning: isRunning,
             isRecording: recordingID != nil,
             isModelReady: isAnyFinalTranscriberReady,
@@ -2038,8 +2109,69 @@ final class HoldToDictateService {
         audioBuffer = nil
         recordingID = nil
         recordingTarget = nil
+        isRecoveringMicrophone = false
+        microphoneCaptureFailureMessage = nil
         recordingHandler(false)
         phaseHandler(nextPhase ?? currentWorkPhase())
+    }
+
+    private func handleMicrophoneCaptureFailure(
+        _ capture: CaptureSessionMicrophoneCapture,
+        recordingID currentRecordingID: UUID,
+        pipeline: AudioTrackPipeline,
+        reason: String
+    ) {
+        guard
+            recordingID == currentRecordingID,
+            microphoneCapture === capture
+        else {
+            capture.stop()
+            return
+        }
+
+        microphoneCaptureHadBuffer = microphoneCaptureHadBuffer
+            || capture.hasReceivedBuffer
+        guard
+            microphoneRestartAttempts
+                < AudioCaptureRecoveryPolicy.quickDictationRestartLimit
+        else {
+            Self.logger.error(
+                "microphone_recovery_failed attempts=\(self.microphoneRestartAttempts, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+            capture.stop()
+            microphoneCapture = nil
+            isRecoveringMicrophone = false
+            let message = microphoneCaptureHadBuffer
+                ? "The microphone stopped and could not be reconnected. Release the shortcut now; audio captured before the failure will still be transcribed."
+                : noMicrophoneAudioMessage
+            microphoneCaptureFailureMessage = message
+            phaseHandler(.failed(message))
+            return
+        }
+
+        microphoneRestartAttempts += 1
+        isRecoveringMicrophone = true
+        phaseHandler(.recoveringMicrophone)
+        Self.logger.notice(
+            "microphone_recovery_started attempt=\(self.microphoneRestartAttempts, privacy: .public) reason=\(reason, privacy: .public)"
+        )
+
+        capture.stop()
+        let replacement = CaptureSessionMicrophoneCapture()
+        microphoneCapture = replacement
+        startMicrophoneCapture(
+            replacement,
+            recordingID: currentRecordingID,
+            pipeline: pipeline
+        )
+    }
+
+    private var noMicrophoneAudioMessage: String {
+        "No audio arrived from \(activeMicrophoneName). Another call may have left the audio route stuck. Reconnect it or choose another microphone, then try again."
+    }
+
+    private var noMicrophoneSignalMessage: String {
+        "No microphone signal was detected from \(activeMicrophoneName). Check that it is unmuted and that the input meter moves, then try again."
     }
 
     /// The selected transcribers consume committed clips, so the overlay

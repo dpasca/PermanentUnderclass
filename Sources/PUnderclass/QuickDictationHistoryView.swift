@@ -201,7 +201,8 @@ struct QuickDictationControlPanel: View {
         switch controller.dictationPhase {
         case .off:
             .secondary
-        case .needsPermission, .preparing, .transcribing:
+        case .needsPermission, .preparing, .startingMicrophone,
+             .recoveringMicrophone, .transcribing:
             .orange
         case .ready:
             .green
