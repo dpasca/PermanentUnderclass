@@ -221,7 +221,9 @@ function renderInferenceStatus() {
   const session = snapshot?.session;
   const assistant = snapshot?.assistant;
   const reference = snapshot?.reference;
-  const checkCount = snapshot?.usage?.assistantGenerations ?? 0;
+  const checkCount = snapshot?.usage?.assistantModelCalls
+    ?? snapshot?.usage?.assistantGenerations
+    ?? 0;
   const hasLocalReferences = reference?.phase === "ready" && reference?.documentCount > 0;
   const meeting = session?.purpose === "meeting";
   const assistantName = meeting ? "Meeting Assistant" : "Answer Mirror";
@@ -339,6 +341,12 @@ function renderInferenceStatus() {
   if (assistant?.phase === "ready" && assistant.suggestion) {
     const usesGeneralKnowledge = assistant.suggestion.grounding === "generalKnowledge"
       || !(assistant.suggestion.citations || []).length;
+    const repairedGrounding = assistant.lastEvaluationOutcome === "repairedGrounding"
+      || assistant.suggestion.inferenceOutcome === "repairedGrounding";
+    const repairMilliseconds = assistant.suggestion.groundingRepairMilliseconds;
+    const repairDetail = repairedGrounding
+      ? ` Grounding was corrected with one retry${Number.isFinite(repairMilliseconds) ? `, adding ${repairMilliseconds.toLocaleString()} ms` : ""}.`
+      : "";
     setInferenceStatus(
       usesGeneralKnowledge ? "general" : "active",
       usesGeneralKnowledge
@@ -349,15 +357,15 @@ function renderInferenceStatus() {
         : "A locally grounded answer outline is ready",
       usesGeneralKnowledge
         ? meeting
-          ? "The outline marks what should be verified and avoids invented project facts."
-          : "The outline is approach-oriented and avoids unverified personal claims."
-        : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · compare it with your transcript on the right.`,
+          ? `The outline marks what should be verified and avoids invented project facts.${repairDetail}`
+          : `The outline is approach-oriented and avoids unverified personal claims.${repairDetail}`
+        : `Based on event #${assistant.suggestion.basedOnSequence.toLocaleString()} · compare it with your transcript on the right.${repairDetail}`,
       checkCount
     );
     return;
   }
 
-  if (assistant?.lastEvaluationOutcome === "noSuggestion") {
+  if (["notAnswerable", "noSuggestion"].includes(assistant?.lastEvaluationOutcome)) {
     const checkedAt = assistant.lastEvaluationAt
       ? ` at ${formatTime(assistant.lastEvaluationAt)}`
       : "";
@@ -490,7 +498,17 @@ function renderUsage(usage) {
   const cache = usage.assistantCachedInputTokens
     ? ` · ${usage.assistantCachedInputTokens.toLocaleString()} cached`
     : "";
-  $("#assistantUsageDetail").textContent = `${usage.assistantGenerations} generations · ${usage.assistantInputTokens.toLocaleString()} input / ${usage.assistantOutputTokens.toLocaleString()} output / ${usage.assistantReasoningTokens.toLocaleString()} reasoning tokens${cache}`;
+  const checks = usage.assistantGenerations ?? 0;
+  const calls = usage.assistantModelCalls ?? checks;
+  const repairAttempts = usage.assistantGroundingRepairAttempts ?? 0;
+  const repairSuccesses = usage.assistantGroundingRepairSuccesses ?? 0;
+  const repairMilliseconds = usage.assistantGroundingRepairMilliseconds ?? 0;
+  const repair = repairAttempts
+    ? repairAttempts === repairSuccesses
+      ? ` · ${repairSuccesses.toLocaleString()} grounding repair${repairSuccesses === 1 ? "" : "s"} (+${repairMilliseconds.toLocaleString()} ms)`
+      : ` · ${repairSuccesses.toLocaleString()}/${repairAttempts.toLocaleString()} grounding repairs succeeded (+${repairMilliseconds.toLocaleString()} ms)`
+    : "";
+  $("#assistantUsageDetail").textContent = `${checks.toLocaleString()} checks · ${calls.toLocaleString()} model calls${repair} · ${(usage.assistantInputTokens ?? 0).toLocaleString()} input / ${(usage.assistantOutputTokens ?? 0).toLocaleString()} output / ${(usage.assistantReasoningTokens ?? 0).toLocaleString()} reasoning tokens${cache}`;
   $("#assistantUsageCost").textContent = "tracked";
   renderInferenceStatus();
 }
@@ -927,7 +945,9 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     empty.hidden = false;
     const session = state.snapshot?.session;
     const reference = state.snapshot?.reference;
-    const checkedWithoutGuidance = assistant?.lastEvaluationOutcome === "noSuggestion";
+    const checkedWithoutGuidance = ["notAnswerable", "noSuggestion"].includes(
+      assistant?.lastEvaluationOutcome
+    );
     if (session?.isPreparingSyntheticInterview) {
       $("#emptyStateSymbol").textContent = "AI";
       $("#emptyStateTitle").textContent = `Building the generated ${meeting ? "meeting" : "interview"}`;
@@ -1046,7 +1066,7 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.evaluatingSequence = null;
       state.snapshot.assistant.lastEvaluatedSequence = payload.basedOnSequence;
       state.snapshot.assistant.lastEvaluationAt = payload.generatedAt;
-      state.snapshot.assistant.lastEvaluationOutcome = "suggestion";
+      state.snapshot.assistant.lastEvaluationOutcome = payload.inferenceOutcome || "suggestion";
       state.snapshot.assistant.lastEvaluationTrigger = payload.trigger;
       state.snapshot.assistant.lastEvaluationLatencyMilliseconds = payload.totalLatencyMilliseconds;
       state.snapshot.assistant.evaluatingTrigger = null;
@@ -1057,6 +1077,7 @@ function applyEnvelope(envelope) {
     case "assistant.failed":
       state.snapshot.assistant.phase = payload.phase || "failed";
       state.snapshot.assistant.lastError = payload.message;
+      state.snapshot.assistant.lastEvaluationOutcome = payload.outcome || "failed";
       state.snapshot.assistant.evaluatingSequence = null;
       renderAssistant(state.snapshot.assistant);
       break;

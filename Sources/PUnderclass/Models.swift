@@ -395,6 +395,10 @@ struct APIExpenseSummary: Equatable, Codable {
     var serverReportedRecords = 0
     var estimatedRecords = 0
     var assistantGenerations = 0
+    var assistantModelCalls = 0
+    var assistantGroundingRepairAttempts = 0
+    var assistantGroundingRepairSuccesses = 0
+    var assistantGroundingRepairMilliseconds = 0
     var assistantInputTokens = 0
     var assistantCachedInputTokens = 0
     var assistantCacheWriteTokens = 0
@@ -460,11 +464,106 @@ struct APIExpenseSummary: Equatable, Codable {
 
     mutating func record(_ usage: AssistantGenerationUsage) {
         assistantGenerations += 1
+        assistantModelCalls += max(0, usage.requestCount)
+        assistantGroundingRepairAttempts += max(
+            0,
+            usage.groundingRepairAttempts
+        )
+        assistantGroundingRepairSuccesses += max(
+            0,
+            usage.groundingRepairSuccesses
+        )
+        assistantGroundingRepairMilliseconds += max(
+            0,
+            usage.groundingRepairMilliseconds
+        )
         assistantInputTokens += max(0, usage.inputTokens)
         assistantCachedInputTokens += max(0, usage.cachedInputTokens)
         assistantCacheWriteTokens += max(0, usage.cacheWriteTokens)
         assistantOutputTokens += max(0, usage.outputTokens)
         assistantReasoningTokens += max(0, usage.reasoningTokens)
+    }
+}
+
+extension APIExpenseSummary {
+    private enum CodingKeys: String, CodingKey {
+        case startedAt
+        case liveAudioSeconds
+        case finalAudioSeconds
+        case serverReportedRecords
+        case estimatedRecords
+        case assistantGenerations
+        case assistantModelCalls
+        case assistantGroundingRepairAttempts
+        case assistantGroundingRepairSuccesses
+        case assistantGroundingRepairMilliseconds
+        case assistantInputTokens
+        case assistantCachedInputTokens
+        case assistantCacheWriteTokens
+        case assistantOutputTokens
+        case assistantReasoningTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
+            ?? Date()
+        liveAudioSeconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .liveAudioSeconds
+        ) ?? 0
+        finalAudioSeconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .finalAudioSeconds
+        ) ?? 0
+        serverReportedRecords = try container.decodeIfPresent(
+            Int.self,
+            forKey: .serverReportedRecords
+        ) ?? 0
+        estimatedRecords = try container.decodeIfPresent(
+            Int.self,
+            forKey: .estimatedRecords
+        ) ?? 0
+        assistantGenerations = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantGenerations
+        ) ?? 0
+        assistantModelCalls = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantModelCalls
+        ) ?? assistantGenerations
+        assistantGroundingRepairAttempts = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantGroundingRepairAttempts
+        ) ?? 0
+        assistantGroundingRepairSuccesses = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantGroundingRepairSuccesses
+        ) ?? 0
+        assistantGroundingRepairMilliseconds = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantGroundingRepairMilliseconds
+        ) ?? 0
+        assistantInputTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantInputTokens
+        ) ?? 0
+        assistantCachedInputTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantCachedInputTokens
+        ) ?? 0
+        assistantCacheWriteTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantCacheWriteTokens
+        ) ?? 0
+        assistantOutputTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantOutputTokens
+        ) ?? 0
+        assistantReasoningTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .assistantReasoningTokens
+        ) ?? 0
     }
 }
 

@@ -383,7 +383,8 @@ enum AssistantPromptBuilder {
         currentPartial: String,
         sessionContext: String = "",
         focusSpeaker: String = "",
-        focusText: String = ""
+        focusText: String = "",
+        focusState: String = "not supplied"
     ) -> AssistantPromptPlan {
         let volatileSuffix = """
         SESSION CONTEXT
@@ -397,6 +398,7 @@ enum AssistantPromptBuilder {
 
         CURRENT RESPONSE TARGET
         Speaker: \(focusSpeaker)
+        Turn state: \(focusState)
         Text: \(focusText)
         """
         return AssistantPromptPlan(

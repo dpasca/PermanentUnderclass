@@ -315,7 +315,8 @@ final class PUnderclassTests: XCTestCase {
             currentPartial: "You: I built…",
             sessionContext: "Backend role at Example Corp",
             focusSpeaker: "Other",
-            focusText: "What did you build?"
+            focusText: "What did you build?",
+            focusState: "finalized speaker turn"
         )
         let prompt = plan.combinedPrompt
 
@@ -331,6 +332,9 @@ final class PUnderclassTests: XCTestCase {
         )
         XCTAssertTrue(plan.volatileSuffix.contains("CURRENT RESPONSE TARGET"))
         XCTAssertTrue(plan.volatileSuffix.contains("Speaker: Other"))
+        XCTAssertTrue(
+            plan.volatileSuffix.contains("Turn state: finalized speaker turn")
+        )
         XCTAssertLessThan(
             try XCTUnwrap(prompt.range(of: "REFERENCE DOCUMENTS JSON")?.lowerBound),
             try XCTUnwrap(prompt.range(of: "RECENT FINAL TRANSCRIPT")?.lowerBound)
@@ -2146,6 +2150,35 @@ final class PUnderclassTests: XCTestCase {
             1_000_000,
             accuracy: 0.001
         )
+    }
+
+    func testAPIExpensesMigrateCountersFromBeforeAssistantTelemetry() throws {
+        var legacySummary = APIExpenseSummary(
+            startedAt: Date(timeIntervalSince1970: 1_000_000)
+        )
+        legacySummary.assistantGenerations = 7
+        legacySummary.assistantInputTokens = 900
+        let encoded = try JSONEncoder().encode(legacySummary)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "assistantModelCalls")
+        object.removeValue(forKey: "assistantGroundingRepairAttempts")
+        object.removeValue(forKey: "assistantGroundingRepairSuccesses")
+        object.removeValue(forKey: "assistantGroundingRepairMilliseconds")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let migrated = try JSONDecoder().decode(
+            APIExpenseSummary.self,
+            from: legacyData
+        )
+
+        XCTAssertEqual(migrated.assistantGenerations, 7)
+        XCTAssertEqual(migrated.assistantModelCalls, 7)
+        XCTAssertEqual(migrated.assistantGroundingRepairAttempts, 0)
+        XCTAssertEqual(migrated.assistantGroundingRepairSuccesses, 0)
+        XCTAssertEqual(migrated.assistantGroundingRepairMilliseconds, 0)
+        XCTAssertEqual(migrated.assistantInputTokens, 900)
     }
 
     func testExpenseAccumulationDescriptionNamesThePeriod() {

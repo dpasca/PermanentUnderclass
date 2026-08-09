@@ -2302,6 +2302,13 @@ final class MeetingController: ObservableObject {
             liveAudioSeconds: apiExpenses.liveAudioSeconds,
             finalAudioSeconds: apiExpenses.finalAudioSeconds,
             assistantGenerations: apiExpenses.assistantGenerations,
+            assistantModelCalls: apiExpenses.assistantModelCalls,
+            assistantGroundingRepairAttempts:
+                apiExpenses.assistantGroundingRepairAttempts,
+            assistantGroundingRepairSuccesses:
+                apiExpenses.assistantGroundingRepairSuccesses,
+            assistantGroundingRepairMilliseconds:
+                apiExpenses.assistantGroundingRepairMilliseconds,
             assistantInputTokens: apiExpenses.assistantInputTokens,
             assistantCachedInputTokens: apiExpenses.assistantCachedInputTokens,
             assistantCacheWriteTokens: apiExpenses.assistantCacheWriteTokens,
@@ -2462,6 +2469,7 @@ final class MeetingController: ObservableObject {
                     sessionContext: sessionContext,
                     purpose: purpose,
                     basedOnSequence: basedOnSequence,
+                    trigger: trigger,
                     webSearchMode: webSearchMode
                 )
                 await MainActor.run {
@@ -2472,8 +2480,10 @@ final class MeetingController: ObservableObject {
                     from: observedAt,
                     to: completedAt
                 )
+                let grounding = generation.suggestion?.grounding.rawValue
+                    ?? "none"
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public) suggestion=\(generation.suggestion != nil, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
@@ -2486,7 +2496,8 @@ final class MeetingController: ObservableObject {
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
                         triggeredAt: observedAt,
-                        completedAt: completedAt
+                        completedAt: completedAt,
+                        outcome: .cancelled
                     )
                     return
                 }
@@ -2495,7 +2506,8 @@ final class MeetingController: ObservableObject {
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
                         triggeredAt: observedAt,
-                        completedAt: completedAt
+                        completedAt: completedAt,
+                        outcome: .cancelled
                     )
                     return
                 }
@@ -2505,27 +2517,46 @@ final class MeetingController: ObservableObject {
                     suggestion.totalLatencyMilliseconds =
                         totalLatencyMilliseconds
                     suggestion.topicID = turnID
-                    await hub.assistantSuggested(suggestion)
+                    await hub.assistantSuggested(
+                        suggestion,
+                        outcome: generation.outcome
+                    )
                 } else {
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
                         triggeredAt: observedAt,
-                        completedAt: completedAt
+                        completedAt: completedAt,
+                        outcome: generation.outcome
                     )
                 }
             } catch is CancellationError {
                 Self.liveAssistantLogger.debug(
-                    "assistant_check_cancelled trigger=\(trigger.rawValue, privacy: .public)"
+                    "assistant_check_cancelled trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.cancelled.rawValue, privacy: .public)"
                 )
                 return
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     controller.value?.allowAssistantRetry(requestID: requestID)
+                    if let failure = error as? LiveAssistantFailure {
+                        controller.value?.recordAssistantUsage(failure.usage)
+                    }
                 }
-                Self.liveAssistantLogger.error("assistant_inference_failed")
-                await hub.assistantFailed(error.localizedDescription)
+                let liveError = (error as? LiveAssistantFailure)?.cause
+                    ?? error as? LiveAssistantError
+                let outcome: CompanionInferenceOutcome =
+                    liveError == .invalidGrounding
+                        ? .invalidGrounding
+                        : .failed
+                let errorType = String(describing: type(of: error))
+                Self.liveAssistantLogger.error(
+                    "assistant_inference_failed trigger=\(trigger.rawValue, privacy: .public) outcome=\(outcome.rawValue, privacy: .public) error_type=\(errorType, privacy: .public)"
+                )
+                await hub.assistantFailed(
+                    error.localizedDescription,
+                    outcome: outcome
+                )
             }
         }
     }

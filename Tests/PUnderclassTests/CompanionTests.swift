@@ -171,10 +171,36 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(snapshot.assistant.phase, .idle)
         XCTAssertNil(snapshot.assistant.evaluatingSequence)
         XCTAssertEqual(snapshot.assistant.lastEvaluatedSequence, 41)
-        XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .noSuggestion)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .notAnswerable)
         XCTAssertEqual(snapshot.assistant.lastEvaluationAt, completedAt)
         XCTAssertEqual(snapshot.assistant.lastEvaluationTrigger, .partialTranscript)
         XCTAssertEqual(snapshot.assistant.lastEvaluationLatencyMilliseconds, 1_700)
+    }
+
+    func testAssistantStateReportsARepairedGroundingOutcome() async throws {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        let event = await hub.assistantSuggested(
+            answerSuggestion(id: "repaired", sequence: 42),
+            outcome: .repairedGrounding
+        )
+
+        let snapshot = await hub.snapshot()
+        XCTAssertEqual(
+            snapshot.assistant.lastEvaluationOutcome,
+            .repairedGrounding
+        )
+        XCTAssertEqual(
+            snapshot.assistant.suggestion?.inferenceOutcome,
+            .repairedGrounding
+        )
+        let publishedSuggestion = try CompanionJSON.decoder().decode(
+            CompanionAssistantSuggestion.self,
+            from: CompanionJSON.encoder().encode(event.payload)
+        )
+        XCTAssertEqual(
+            publishedSuggestion.inferenceOutcome,
+            .repairedGrounding
+        )
     }
 
     func testAssistantKeepsNewestFourAnswersAndDismissRevealsPrevious() async throws {
@@ -532,11 +558,19 @@ final class CompanionTests: XCTestCase {
                 cachedInputTokens: 1_200,
                 cacheWriteTokens: 400,
                 outputTokens: 180,
-                reasoningTokens: 32
+                reasoningTokens: 32,
+                requestCount: 2,
+                groundingRepairAttempts: 1,
+                groundingRepairSuccesses: 1,
+                groundingRepairMilliseconds: 480
             )
         )
 
         XCTAssertEqual(summary.assistantGenerations, 1)
+        XCTAssertEqual(summary.assistantModelCalls, 2)
+        XCTAssertEqual(summary.assistantGroundingRepairAttempts, 1)
+        XCTAssertEqual(summary.assistantGroundingRepairSuccesses, 1)
+        XCTAssertEqual(summary.assistantGroundingRepairMilliseconds, 480)
         XCTAssertEqual(summary.assistantInputTokens, 2_000)
         XCTAssertEqual(summary.assistantCachedInputTokens, 1_200)
         XCTAssertEqual(summary.assistantCacheWriteTokens, 400)
@@ -653,6 +687,14 @@ final class CompanionTests: XCTestCase {
                 as? [String: Any]
         )
         XCTAssertEqual(requiredSearchRoot["tool_choice"] as? String, "required")
+        XCTAssertEqual(requiredSearchRoot["max_output_tokens"] as? Int, 600)
+        let requiredSearchTools = try XCTUnwrap(
+            requiredSearchRoot["tools"] as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            requiredSearchTools[0]["search_context_size"] as? String,
+            "high"
+        )
 
         let meetingData = try LiveAssistantClient.requestBody(
             for: plan,
@@ -838,6 +880,32 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(fallback.suggestion?.basedOnSequence, 20)
         XCTAssertEqual(fallback.suggestion?.grounding, .generalKnowledge)
         XCTAssertEqual(fallback.suggestion?.citations, [])
+        XCTAssertEqual(fallback.outcome, .suggestion)
+
+        var hiddenOutput = generalOutput
+        hiddenOutput["shouldShow"] = false
+        let hiddenOutputData = try JSONSerialization.data(
+            withJSONObject: hiddenOutput
+        )
+        let hiddenOutputText = try XCTUnwrap(
+            String(data: hiddenOutputData, encoding: .utf8)
+        )
+        var hiddenResponse = response
+        hiddenResponse["output"] = [[
+            "type": "message",
+            "content": [["type": "output_text", "text": hiddenOutputText]]
+        ]]
+        let hiddenData = try JSONSerialization.data(
+            withJSONObject: hiddenResponse
+        )
+        let hiddenGeneration = try LiveAssistantClient.parseResponse(
+            hiddenData,
+            allowedReferencePaths: [],
+            basedOnSequence: 20,
+            generationMilliseconds: 270
+        )
+        XCTAssertNil(hiddenGeneration.suggestion)
+        XCTAssertEqual(hiddenGeneration.outcome, .notAnswerable)
 
         let supportedWebURL = "https://webkit.org/blog/example/"
         var webOutput = output

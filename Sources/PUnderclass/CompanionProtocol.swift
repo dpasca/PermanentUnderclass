@@ -151,6 +151,10 @@ struct CompanionUsageState: Codable, Equatable, Sendable {
     var liveAudioSeconds = 0.0
     var finalAudioSeconds = 0.0
     var assistantGenerations = 0
+    var assistantModelCalls = 0
+    var assistantGroundingRepairAttempts = 0
+    var assistantGroundingRepairSuccesses = 0
+    var assistantGroundingRepairMilliseconds = 0
     var assistantInputTokens = 0
     var assistantCachedInputTokens = 0
     var assistantCacheWriteTokens = 0
@@ -201,6 +205,8 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var totalLatencyMilliseconds: Int?
     var topicID: String?
     var topicNumber: Int?
+    var inferenceOutcome: CompanionInferenceOutcome? = nil
+    var groundingRepairMilliseconds: Int? = nil
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -213,7 +219,10 @@ enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
 
 enum CompanionInferenceOutcome: String, Codable, Equatable, Sendable {
     case suggestion
-    case noSuggestion
+    case notAnswerable
+    case repairedGrounding
+    case invalidGrounding
+    case cancelled
     case failed
 }
 
@@ -475,8 +484,15 @@ actor CompanionEventHub {
     }
 
     @discardableResult
-    func assistantSuggested(_ suggestion: CompanionAssistantSuggestion) -> CompanionEvent {
+    func assistantSuggested(
+        _ suggestion: CompanionAssistantSuggestion,
+        outcome: CompanionInferenceOutcome? = nil
+    ) -> CompanionEvent {
         var numberedSuggestion = suggestion
+        let evaluationOutcome = outcome
+            ?? suggestion.inferenceOutcome
+            ?? .suggestion
+        numberedSuggestion.inferenceOutcome = evaluationOutcome
         let topicID = suggestion.topicID ?? suggestion.id
         if let existingTopicNumber = topicNumbersByID[topicID] {
             numberedSuggestion.topicNumber = existingTopicNumber
@@ -506,7 +522,7 @@ actor CompanionEventHub {
         state.assistant.evaluationStartedAt = nil
         state.assistant.lastEvaluatedSequence = numberedSuggestion.basedOnSequence
         state.assistant.lastEvaluationAt = numberedSuggestion.generatedAt
-        state.assistant.lastEvaluationOutcome = .suggestion
+        state.assistant.lastEvaluationOutcome = evaluationOutcome
         state.assistant.lastEvaluationTrigger = numberedSuggestion.trigger
         state.assistant.lastEvaluationLatencyMilliseconds =
             numberedSuggestion.totalLatencyMilliseconds
@@ -518,7 +534,8 @@ actor CompanionEventHub {
         basedOnSequence: Int,
         trigger: CompanionAssistantTrigger? = nil,
         triggeredAt: Date? = nil,
-        completedAt: Date = Date()
+        completedAt: Date = Date(),
+        outcome: CompanionInferenceOutcome = .notAnswerable
     ) -> CompanionEvent {
         let evaluationTrigger = trigger ?? state.assistant.evaluatingTrigger
         let evaluationTriggeredAt = triggeredAt
@@ -531,7 +548,7 @@ actor CompanionEventHub {
         state.assistant.evaluationStartedAt = nil
         state.assistant.lastEvaluatedSequence = basedOnSequence
         state.assistant.lastEvaluationAt = completedAt
-        state.assistant.lastEvaluationOutcome = .noSuggestion
+        state.assistant.lastEvaluationOutcome = outcome
         state.assistant.lastEvaluationTrigger = evaluationTrigger
         state.assistant.lastEvaluationLatencyMilliseconds =
             evaluationTriggeredAt.map {
@@ -541,13 +558,17 @@ actor CompanionEventHub {
     }
 
     @discardableResult
-    func assistantFailed(_ message: String, unavailable: Bool = false) -> CompanionEvent {
+    func assistantFailed(
+        _ message: String,
+        unavailable: Bool = false,
+        outcome: CompanionInferenceOutcome = .failed
+    ) -> CompanionEvent {
         state.assistant.phase = unavailable ? .unavailable : .failed
         state.assistant.lastError = message
         if !unavailable, let sequence = state.assistant.evaluatingSequence {
             state.assistant.lastEvaluatedSequence = sequence
             state.assistant.lastEvaluationAt = Date()
-            state.assistant.lastEvaluationOutcome = .failed
+            state.assistant.lastEvaluationOutcome = outcome
             state.assistant.lastEvaluationTrigger =
                 state.assistant.evaluatingTrigger
             if let triggeredAt = state.assistant.evaluationTriggeredAt {
@@ -563,7 +584,8 @@ actor CompanionEventHub {
             name: "assistant.failed",
             payload: [
                 "message": message,
-                "phase": state.assistant.phase.rawValue
+                "phase": state.assistant.phase.rawValue,
+                "outcome": outcome.rawValue
             ]
         )
     }

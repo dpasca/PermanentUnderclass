@@ -52,8 +52,20 @@ final class LiveAssistantClientRetryTests: XCTestCase {
 
         XCTAssertEqual(generation.suggestion?.grounding, .generalKnowledge)
         XCTAssertEqual(generation.suggestion?.basedOnSequence, 42)
+        XCTAssertEqual(generation.outcome, .repairedGrounding)
         XCTAssertEqual(generation.usage.inputTokens, 260)
         XCTAssertEqual(generation.usage.outputTokens, 65)
+        XCTAssertEqual(generation.usage.requestCount, 2)
+        XCTAssertEqual(generation.usage.groundingRepairAttempts, 1)
+        XCTAssertEqual(generation.usage.groundingRepairSuccesses, 1)
+        XCTAssertEqual(
+            generation.suggestion?.inferenceOutcome,
+            .repairedGrounding
+        )
+        XCTAssertEqual(
+            generation.suggestion?.groundingRepairMilliseconds,
+            generation.usage.groundingRepairMilliseconds
+        )
 
         let requests = await responses.recordedRequests()
         XCTAssertEqual(requests.count, 2)
@@ -64,17 +76,104 @@ final class LiveAssistantClientRetryTests: XCTestCase {
         XCTAssertEqual(first.cacheKey, retry.cacheKey)
         XCTAssertFalse(first.userPrompt.contains("GROUNDING CORRECTION"))
         XCTAssertTrue(retry.userPrompt.contains("GROUNDING CORRECTION"))
-        XCTAssertTrue(retry.userPrompt.contains("keep shouldShow true"))
+        XCTAssertTrue(retry.userPrompt.contains("Reassess shouldShow"))
+    }
+
+    func testGroundingCorrectionCanRestoreNotAnswerableDecision() async throws {
+        let responses = LiveAssistantResponseQueue(
+            responses: [
+                try responseData(
+                    grounding: .localReferences,
+                    citations: [],
+                    inputTokens: 90,
+                    outputTokens: 20
+                ),
+                try responseData(
+                    shouldShow: false,
+                    grounding: .generalKnowledge,
+                    citations: [],
+                    inputTokens: 100,
+                    outputTokens: 15
+                )
+            ]
+        )
+        let client = LiveAssistantClient { apiKey, body in
+            try await responses.load(apiKey: apiKey, body: body)
+        }
+
+        let generation = try await client.generate(
+            apiKey: "test-key",
+            references: nil,
+            recentTranscript: "",
+            currentPartial: "Interviewer: And then, if the renderer maybe…",
+            otherSpeakerText: "And then, if the renderer maybe…",
+            purpose: .interview,
+            basedOnSequence: 43,
+            trigger: .partialTranscript
+        )
+
+        XCTAssertNil(generation.suggestion)
+        XCTAssertEqual(generation.outcome, .notAnswerable)
+        XCTAssertEqual(generation.usage.requestCount, 2)
+        XCTAssertEqual(generation.usage.groundingRepairAttempts, 1)
+        XCTAssertEqual(generation.usage.groundingRepairSuccesses, 1)
+    }
+
+    func testFailedGroundingRepairCarriesAttemptTelemetry() async throws {
+        let responses = LiveAssistantResponseQueue(
+            responses: [
+                try responseData(
+                    grounding: .localReferences,
+                    citations: [],
+                    inputTokens: 80,
+                    outputTokens: 20
+                ),
+                try responseData(
+                    grounding: .localReferences,
+                    citations: [],
+                    inputTokens: 90,
+                    outputTokens: 25
+                )
+            ]
+        )
+        let client = LiveAssistantClient { apiKey, body in
+            try await responses.load(apiKey: apiKey, body: body)
+        }
+
+        do {
+            _ = try await client.generate(
+                apiKey: "test-key",
+                references: nil,
+                recentTranscript: "",
+                currentPartial: "",
+                otherSpeakerText: "What would you profile first?",
+                purpose: .interview,
+                basedOnSequence: 44
+            )
+            XCTFail("Expected the second grounding mismatch to fail")
+        } catch let failure as LiveAssistantFailure {
+            XCTAssertEqual(failure.cause, .invalidGrounding)
+            XCTAssertEqual(failure.usage.inputTokens, 170)
+            XCTAssertEqual(failure.usage.outputTokens, 45)
+            XCTAssertEqual(failure.usage.requestCount, 2)
+            XCTAssertEqual(failure.usage.groundingRepairAttempts, 1)
+            XCTAssertEqual(failure.usage.groundingRepairSuccesses, 0)
+            XCTAssertGreaterThanOrEqual(
+                failure.generationMilliseconds,
+                failure.usage.groundingRepairMilliseconds
+            )
+        }
     }
 
     private func responseData(
+        shouldShow: Bool = true,
         grounding: CompanionSuggestionGrounding,
         citations: [[String: String]],
         inputTokens: Int,
         outputTokens: Int
     ) throws -> Data {
         let output: [String: Any] = [
-            "shouldShow": true,
+            "shouldShow": shouldShow,
             "grounding": grounding.rawValue,
             "question": "How would you distinguish a CPU bottleneck from a GPU bottleneck?",
             "preamble": "I’d start with synchronized CPU and GPU frame timings.",

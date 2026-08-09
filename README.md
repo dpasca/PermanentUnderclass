@@ -98,6 +98,24 @@ installed Developer ID Application certificate when available and otherwise
 falls back to ad hoc signing. Tagged releases use a separate workflow that
 requires Developer ID signing and Apple notarization before publishing.
 
+### Answer Mirror quality eval
+
+The normal test suite uses deterministic fixtures and does not call hosted
+models. To run the opt-in Answer Mirror eval against recorded interview moments,
+including general-knowledge, local-reference, web-search, and unfinished-turn
+cases:
+
+```sh
+OPENAI_API_KEY="..." RUN_ASSISTANT_QUALITY_EVALS=1 \
+  swift test --filter LiveAssistantQualityEvalTests
+```
+
+The eval generates real cues and uses a structured model judge for directness,
+spoken naturalness, specificity, grounding safety, and concise usability. Set
+`ANSWER_MIRROR_EVAL_JUDGE_MODEL` to use a different available judge model. The
+eval makes hosted API requests and may incur usage charges. To iterate on one
+fixture, also set `ANSWER_MIRROR_EVAL_CASE` to its printed case name.
+
 ## Documentation
 
 - [Detailed product and operating guide](Docs/product-guide.md)
