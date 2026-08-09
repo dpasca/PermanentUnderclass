@@ -6,17 +6,9 @@
   <meta name="theme-color" content="#080a09">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23080a09'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%236fe69b'/%3E%3C/svg%3E">
   <title>PermanentUnderclass Teleprompter</title>
-  <link rel="stylesheet" href="styles.css?v=14">
+  <link rel="stylesheet" href="styles.css?v=16">
 </head>
 <body>
-  <button class="connection-chip is-reconnecting" id="connectionButton" type="button" aria-expanded="false">
-    <span class="status-pulse" aria-hidden="true"></span>
-    <span class="connection-copy">
-      <strong id="connectionLabel">Not connected</strong>
-      <small id="connectionEyebrow">CONNECTING</small>
-    </span>
-  </button>
-
   <main class="teleprompter" aria-label="Live response suggestions">
     <section class="inference-status is-connecting" id="inferenceStatus" role="status" aria-live="polite">
       <span class="inference-lamp" aria-hidden="true"><i></i></span>
@@ -28,70 +20,79 @@
       <span class="inference-count" id="inferenceCount" hidden>0 model calls</span>
     </section>
 
-    <div class="listening-strip" id="listeningStrip">
-      <span class="wave-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <span class="topic-copy">
-        <small id="topicEyebrow">CURRENT TOPIC</small>
-        <strong id="questionText">Tell me about a time you improved the performance of a critical system.</strong>
-      </span>
-      <div class="topic-context" id="topicContext" aria-label="Topic 1, elapsed 0 seconds">
-        <span class="topic-stat">
-          <small>TOPIC</small>
-          <strong id="topicNumber">1</strong>
+    <section class="current-stage" id="currentStage">
+      <div class="listening-strip" id="listeningStrip">
+        <span class="wave-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="topic-copy">
+          <small id="topicEyebrow">CURRENT TOPIC</small>
+          <strong id="questionText">Tell me about a time you improved the performance of a critical system.</strong>
         </span>
-        <span class="topic-stat">
-          <small>ELAPSED</small>
-          <strong id="topicElapsed" role="timer">0:00</strong>
-        </span>
+        <div class="topic-context" id="topicContext" aria-label="Topic 1, elapsed 0 seconds">
+          <span class="topic-stat">
+            <small>TOPIC</small>
+            <strong id="topicNumber">1</strong>
+          </span>
+          <span class="topic-stat">
+            <small>ELAPSED</small>
+            <strong id="topicElapsed" role="timer">0:00</strong>
+          </span>
+          <button class="connection-chip is-reconnecting" id="connectionButton" type="button" aria-expanded="false">
+            <span class="status-pulse" aria-hidden="true"></span>
+            <span class="connection-copy">
+              <strong id="connectionLabel">Not connected</strong>
+              <small id="connectionEyebrow">CONNECTING</small>
+            </span>
+          </button>
+        </div>
+        <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
       </div>
-      <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
-    </div>
 
-    <div class="answer-stack" id="answerStack">
-      <article class="answer-card" id="answerCard">
-        <header>
-          <div class="answer-title">
-            <span class="spark-icon" aria-hidden="true"></span>
-            <span><small>RESPONSE CUE</small><strong id="answerLead">Speak from here</strong></span>
+      <div class="answer-stack" id="answerStack">
+        <article class="answer-card" id="answerCard">
+          <header>
+            <div class="answer-title">
+              <span class="spark-icon" aria-hidden="true"></span>
+              <span><small>RESPONSE CUE</small><strong id="answerLead">Speak from here</strong></span>
+            </div>
+            <div class="answer-actions">
+              <button class="icon-button pin-button" id="pinButton" type="button" aria-label="Pin response cue" title="Pin response cue">Pin</button>
+              <button class="icon-button" id="copyButton" type="button" aria-label="Copy response cue" title="Copy response cue">Copy</button>
+              <button class="icon-button" id="dismissButton" type="button" aria-label="Dismiss response cue" title="Dismiss response cue">Dismiss</button>
+            </div>
+          </header>
+
+          <div class="grounding-notice" id="groundingNotice" role="note" hidden>
+            <span aria-hidden="true">!</span>
+            <span><strong>GENERAL GUIDANCE</strong><small>This cue is phrased as an approach, not as personal history.</small></span>
           </div>
-          <div class="answer-actions">
-            <button class="icon-button pin-button" id="pinButton" type="button" aria-label="Pin response cue" title="Pin response cue">Pin</button>
-            <button class="icon-button" id="copyButton" type="button" aria-label="Copy response cue" title="Copy response cue">Copy</button>
-            <button class="icon-button" id="dismissButton" type="button" aria-label="Dismiss response cue" title="Dismiss response cue">Dismiss</button>
+
+          <div class="answer-question">
+            <small>QUESTION</small>
+            <strong id="answerQuestion">Tell me about a time you improved the performance of a critical system.</strong>
           </div>
-        </header>
 
-        <div class="grounding-notice" id="groundingNotice" role="note" hidden>
-          <span aria-hidden="true">!</span>
-          <span><strong>GENERAL GUIDANCE</strong><small>This cue is phrased as an approach, not as personal history.</small></span>
-        </div>
+          <ul class="answer-beats" id="answerBeats">
+            <li><strong>Context</strong><span class="answer-beat-current">I inherited a checkout path that had become noticeably slow.</span></li>
+            <li><strong>Action</strong><span class="answer-beat-current">I profiled it and found repeated inventory lookups.</span></li>
+            <li><strong>Check</strong><span class="answer-beat-current">I replayed traffic and watched p95, not just averages.</span></li>
+            <li><strong>Afterward</strong><span class="answer-beat-current">I added a latency alert so the regression could not return quietly.</span></li>
+          </ul>
 
-        <div class="answer-question">
-          <small>QUESTION</small>
-          <strong id="answerQuestion">Tell me about a time you improved the performance of a critical system.</strong>
-        </div>
+          <div class="web-citations" id="webCitations" aria-label="Public web sources" hidden></div>
 
-        <ul class="answer-beats" id="answerBeats">
-          <li><strong>Context</strong><span>I inherited a checkout path that had become noticeably slow.</span></li>
-          <li><strong>Action</strong><span>I profiled it and found repeated inventory lookups.</span></li>
-          <li><strong>Check</strong><span>I replayed traffic and watched p95, not just averages.</span></li>
-          <li><strong>Afterward</strong><span>I added a latency alert so the regression could not return quietly.</span></li>
-        </ul>
+          <footer>
+            <span id="groundingLabel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded response cue</span>
+            <button class="source-citation compact-citation" id="sourceCitation" type="button"><span class="file-icon note">TXT</span><span id="sourceCitationText"></span></button>
+            <span class="generation-time" id="generationTime"></span>
+          </footer>
+        </article>
+      </div>
+    </section>
 
-        <div class="web-citations" id="webCitations" aria-label="Public web sources" hidden></div>
-
-        <footer>
-          <span id="groundingLabel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4h8v12H6zM8 2h8v12"/></svg> Grounded response cue</span>
-          <button class="source-citation compact-citation" id="sourceCitation" type="button"><span class="file-icon note">TXT</span><span id="sourceCitationText"></span></button>
-          <span class="generation-time" id="generationTime"></span>
-        </footer>
-      </article>
-
-      <section class="answer-history" id="answerHistory" aria-label="Previous response cues" hidden>
-        <header><span>EARLIER CUES</span><small id="answerHistoryCount">0 previous</small></header>
-        <div id="answerHistoryCards"></div>
-      </section>
-    </div>
+    <section class="answer-history" id="answerHistory" aria-label="Previous response cues" hidden>
+      <header><span>EARLIER CUES</span><small id="answerHistoryCount">0 previous</small></header>
+      <div id="answerHistoryCards"></div>
+    </section>
 
     <div class="paused-state" id="pausedState" hidden>
       <span class="pause-symbol" id="emptyStateSymbol">AI</span>
@@ -162,6 +163,6 @@
     </dialog>
   </section>
 
-  <script src="app.js?v=15"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>

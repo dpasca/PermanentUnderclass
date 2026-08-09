@@ -129,6 +129,7 @@ const state = {
 
 let toastTimer;
 let recoveryTimer;
+let currentStageFitFrame;
 
 function showToast(message) {
   const toast = $("#toast");
@@ -190,8 +191,11 @@ function setConnectionStatus(kind, label, eyebrow = null) {
   if (kind === "reconnecting") chip.classList.add("is-reconnecting");
   if (kind === "disconnected") chip.classList.add("is-disconnected");
   $("#connectionEyebrow").textContent = eyebrow || (kind === "connected" ? "CAUGHT UP" : "RECONNECTING");
-  $("#connectionLabel").textContent = label;
+  $("#connectionLabel").textContent = kind === "connected"
+    ? "Connected"
+    : kind === "reconnecting" ? "Reconnecting" : "Offline";
   chip.setAttribute("aria-label", label);
+  chip.title = label;
   const popover = $("#connectionPopover");
   popover.classList.toggle("is-connected", kind === "connected");
   $("#popoverConnectionLabel").textContent = label;
@@ -760,9 +764,46 @@ function createHistoryRound(suggestion, index) {
   return round;
 }
 
+function scheduleCurrentStageFit() {
+  cancelAnimationFrame(currentStageFitFrame);
+  const stage = $("#currentStage");
+  if (!stage.classList.contains("has-current")) {
+    stage.style.removeProperty("--cue-scale");
+    stage.dataset.fitScale = "1";
+    return;
+  }
+
+  stage.style.setProperty("--cue-scale", "1");
+  stage.dataset.fitScale = "1";
+  let scale = 1;
+  let attempts = 0;
+  const fit = () => {
+    const teleprompter = $(".teleprompter");
+    const card = $("#answerCard");
+    const teleprompterStyle = getComputedStyle(teleprompter);
+    const availableHeight = teleprompter.clientHeight
+      - (parseFloat(teleprompterStyle.paddingTop) || 0)
+      - (parseFloat(teleprompterStyle.paddingBottom) || 0)
+      - 8;
+    const contentHeight = card.getBoundingClientRect().bottom
+      - stage.getBoundingClientRect().top;
+    if (!Number.isFinite(contentHeight) || contentHeight <= availableHeight) return;
+
+    scale = Math.max(0.52, scale * availableHeight / contentHeight * 0.995);
+    stage.style.setProperty("--cue-scale", scale.toFixed(3));
+    stage.dataset.fitScale = scale.toFixed(3);
+    attempts += 1;
+    if (attempts < 4 && scale > 0.52) {
+      currentStageFitFrame = requestAnimationFrame(fit);
+    }
+  };
+  currentStageFitFrame = requestAnimationFrame(fit);
+}
+
 function renderSuggestionStack(assistant) {
   const suggestions = answerHistoryFor(assistant);
   const current = assistant?.suggestion || suggestions[0] || null;
+  $("#currentStage").classList.toggle("has-current", Boolean(current));
   state.visibleSuggestions = suggestions;
   state.currentSuggestion = current;
   renderTopicContext(current, suggestions);
@@ -771,6 +812,7 @@ function renderSuggestionStack(assistant) {
     $("#answerHistory").hidden = true;
     $("#webCitations").hidden = true;
     $("#webCitations").replaceChildren();
+    scheduleCurrentStageFit();
     return null;
   }
 
@@ -811,6 +853,7 @@ function renderSuggestionStack(assistant) {
   $("#answerHistoryCount").textContent = `${previous.length} previous topic${previous.length === 1 ? "" : "s"}`;
   const historyCards = $("#answerHistoryCards");
   historyCards.replaceChildren(...previous.map(createHistoryRound));
+  scheduleCurrentStageFit();
 
   if (state.renderedSuggestionID !== current.id) {
     state.renderedSuggestionID = current.id;
@@ -1367,6 +1410,7 @@ function updateElapsedTime() {
 
 async function initialize() {
   bindControls();
+  window.addEventListener("resize", scheduleCurrentStageFit);
   setConnectionStatus("reconnecting", "Finding PermanentUnderclass on this Mac", "CONNECTING");
   try {
     await enterLiveMode();

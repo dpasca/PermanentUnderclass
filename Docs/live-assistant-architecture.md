@@ -155,10 +155,15 @@ not erase useful context or reset the topic timer.
 in the atomic snapshot retains the newest four outlines in newest-first order.
 The focused display uses that history as a typographic round stack: the current
 question, its session-stable `topicNumber`, and an elapsed timer derived from
-`generatedAt` are primary, while up to three distinct earlier questions and
-their cues remain below at a smaller scale. It may also copy, pin, or dismiss
-these objects, but it does not
-receive retrieved chunks and does not run a second interpretation step.
+`generatedAt` are primary. The connection state sits in the same compact topic
+context cluster instead of consuming a separate row. On tablet-sized displays,
+the current topic and all of its current and inline-earlier points form a
+viewport-sized stage; the browser measures that stage after rendering and
+reduces its type and spacing when necessary. Up to three distinct earlier
+questions and their cues start below that first viewport and remain available
+by scrolling. The display may also copy, pin, or dismiss these objects, but it
+does not receive retrieved chunks and does not run a second interpretation
+step.
 
 An 800 ms audio pause from `Other` schedules a structured shorthand outline
 from the current other-speaker partial before the 3 second final-turn boundary.
