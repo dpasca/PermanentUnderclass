@@ -96,9 +96,12 @@ a fallback, and an exact partial/final duplicate is coalesced rather than billed
 twice. The user's speech stays visible in the transcript but does not replace
 the model outline. Explicit speaker and capture-purpose state provides this
 routing; there is no keyword or regex gate.
-Each result is three to five labeled, telegraphic beats rather than polished
-prose, using plain conversational wording instead of corporate interview
-language. This makes it possible to compare substance without reading a script. The
+Each Answer Mirror result starts with a brief spoken preamble and follows with
+two or three labeled beats rather than polished prose. The preamble gives the
+direct answer or qualifies an important version, assumption, scope, or contrast;
+the beats then preserve concrete evidence, mechanics, caveats, and checks in
+plain conversational wording. Meeting Assistant retains its direct three-to-five
+beat response outline. This makes it possible to compare substance without reading a script. The
 newest card appears first and the host retains three previous cards in the
 snapshot, preserving the stack across browser refreshes and reconnects.
 Indexed local files are preferred when they support the outline. If they do

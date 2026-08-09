@@ -19,8 +19,8 @@ const mockScenarios = [
   {
     question: "“Tell me about a time you improved the performance of a critical system.”",
     candidateStart: "Yeah—the clearest one is probably our checkout path...",
+    preamble: "The clearest example is our checkout path, where the slowdown was already affecting conversion.",
     beats: [
-      { label: "What I saw", point: "I inherited a checkout path that had become noticeably slow." },
       { label: "What I tried", point: "I profiled it and found repeated inventory lookups." },
       { label: "Check", point: "I replayed real traffic and watched p95, not just averages." },
       { label: "Afterward", point: "I added a latency alert so the regression could not return quietly." }
@@ -30,8 +30,8 @@ const mockScenarios = [
   {
     question: "“What did you learn when that launch did not go to plan?”",
     candidateStart: "Honestly, that first rollout was messier than I expected...",
+    preamble: "Honestly, that rollout was messier than I expected because I'd planned around the happy path.",
     beats: [
-      { label: "What broke", point: "I had planned too much around the happy path." },
       { label: "First move", point: "I paused the rollout and added a compatibility layer." },
       { label: "Messy bit", point: "I got both teams debugging from the same timeline." },
       { label: "Now", point: "I now rehearse rollback and mixed-version cases before launch." }
@@ -41,8 +41,8 @@ const mockScenarios = [
   {
     question: "“How do you decide when a low-latency system is ready to ship?”",
     candidateStart: "I start with what delay a person can actually feel...",
+    preamble: "I start with the delay a person can actually feel, not an abstract latency target.",
     beats: [
-      { label: "Start", point: "I start by choosing a delay people can actually notice." },
       { label: "Break it down", point: "I measure capture, model, and display latency separately." },
       { label: "Try bad cases", point: "I replay awkward pauses and broken connections." },
       { label: "Good enough", point: "I ship when it feels fast without firing at the wrong time." }
@@ -52,8 +52,8 @@ const mockScenarios = [
   {
     question: "“What tradeoff did you make to keep the assistant useful?”",
     candidateStart: "The awkward part was answering early without jumping in too soon...",
+    preamble: "The awkward tradeoff was answering early without jumping in before the question was clear.",
     beats: [
-      { label: "The tension", point: "I was balancing an early answer against a cleaner transcript." },
       { label: "What I chose", point: "I started generation after a stable 800-millisecond pause." },
       { label: "Fallback", point: "I ran it again when the final turn arrived." },
       { label: "Still checking", point: "I still measured whether early cues were useful, not merely fast." }
@@ -63,8 +63,8 @@ const mockScenarios = [
   {
     question: "“A CUDA kernel shows high occupancy but still runs slowly. What would you look at next?”",
     candidateStart: "I would not trust occupancy by itself; I would open Nsight Compute first...",
+    preamble: "If occupancy is already high, I'd look past occupancy and open Nsight Compute.",
     beats: [
-      { label: "First thought", point: "I would not treat high occupancy as proof of useful work." },
       { label: "Memory", point: "I would check coalescing, cache misses, and DRAM throughput." },
       { label: "Warp stalls", point: "I would use Nsight Compute to see why warps were stalled." },
       { label: "Then code", point: "I would inspect divergence, register spills, and expensive instructions." }
@@ -74,8 +74,8 @@ const mockScenarios = [
   {
     question: "“Why might a tiled CUDA matrix multiply get slower when you increase the tile size?”",
     candidateStart: "My first guess is that the larger tile pushed resource use too far...",
+    preamble: "My first guess is that the larger tile pushed resource use too far.",
     beats: [
-      { label: "Likely cost", point: "I would first suspect the larger tile pushed resource use too far." },
       { label: "Residency", point: "I would check whether shared-memory use reduced residency." },
       { label: "Registers", point: "I would look for register pressure and local-memory spills." },
       { label: "I would test", point: "I would compare tile sizes and bank conflicts in Nsight." }
@@ -86,11 +86,11 @@ const mockScenarios = [
     isWebSearchPreview: true,
     question: "“As of today, what is the latest stable CUDA Toolkit release, and what profiling change matters?”",
     candidateStart: "I would verify that against NVIDIA’s current release notes rather than trust memory...",
+    preamble: "As of today, I'd verify both facts in NVIDIA's current release notes.",
     beats: [
       { label: "Current release", point: "I’d confirm the production release in NVIDIA’s current toolkit notes." },
       { label: "Profiler change", point: "I’d pull one documented profiling change from that same release." },
-      { label: "Version check", point: "I’d separate toolkit, driver, and Nsight versions before answering." },
-      { label: "Source", point: "I’d link the official release notes so the answer stays checkable." }
+      { label: "Version check", point: "I’d separate toolkit, driver, and Nsight versions before answering." }
     ],
     citations: [
       {
@@ -683,8 +683,9 @@ function outlineText(suggestion) {
   if (!suggestion) return "";
   return [
     suggestion.question,
+    suggestion.preamble,
     ...(suggestion.beats || []).map((beat) => beat.point)
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function groundingText(suggestion) {
@@ -755,7 +756,12 @@ function createHistoryRound(suggestion, index) {
     beats.append(item);
   });
 
-  round.append(header, beats);
+  const preamble = document.createElement("p");
+  preamble.className = "history-preamble";
+  preamble.textContent = suggestion.preamble || "";
+  preamble.hidden = !suggestion.preamble;
+
+  round.append(header, preamble, beats);
   const citations = createWebCitationLinks(
     suggestion,
     "history-web-citations"
@@ -817,6 +823,9 @@ function renderSuggestionStack(assistant) {
   }
 
   $("#answerQuestion").textContent = current.question;
+  const preamble = $("#answerPreamble");
+  preamble.textContent = current.preamble || "";
+  preamble.hidden = !current.preamble;
   const meeting = state.snapshot?.session?.purpose === "meeting";
   $("#answerLead").textContent = meeting ? "Respond from here" : "Speak from here";
   const previousVersion = previousVersionFor(suggestions, current);
@@ -1174,6 +1183,7 @@ function renderMockScenario(index) {
     id: `mock-answer-${state.mockGeneration}`,
     basedOnSequence: 2_487 + state.mockGeneration,
     question: scenario.question,
+    preamble: scenario.preamble,
     beats: scenario.beats,
     citations: scenario.citations || [{ label: "Reference", path: scenario.citation }],
     grounding: scenario.grounding || "localReferences",

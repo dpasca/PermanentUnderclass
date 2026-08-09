@@ -548,12 +548,12 @@ final class CompanionTests: XCTestCase {
     func testLiveAssistantRequestUsesStructuredOutputAndExplicitCacheBoundary() throws {
         XCTAssertTrue(
             LiveAssistantClient.interviewBehaviorInstructions.contains(
-                "first-person speaking cue"
+                "short spoken preamble"
             )
         )
         XCTAssertTrue(
             LiveAssistantClient.interviewBehaviorInstructions.contains(
-                "every point must stand on its own"
+                "first-person voice"
             )
         )
         XCTAssertTrue(
@@ -564,6 +564,11 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(
             LiveAssistantClient.interviewBehaviorInstructions.contains(
                 "Avoid resume language"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "Specificity is more important"
             )
         )
         XCTAssertTrue(
@@ -634,8 +639,9 @@ final class CompanionTests: XCTestCase {
             ["localReferences", "webSearch", "generalKnowledge"]
         )
         let beats = try XCTUnwrap(properties["beats"] as? [String: Any])
-        XCTAssertEqual(beats["minItems"] as? Int, 3)
-        XCTAssertEqual(beats["maxItems"] as? Int, 5)
+        XCTAssertNotNil(properties["preamble"])
+        XCTAssertEqual(beats["minItems"] as? Int, 2)
+        XCTAssertEqual(beats["maxItems"] as? Int, 3)
 
         let requiredSearchData = try LiveAssistantClient.requestBody(
             for: plan,
@@ -662,6 +668,18 @@ final class CompanionTests: XCTestCase {
             meetingText["format"] as? [String: Any]
         )
         XCTAssertEqual(meetingFormat["name"] as? String, "meeting_assistant")
+        let meetingSchema = try XCTUnwrap(
+            meetingFormat["schema"] as? [String: Any]
+        )
+        let meetingProperties = try XCTUnwrap(
+            meetingSchema["properties"] as? [String: Any]
+        )
+        XCTAssertNil(meetingProperties["preamble"])
+        let meetingBeats = try XCTUnwrap(
+            meetingProperties["beats"] as? [String: Any]
+        )
+        XCTAssertEqual(meetingBeats["minItems"] as? Int, 3)
+        XCTAssertEqual(meetingBeats["maxItems"] as? Int, 5)
     }
 
     func testLiveAssistantExtractsHostedWebSearchSources() {
@@ -717,6 +735,7 @@ final class CompanionTests: XCTestCase {
             "shouldShow": true,
             "grounding": "localReferences",
             "question": "What did you improve?",
+            "preamble": "The clearest example is the checkout path.",
             "beats": [
                 ["label": "Context", "point": "Checkout latency hurting conversion"],
                 ["label": "My move", "point": "Traced path; removed N+1 lookup"],
@@ -759,6 +778,10 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(generation.usage.reasoningTokens, 32)
         XCTAssertEqual(generation.suggestion?.basedOnSequence, 19)
         XCTAssertEqual(generation.suggestion?.grounding, .localReferences)
+        XCTAssertEqual(
+            generation.suggestion?.preamble,
+            "The clearest example is the checkout path."
+        )
         XCTAssertEqual(
             generation.suggestion?.beats,
             [
@@ -878,7 +901,7 @@ final class CompanionTests: XCTestCase {
         let allBeats = try XCTUnwrap(
             output["beats"] as? [[String: String]]
         )
-        tooShortOutput["beats"] = Array(allBeats.prefix(2))
+        tooShortOutput["beats"] = Array(allBeats.prefix(1))
         let tooShortData = try JSONSerialization.data(
             withJSONObject: tooShortOutput
         )

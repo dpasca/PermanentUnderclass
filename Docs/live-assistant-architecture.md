@@ -128,8 +128,8 @@ An `assistant.suggestion` payload is already a view model, for example:
   "topicID": "Other-item-91",
   "topicNumber": 3,
   "question": "Tell me about a time you improved a critical system.",
+  "preamble": "The clearest example is the checkout path, where latency was hurting conversion.",
   "beats": [
-    {"label": "Context", "point": "I inherited a checkout path whose latency was hurting conversion."},
     {"label": "My move", "point": "I traced the slow path and removed a repeated lookup."},
     {"label": "Proof", "point": "I validated a 41% lower p95 under load."}
   ],
@@ -143,8 +143,10 @@ An `assistant.suggestion` payload is already a view model, for example:
 }
 ```
 
-The host chooses the facts and concise first-person wording. Labels are internal
-structure; the teleprompter displays only the self-contained speaking cues.
+The host chooses the facts and concise first-person wording. For Answer Mirror,
+the teleprompter shows the spoken preamble first; labels remain internal
+structure for the supporting cues. Meeting Assistant suggestions omit the
+preamble field and retain their direct three-to-five-beat shape.
 Suggestions generated from the pause-time partial and finalized text of the
 same transcript turn share one `topicID` and `topicNumber`. The newest cue is
 primary while each point from the latest earlier version appears directly

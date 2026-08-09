@@ -189,6 +189,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let id: String
     let basedOnSequence: Int
     let question: String
+    var preamble: String? = nil
     let beats: [CompanionAnswerBeat]
     let citations: [CompanionCitation]
     let grounding: CompanionSuggestionGrounding

@@ -41,9 +41,11 @@ Useful interactions:
 - An `Other` pause or final turn is eligible for the host model's structured
   outline decision. Meeting mode asks for a cautious, grounded response to a
   question, request, or decision; Interview mode asks for an answer outline.
-  Each result contains three to five concise, first-person cues that can be read
-  aloud without visible labels or a context card. `You` turns do not replace
-  it. The browser itself never decides via text matching.
+  Each Interview result contains a concise spoken preamble followed by two or
+  three first-person cues that can be read aloud without visible labels or a
+  context card. Meeting results retain three to five direct response cues. `You`
+  turns do not replace the current result. The browser itself never decides via
+  text matching.
 - Approach-oriented cues remain available when local files do not support the
   topic, but they use hypothetical phrasing such as "I would…" rather than
   inventing personal history.
