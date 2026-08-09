@@ -28,6 +28,8 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>PermanentUnderclass uses the microphone for meeting transcription and hold-to-dictate.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>PermanentUnderclass shares the live assistant with another computer on your local network.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>PermanentUnderclass captures system audio, or one selected app’s audio, to transcribe the other participant.</string>
 </dict>

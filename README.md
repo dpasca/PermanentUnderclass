@@ -28,7 +28,7 @@ folders, audio devices, or running-process names.
   this works without an account or API key.
 - **Meeting:** capture the microphone and system audio as separate speakers,
   keep a live transcript, and optionally show grounded response cues in a
-  loopback-only browser display.
+  browser display on this Mac or another computer on the same trusted LAN.
 - **Interview:** use the same two-track capture with an Answer Mirror that
   suggests concise answer beats without inventing personal experience.
 
@@ -56,13 +56,14 @@ checksum. Intel Macs and non-macOS systems are not supported.
 | 🎙️ **Quick Dictation** | 🟢 `LOCAL DEFAULT`<br>Local-model audio processing, saved final-text history, and temporary recoverable audio | 🟡 `OPTIONAL CLOUD`<br>Audio only when OpenAI GPT-Transcribe is selected |
 | 👥 **Meeting and interview** | 🟢 `LOCAL SESSION STATE`<br>UI state and the in-memory transcript | 🔵 `HOSTED TRANSCRIPTION`<br>Live microphone and system audio while capture is running |
 | ✨ **Final transcript pass** | 🟢 `ON-DEVICE OPTION`<br>Whisper or Parakeet | 🟡 `OPTIONAL CLOUD`<br>Audio only when the OpenAI finalizer is selected |
-| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the loopback browser gateway | 🟡 `ON-DEMAND CLOUD`<br>Relevant reference text and transcript context used to generate cues |
+| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>Relevant reference text and transcript context used to generate cues; presentation-ready session state can also be viewed over a trusted LAN |
 
 > 🔒 `PRIVACY LOCK` **Never contact OpenAI** disables every hosted path.
 
-The API key is stored in macOS Keychain. The companion display is served only
-on the loopback interface and never receives the API key or full reference
-corpus. Meeting and interview audio is not continuously recorded to disk;
+The API key is stored in macOS Keychain. The companion display never receives
+the API key or full reference corpus. Its manual LAN-address mode is currently
+plain HTTP without pairing, so use it only on a trusted local network. Meeting
+and interview audio is not continuously recorded to disk;
 Quick Dictation retains audio only while a transcription is pending or
 recoverable.
 

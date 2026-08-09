@@ -21,4 +21,20 @@ final class DocumentationDemoTests: XCTestCase {
             )
         )
     }
+
+    func testDocumentationDemoKeepsASyntheticCompanionAddress() {
+        let controller = MeetingController.documentationDemo(.meeting)
+
+        XCTAssertEqual(
+            controller.companionGatewayEndpoint?.preferredLANURL?.absoluteString,
+            "http://192.168.1.42:\(CompanionGateway.preferredPort)"
+        )
+
+        controller.refreshCompanionGatewayEndpoint()
+
+        XCTAssertEqual(
+            controller.companionGatewayEndpoint?.preferredLANURL?.absoluteString,
+            "http://192.168.1.42:\(CompanionGateway.preferredPort)"
+        )
+    }
 }

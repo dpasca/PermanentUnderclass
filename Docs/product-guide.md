@@ -57,15 +57,22 @@ and requests; Interview mode runs Answer Mirror for interviewer speech.
 
 ## Live Assistant companion
 
-PermanentUnderclass embeds a loopback-only HTTP/SSE gateway and serves the
-cross-platform thin display itself. Start the Mac app, open **Meeting** or
+PermanentUnderclass embeds an HTTP/SSE gateway and serves the cross-platform
+thin display itself. Start the Mac app, open **Meeting** or
 **Interview**, choose **Open Setup…** on the prominent preparation card, and
 add the session guidance or shared reference folder you need. Then open the
-mode's assistant. The same
-display is also available at <http://127.0.0.1:4173>. The Mac owns the selected
+mode's assistant. A server-status panel confirms when the display is ready,
+shows the exact LAN IP and selected port, and copies that address for use on
+another computer on the same Wi-Fi or Ethernet network. Port `4173` is preferred;
+if it is already in use, the gateway automatically publishes another available
+port. The Mac owns the selected
 behavior, local references, OpenAI request, usage tracking, event ordering, and
 replay; the browser receives only transcript text, reference status, citations,
 and a presentation-ready response outline.
+
+The current manual LAN-address mode uses plain HTTP without pairing. Use it only
+on a trusted local network. The gateway accepts direct numeric IP authorities
+and rejects named authorities to retain DNS-rebinding protection.
 
 There are two explicit live behaviors. **Meeting Assistant** drafts a concise,
 first-person response outline when the other participant asks a clear question,

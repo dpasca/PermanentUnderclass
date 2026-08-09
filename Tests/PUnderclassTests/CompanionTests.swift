@@ -911,13 +911,51 @@ final class CompanionTests: XCTestCase {
             }
         }
 
-        XCTAssertTrue(CompanionGatewayRoutes.isAllowedLoopbackAuthority("localhost"))
+        XCTAssertTrue(CompanionGatewayRoutes.isAllowedCompanionAuthority("localhost"))
         XCTAssertTrue(
-            CompanionGatewayRoutes.isAllowedLoopbackAuthority("127.0.0.1:4173")
+            CompanionGatewayRoutes.isAllowedCompanionAuthority("127.0.0.1:4173")
+        )
+        XCTAssertTrue(
+            CompanionGatewayRoutes.isAllowedCompanionAuthority("192.168.1.42:52119")
+        )
+        XCTAssertTrue(
+            CompanionGatewayRoutes.isAllowedCompanionAuthority("[fe80::1]:4173")
         )
         XCTAssertFalse(
-            CompanionGatewayRoutes.isAllowedLoopbackAuthority("attacker.example:4173")
+            CompanionGatewayRoutes.isAllowedCompanionAuthority("attacker.example:4173")
         )
+        XCTAssertFalse(CompanionGatewayRoutes.isAllowedCompanionAuthority("localhost:0"))
+    }
+
+    func testGatewayEndpointPublishesTheSelectedPortForLANAndLoopback() {
+        let endpoint = CompanionGatewayEndpoint(
+            port: 52_119,
+            lanAddresses: ["192.168.1.42", "10.0.0.8"]
+        )
+
+        XCTAssertEqual(endpoint.port, 52_119)
+        XCTAssertEqual(endpoint.loopbackURL.absoluteString, "http://127.0.0.1:52119")
+        XCTAssertEqual(
+            endpoint.lanURLs.map(\.absoluteString),
+            ["http://192.168.1.42:52119", "http://10.0.0.8:52119"]
+        )
+        XCTAssertEqual(
+            endpoint.preferredLANURL?.absoluteString,
+            "http://192.168.1.42:52119"
+        )
+    }
+
+    func testGatewayFallsBackToAnAvailablePortWhenPreferredPortIsBusy() async throws {
+        let firstGateway = CompanionGateway(preferredPort: 0)
+        defer { firstGateway.stop() }
+        let firstEndpoint = try await startedEndpoint(for: firstGateway)
+
+        let secondGateway = CompanionGateway(preferredPort: firstEndpoint.port)
+        defer { secondGateway.stop() }
+        let secondEndpoint = try await startedEndpoint(for: secondGateway)
+
+        XCTAssertNotEqual(secondEndpoint.port, firstEndpoint.port)
+        XCTAssertGreaterThan(secondEndpoint.port, 0)
     }
 
     private func referenceSnapshot() -> ReferenceLibrarySnapshot {
@@ -1031,5 +1069,24 @@ final class CompanionTests: XCTestCase {
             throw XCTSkip("Expected a companion event")
         }
         return event
+    }
+
+    private func startedEndpoint(
+        for gateway: CompanionGateway
+    ) async throws -> CompanionGatewayEndpoint {
+        try await withCheckedThrowingContinuation { continuation in
+            gateway.start(
+                onReady: { continuation.resume(returning: $0) },
+                onFailure: {
+                    continuation.resume(
+                        throwing: NSError(
+                            domain: "CompanionGatewayTests",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: $0]
+                        )
+                    )
+                }
+            )
+        }
     }
 }

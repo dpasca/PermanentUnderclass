@@ -1,5 +1,92 @@
+import Darwin
 import Foundation
 import Hummingbird
+
+struct CompanionGatewayEndpoint: Equatable, Sendable {
+    let port: Int
+    let loopbackURL: URL
+    let lanURLs: [URL]
+
+    init(
+        port: Int,
+        lanAddresses: [String] = CompanionNetworkAddresses.lanIPv4Addresses()
+    ) {
+        self.port = port
+        loopbackURL = URL(string: "http://127.0.0.1:\(port)")!
+        lanURLs = lanAddresses.compactMap {
+            URL(string: "http://\($0):\(port)")
+        }
+    }
+
+    var preferredLANURL: URL? {
+        lanURLs.first
+    }
+}
+
+enum CompanionNetworkAddresses {
+    static func lanIPv4Addresses() -> [String] {
+        var interfacePointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfacePointer) == 0 else { return [] }
+        defer { freeifaddrs(interfacePointer) }
+
+        var candidates: [(interface: String, address: String)] = []
+        var current = interfacePointer
+        while let interface = current?.pointee {
+            defer { current = interface.ifa_next }
+            guard
+                let socketAddress = interface.ifa_addr,
+                socketAddress.pointee.sa_family == UInt8(AF_INET),
+                interface.ifa_flags & UInt32(IFF_UP) != 0,
+                interface.ifa_flags & UInt32(IFF_RUNNING) != 0,
+                interface.ifa_flags & UInt32(IFF_LOOPBACK) == 0,
+                interface.ifa_flags & UInt32(IFF_POINTOPOINT) == 0
+            else {
+                continue
+            }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard
+                getnameinfo(
+                    socketAddress,
+                    socklen_t(socketAddress.pointee.sa_len),
+                    &host,
+                    socklen_t(host.count),
+                    nil,
+                    0,
+                    NI_NUMERICHOST
+                ) == 0
+            else {
+                continue
+            }
+            candidates.append(
+                (
+                    String(cString: interface.ifa_name),
+                    String(cString: host)
+                )
+            )
+        }
+
+        candidates.sort {
+            let left = interfacePriority($0.interface)
+            let right = interfacePriority($1.interface)
+            return left == right
+                ? $0.interface < $1.interface
+                : left < right
+        }
+
+        var seen: Set<String> = []
+        let addresses = candidates.map(\.address).filter { seen.insert($0).inserted }
+        let routableAddresses = addresses.filter { !$0.hasPrefix("169.254.") }
+        return routableAddresses.isEmpty ? addresses : routableAddresses
+    }
+
+    private static func interfacePriority(_ name: String) -> Int {
+        if name == "en0" { return 0 }
+        if name.hasPrefix("en") { return 1 }
+        if name.hasPrefix("bridge") { return 2 }
+        return 3
+    }
+}
 
 struct CompanionHealth: Codable, Equatable, Sendable {
     let v: Int
@@ -81,21 +168,21 @@ enum CompanionGatewayRoutes {
         let router = Router()
 
         router.get("/") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             return try assetResponse(
                 assets.load("index.html"),
                 contentType: "text/html; charset=utf-8"
             )
         }
         router.get("/styles.css") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             return try assetResponse(
                 assets.load("styles.css"),
                 contentType: "text/css; charset=utf-8"
             )
         }
         router.get("/app.js") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             return try assetResponse(
                 assets.load("app.js"),
                 contentType: "text/javascript; charset=utf-8"
@@ -103,7 +190,7 @@ enum CompanionGatewayRoutes {
         }
 
         router.get("/v1/health") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             return try jsonResponse(
                 CompanionHealth(
                     v: 1,
@@ -115,12 +202,12 @@ enum CompanionGatewayRoutes {
         }
 
         router.get("/v1/snapshot") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             return try jsonResponse(await hub.snapshot())
         }
 
         router.get("/v1/events") { request, _ -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             let queryCursor = request.uri.queryParameters["cursor"].map(String.init)
             let headerCursor = header(named: "last-event-id", in: request)
             // A fresh EventSource supplies the query cursor. Its built-in retry
@@ -160,7 +247,7 @@ enum CompanionGatewayRoutes {
         }
 
         router.post("/v1/commands") { request, context -> Response in
-            try validateLoopbackHost(request)
+            try validateCompanionHost(request)
             guard
                 let key = header(named: "idempotency-key", in: request)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -234,7 +321,7 @@ enum CompanionGatewayRoutes {
         }?.value
     }
 
-    private static func validateLoopbackHost(_ request: Request) throws {
+    private static func validateCompanionHost(_ request: Request) throws {
         guard
             let host = (request.head.authority ?? header(named: "host", in: request))?
                 .lowercased()
@@ -243,21 +330,61 @@ enum CompanionGatewayRoutes {
             // HTTP/1.1's required Host header. Real network requests always do.
             return
         }
-        guard isAllowedLoopbackAuthority(host) else {
-            throw HTTPError(.forbidden, message: "The companion gateway is loopback-only.")
+        guard isAllowedCompanionAuthority(host) else {
+            throw HTTPError(
+                .forbidden,
+                message: "Use a direct local-network address for the companion gateway."
+            )
         }
     }
 
-    static func isAllowedLoopbackAuthority(_ authority: String) -> Bool {
-        switch authority.lowercased() {
-        case CompanionGateway.host,
-             "\(CompanionGateway.host):\(CompanionGateway.port)",
-             "localhost",
-             "localhost:\(CompanionGateway.port)":
-            true
-        default:
-            false
+    static func isAllowedCompanionAuthority(_ authority: String) -> Bool {
+        let normalized = authority
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if normalized == "localhost" {
+            return true
         }
+        if normalized.hasPrefix("localhost:") {
+            return isValidPort(String(normalized.dropFirst("localhost:".count)))
+        }
+
+        if normalized.hasPrefix("[") {
+            guard let closingBracket = normalized.firstIndex(of: "]") else {
+                return false
+            }
+            let hostStart = normalized.index(after: normalized.startIndex)
+            let host = String(normalized[hostStart..<closingBracket])
+            let suffix = normalized[normalized.index(after: closingBracket)...]
+            if !suffix.isEmpty {
+                guard
+                    suffix.first == ":",
+                    isValidPort(String(suffix.dropFirst()))
+                else {
+                    return false
+                }
+            }
+            var address = in6_addr()
+            return host.withCString {
+                inet_pton(AF_INET6, $0, &address) == 1
+            }
+        }
+
+        let parts = normalized.split(
+            separator: ":",
+            omittingEmptySubsequences: false
+        )
+        guard parts.count == 1 || parts.count == 2 else { return false }
+        if parts.count == 2, !isValidPort(String(parts[1])) { return false }
+        var address = in_addr()
+        return String(parts[0]).withCString {
+            inet_pton(AF_INET, $0, &address) == 1
+        }
+    }
+
+    private static func isValidPort(_ value: String) -> Bool {
+        guard let port = Int(value) else { return false }
+        return (1...65_535).contains(port)
     }
 
     static func resumeCursor(queryCursor: String?, lastEventID: String?) -> String? {
@@ -266,8 +393,7 @@ enum CompanionGatewayRoutes {
 }
 
 final class CompanionGateway: @unchecked Sendable {
-    static let host = "127.0.0.1"
-    static let port: Int = {
+    static let preferredPort: Int = {
         guard
             let rawValue = ProcessInfo.processInfo.environment[
                 "PUNDERCLASS_COMPANION_PORT"
@@ -279,23 +405,25 @@ final class CompanionGateway: @unchecked Sendable {
         }
         return value
     }()
-    static let url = URL(string: "http://\(host):\(port)")!
 
     let hub: CompanionEventHub
     let assets: CompanionAssetStore
+    private let preferredPort: Int
     private var serverTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
 
     init(
         hub: CompanionEventHub = CompanionEventHub(),
-        assets: CompanionAssetStore = CompanionAssetStore()
+        assets: CompanionAssetStore = CompanionAssetStore(),
+        preferredPort: Int = CompanionGateway.preferredPort
     ) {
         self.hub = hub
         self.assets = assets
+        self.preferredPort = preferredPort
     }
 
     func start(
-        onReady: @escaping () -> Void = {},
+        onReady: @escaping (CompanionGatewayEndpoint) -> Void = { _ in },
         onFailure: @escaping (String) -> Void = { _ in }
     ) {
         guard serverTask == nil else { return }
@@ -304,21 +432,53 @@ final class CompanionGateway: @unchecked Sendable {
             onFailure: onFailure
         )
         let router = CompanionGatewayRoutes.router(hub: hub, assets: assets)
-        let app = Application(
+        let preferredApp = Application(
             responder: router.buildResponder(),
             configuration: .init(
-                address: .hostname(Self.host, port: Self.port),
+                address: .hostname("0.0.0.0", port: preferredPort),
                 serverName: "PermanentUnderclass Companion"
             ),
-            onServerRunning: { _ in callbacks.onReady() }
+            onServerRunning: { channel in
+                guard let port = channel.localAddress?.port else {
+                    callbacks.onFailure(
+                        "The assistant server started without a usable port."
+                    )
+                    return
+                }
+                callbacks.onReady(CompanionGatewayEndpoint(port: port))
+            }
+        )
+        let fallbackApp = Application(
+            responder: router.buildResponder(),
+            configuration: .init(
+                address: .hostname("0.0.0.0", port: 0),
+                serverName: "PermanentUnderclass Companion"
+            ),
+            onServerRunning: { channel in
+                guard let port = channel.localAddress?.port else {
+                    callbacks.onFailure(
+                        "The assistant server started without a usable port."
+                    )
+                    return
+                }
+                callbacks.onReady(CompanionGatewayEndpoint(port: port))
+            }
         )
         serverTask = Task.detached(priority: .userInitiated) {
             do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                return
+                try await preferredApp.runService(gracefulShutdownSignals: [])
             } catch {
-                callbacks.onFailure(error.localizedDescription)
+                guard !Task.isCancelled, !(error is CancellationError) else {
+                    return
+                }
+                do {
+                    try await fallbackApp.runService(gracefulShutdownSignals: [])
+                } catch {
+                    guard !Task.isCancelled, !(error is CancellationError) else {
+                        return
+                    }
+                    callbacks.onFailure(error.localizedDescription)
+                }
             }
         }
         let hub = hub
@@ -344,11 +504,11 @@ final class CompanionGateway: @unchecked Sendable {
 }
 
 private final class CompanionGatewayCallbacks: @unchecked Sendable {
-    let onReady: () -> Void
+    let onReady: (CompanionGatewayEndpoint) -> Void
     let onFailure: (String) -> Void
 
     init(
-        onReady: @escaping () -> Void,
+        onReady: @escaping (CompanionGatewayEndpoint) -> Void,
         onFailure: @escaping (String) -> Void
     ) {
         self.onReady = onReady

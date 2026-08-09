@@ -1,6 +1,6 @@
 # Live Assistant companion architecture
 
-Status: loopback vertical slice implemented
+Status: manual LAN-address vertical slice implemented
 Decision date: 2026-08-01
 
 ## Decision
@@ -16,11 +16,12 @@ Stream ordered JSON events from host to display with Server-Sent Events (SSE);
 send the small number of presentation actions back as idempotent JSON HTTP
 requests.
 
-The implemented gateway binds to `127.0.0.1` only. This lets us prove
-the assistant behavior, event contract, recovery, and cost reporting without
-turning a prototype into an unauthenticated LAN service. The protocol and web
-client are cross-platform. LAN access is a separate hardening milestone (see
-Security and pairing).
+The implemented gateway binds to all IPv4 interfaces. The Mac UI confirms that
+the server is running and publishes a directly usable LAN IP and runtime-selected
+port. It prefers port `4173` and asks the operating system for an available port
+if that port is occupied. This manual-address mode is intentionally limited to
+trusted LANs until the pairing and transport-encryption hardening milestone is
+complete (see Security and pairing).
 
 ### Recommended stack
 
@@ -232,11 +233,13 @@ product's current in-memory-only privacy promise.
 
 ## Security and pairing
 
-Loopback is the safe default for the spike. Do not bind `0.0.0.0` silently.
-The loopback gateway also rejects non-loopback HTTP authorities so DNS
-rebinding cannot turn another origin into a reader of local transcript state.
+LAN availability is visible in the Mac UI rather than being a silent bind. The
+gateway accepts `localhost` and direct numeric IP authorities, but rejects named
+HTTP authorities so DNS rebinding cannot turn another origin into a reader of
+local transcript state. Manual LAN access is currently unauthenticated plain
+HTTP and must be used only on a trusted network.
 
-For LAN mode:
+For hardened LAN mode:
 
 1. The user explicitly enables Companion Access in the Mac app.
 2. The app advertises a Bonjour service and shows a short-lived six-digit code
@@ -429,8 +432,10 @@ the source of truth.
    injection, and an optional SQLite journal decision. The loopback slice
    already bounds replay and disconnects slow consumers so they recover from a
    fresh snapshot.
-5. **LAN:** explicit sharing toggle, Bonjour, pairing/revocation, transport
-   encryption, and mobile/tablet validation.
+5. **Manual LAN address completed; hardening remains:** the app publishes the
+   selected LAN IP and port and falls back automatically when the preferred
+   port is occupied. Remaining work is an explicit sharing toggle, Bonjour,
+   pairing/revocation, transport encryption, and mobile/tablet validation.
 
 ## Acceptance tests for the loopback slice
 

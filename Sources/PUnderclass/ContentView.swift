@@ -72,6 +72,7 @@ struct ContentView: View {
             controller.refreshDictationPermissions()
             controller.refreshAudioDevices()
             controller.refreshProcesses()
+            controller.refreshCompanionGatewayEndpoint()
         }
     }
 
@@ -124,6 +125,8 @@ struct ContentView: View {
 
     private func captureWidgets(for purpose: CapturePurpose) -> some View {
         VStack(spacing: 12) {
+            companionConnectionPanel
+
             VStack(spacing: 12) {
                 captureControlPanel(for: purpose)
                 audioRoutePanel(for: purpose)
@@ -264,6 +267,7 @@ struct ContentView: View {
                         : "Open Answer Mirror",
                     action: controller.openCompanionDisplay
                 )
+                .disabled(controller.companionGatewayEndpoint == nil)
                 Label("Headphones required", systemImage: "headphones")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -337,6 +341,91 @@ struct ContentView: View {
         return controller.access(to: liveFeature(for: purpose)).isAvailable
             ? "Ready"
             : "Needs setup"
+    }
+
+    private var companionConnectionPanel: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(companionGatewayColor)
+                .frame(width: 36, height: 36)
+                .background(
+                    companionGatewayColor.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 9)
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(companionGatewayColor)
+                        .frame(width: 7, height: 7)
+                    Text(controller.companionGatewayStatus)
+                        .font(.callout.weight(.semibold))
+                }
+                Text(companionGatewayDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            if let lanURL = controller.companionGatewayEndpoint?.preferredLANURL {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("OPEN FROM ANOTHER COMPUTER")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 7) {
+                        Text(lanURL.absoluteString)
+                            .font(.system(.callout, design: .monospaced).weight(.medium))
+                            .textSelection(.enabled)
+                        Button("Copy", action: controller.copyCompanionLANAddress)
+                            .controlSize(.small)
+                    }
+                    Text("Same Wi-Fi or Ethernet · use a trusted network")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if controller.companionGatewayError != nil {
+                Button("Try Again", action: controller.restartCompanionGateway)
+            } else {
+                Button("Open on This Mac", action: controller.openCompanionDisplay)
+                    .disabled(controller.companionGatewayEndpoint == nil)
+            }
+        }
+        .padding(11)
+        .background(
+            companionGatewayColor.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(companionGatewayColor.opacity(0.24), lineWidth: 1)
+        }
+    }
+
+    private var companionGatewayColor: Color {
+        if controller.companionGatewayEndpoint != nil { return .green }
+        if controller.companionGatewayError != nil { return .red }
+        return .orange
+    }
+
+    private var companionGatewayDetail: String {
+        if let error = controller.companionGatewayError {
+            return error
+        }
+        guard let endpoint = controller.companionGatewayEndpoint else {
+            return "Selecting an available port and checking the local network…"
+        }
+        guard endpoint.preferredLANURL != nil else {
+            return "Running on this Mac. Connect Wi-Fi or Ethernet to publish a LAN address."
+        }
+        if endpoint.port != CompanionGateway.preferredPort {
+            return "Ready on the local network. Port \(CompanionGateway.preferredPort) was busy, so port \(endpoint.port) was selected automatically."
+        }
+        return "Ready on the local network at the preferred port."
     }
 
     private func captureStatusColor(for purpose: CapturePurpose) -> Color {
@@ -726,6 +815,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     Button("Open Assistant", action: controller.openCompanionDisplay)
+                        .disabled(controller.companionGatewayEndpoint == nil)
                     if let otherReplayPurpose {
                         Button("Open \(otherReplayPurpose.title)") {
                             selectedTab = otherReplayPurpose == .meeting

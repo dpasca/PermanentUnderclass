@@ -55,7 +55,9 @@ final class MeetingController: ObservableObject {
     @Published var pendingSettingsSection: SettingsSection?
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
-    @Published private(set) var companionGatewayStatus = "Starting companion display…"
+    @Published private(set) var companionGatewayStatus = "Starting assistant server…"
+    @Published private(set) var companionGatewayEndpoint: CompanionGatewayEndpoint?
+    @Published private(set) var companionGatewayError: String?
     @Published private(set) var syntheticInterviewState =
         SyntheticInterviewState.ready(for: .interview)
 
@@ -83,6 +85,7 @@ final class MeetingController: ObservableObject {
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
     private let companionGateway = CompanionGateway()
+    private var companionGatewayAttemptID: UUID?
     private let liveAssistantClient = LiveAssistantClient()
     private let syntheticInterviewGeneratorClient =
         SyntheticInterviewGeneratorClient()
@@ -292,7 +295,12 @@ final class MeetingController: ObservableObject {
         ]
         lastDictation = quickDictationHistory.first?.text ?? ""
         transcript = Self.documentationTranscript(now: now)
-        companionGatewayStatus = "Documentation demo"
+        companionGatewayStatus = "Assistant server running"
+        companionGatewayEndpoint = CompanionGatewayEndpoint(
+            port: CompanionGateway.preferredPort,
+            lanAddresses: ["192.168.1.42"]
+        )
+        companionGatewayError = nil
         preparationPurpose = mode == .interview ? .interview : .meeting
     }
 
@@ -1143,7 +1151,29 @@ final class MeetingController: ObservableObject {
     }
 
     func openCompanionDisplay() {
-        NSWorkspace.shared.open(CompanionGateway.url)
+        guard let url = companionGatewayEndpoint?.loopbackURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func copyCompanionLANAddress() {
+        guard
+            let address = companionGatewayEndpoint?.preferredLANURL?.absoluteString
+        else {
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(address, forType: .string)
+    }
+
+    func refreshCompanionGatewayEndpoint() {
+        guard documentationDemoMode == nil else { return }
+        guard let endpoint = companionGatewayEndpoint else { return }
+        companionGatewayEndpoint = CompanionGatewayEndpoint(port: endpoint.port)
+    }
+
+    func restartCompanionGateway() {
+        companionGateway.stop()
+        startCompanionGateway()
     }
 
     @MainActor
@@ -2112,16 +2142,30 @@ final class MeetingController: ObservableObject {
     }
 
     private func startCompanionGateway() {
+        let attemptID = UUID()
+        companionGatewayAttemptID = attemptID
+        companionGatewayEndpoint = nil
+        companionGatewayError = nil
+        companionGatewayStatus = "Starting assistant server…"
         companionGateway.start(
-            onReady: { [weak self] in
+            onReady: { [weak self] endpoint in
                 DispatchQueue.main.async {
-                    self?.companionGatewayStatus =
-                        "Companion ready at \(CompanionGateway.url.absoluteString)"
+                    guard self?.companionGatewayAttemptID == attemptID else {
+                        return
+                    }
+                    self?.companionGatewayEndpoint = endpoint
+                    self?.companionGatewayError = nil
+                    self?.companionGatewayStatus = "Assistant server running"
                 }
             },
             onFailure: { [weak self] message in
                 DispatchQueue.main.async {
-                    self?.companionGatewayStatus = "Companion unavailable: \(message)"
+                    guard self?.companionGatewayAttemptID == attemptID else {
+                        return
+                    }
+                    self?.companionGatewayEndpoint = nil
+                    self?.companionGatewayError = message
+                    self?.companionGatewayStatus = "Assistant server unavailable"
                 }
             }
         )
