@@ -3,6 +3,56 @@ import XCTest
 @testable import PUnderclass
 
 final class LiveAssistantClientRetryTests: XCTestCase {
+    func testGenerateRepairsSpokenMetaCommentary() async throws {
+        let responses = LiveAssistantResponseQueue(
+            responses: [
+                try responseData(
+                    grounding: .generalKnowledge,
+                    citations: [],
+                    inputTokens: 110,
+                    outputTokens: 28,
+                    preamble: "I’d be careful not to invent a debugging story I can’t defend.",
+                    spokenCueContainsMetaCommentary: true
+                ),
+                try responseData(
+                    grounding: .generalKnowledge,
+                    citations: [],
+                    inputTokens: 125,
+                    outputTokens: 32
+                )
+            ]
+        )
+        let client = LiveAssistantClient { apiKey, body in
+            try await responses.load(apiKey: apiKey, body: body)
+        }
+
+        let generation = try await client.generate(
+            apiKey: "test-key",
+            references: nil,
+            recentTranscript: "",
+            currentPartial: "",
+            otherSpeakerText: "Walk me through a concrete debugging session where rendering was wrong and how you isolated it.",
+            purpose: .interview,
+            basedOnSequence: 41
+        )
+
+        XCTAssertEqual(generation.outcome, .repairedGrounding)
+        XCTAssertEqual(generation.usage.requestCount, 2)
+        XCTAssertEqual(
+            generation.suggestion?.preamble,
+            "I’d start with synchronized CPU and GPU frame timings."
+        )
+        let requests = await responses.recordedRequests()
+        XCTAssertEqual(requests.count, 2)
+        let retry = try requestParts(from: requests[1].body)
+        XCTAssertTrue(retry.userPrompt.contains("meta-commentary"))
+        XCTAssertTrue(
+            retry.userPrompt.contains(
+                "spokenCueContainsMetaCommentary must be false"
+            )
+        )
+    }
+
     func testGenerateCorrectsMismatchedGroundingInsteadOfDroppingAnswer() async throws {
         let responses = LiveAssistantResponseQueue(
             responses: [
@@ -170,13 +220,15 @@ final class LiveAssistantClientRetryTests: XCTestCase {
         grounding: CompanionSuggestionGrounding,
         citations: [[String: String]],
         inputTokens: Int,
-        outputTokens: Int
+        outputTokens: Int,
+        preamble: String = "I’d start with synchronized CPU and GPU frame timings.",
+        spokenCueContainsMetaCommentary: Bool = false
     ) throws -> Data {
         let output: [String: Any] = [
             "shouldShow": shouldShow,
             "grounding": grounding.rawValue,
             "question": "How would you distinguish a CPU bottleneck from a GPU bottleneck?",
-            "preamble": "I’d start with synchronized CPU and GPU frame timings.",
+            "preamble": preamble,
             "beats": [
                 [
                     "label": "CPU check",
@@ -188,7 +240,11 @@ final class LiveAssistantClientRetryTests: XCTestCase {
                 ]
             ],
             "citations": citations,
-            "confidence": "high"
+            "confidence": "high",
+            "usedExtrapolation": false,
+            "plausibleAssumptions": [],
+            "spokenCueContainsMetaCommentary":
+                spokenCueContainsMetaCommentary
         ]
         let outputData = try JSONSerialization.data(withJSONObject: output)
         let outputText = try XCTUnwrap(String(data: outputData, encoding: .utf8))

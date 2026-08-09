@@ -145,7 +145,8 @@ An `assistant.suggestion` payload is already a view model, for example:
 }
 ```
 
-When the session-scoped experimental switch is active, `assistant.bridge`
+When the remembered experimental switch is active for an interview,
+`assistant.bridge`
 publishes a smaller object before the full suggestion:
 
 ```json
@@ -175,6 +176,13 @@ report-like signposting and abstract noun stacks, but it does not add fake
 hesitation or filler to simulate speech. Recent candidate turns provide a style
 sample for sentence length and formality, with fillers, mistakes, and abandoned
 phrases explicitly excluded.
+For an unsupported past-incident request in Grounded mode, the spoken cue uses
+a worked `If` scenario rather than claiming that the event happened. It names a
+specific symptom, competing causes, controlled check, resulting change, and
+verification. The structured model output also reports whether the spoken cue
+contains answer-mode or grounding commentary. A positive report is rejected as
+invalid grounding and enters the existing one-retry correction path instead of
+being shown to the candidate.
 Plausible Rehearsal also requires a structured substance map: project anchor,
 observed signal, before-to-after mechanism change, discriminating check, and
 bounded outcome. All five must appear in the spoken preamble and three beats.
@@ -454,7 +462,8 @@ private rendering fixtures, including a profiling follow-up, Terra/low passed
 3/3 with 4.48/5 mean quality, 4.58 seconds median generation, and 4.71 seconds
 maximum generation. Its then-nine-dimension rubric was stricter than the earlier
 seven-dimension run, so the scores are not directly comparable. The current
-rubric adds plain spoken language as a tenth score. Both are small internal
+rubric adds plain spoken language and answer-mode usefulness for eleven scores
+in total. Both are small internal
 samples, not a universal model ranking.
 
 The experimental early lane has its own public, non-personal hosted eval. In

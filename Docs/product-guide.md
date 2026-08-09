@@ -79,8 +79,8 @@ first-person response outline when the other participant asks a clear question,
 makes a request, or raises a decision. It prefers local project facts and marks
 unsupported factual answers for verification rather than inventing commitments,
 metrics, deadlines, or status. **Answer Mirror** defaults to a grounded
-interview answer outline. Its explicitly confirmed, session-scoped **Plausible
-Rehearsal** mode may attach a draft to a relevant project and extrapolate a
+interview answer outline. Its explicitly confirmed **Plausible Rehearsal** mode
+may attach a draft to a relevant project and extrapolate a
 modest incident. Before writing, it maps that incident to one project, an
 observed signal, a before-to-after mechanism change, a discriminating check,
 and a bounded outcome. A follow-up preserves that story and adds the requested
@@ -89,8 +89,14 @@ the result as a rehearsal to verify, and the structured result carries the
 material assumptions separately. Extreme financial, popularity, and
 performance claims remain forbidden.
 
+When Grounded mode lacks support for a requested past incident, it still
+returns an immediately usable answer: a compact first-person conditional with
+a concrete symptom, likely cause, discriminating check, justified change, and
+verification. It does not lecture about source limits, invention, or what story
+the candidate should choose.
+
 Inside Plausible Rehearsal, **Early speaking bridge (experimental)** is a
-separate opt-in switch for the current interview. It does not wait for the 800
+separate opt-in switch. It does not wait for the 800
 ms end-of-speech pause. After a short 600 ms partial-transcript collection
 window, a Priority `gpt-5.6-luna` request can show one structural opening such
 as “I'd first check where the time is going, then narrow it down.” It
@@ -100,8 +106,8 @@ when the completed question still fits, its preamble repeats the bridge so the
 spoken answer continues naturally. An unclear fragment produces no bridge, and
 the host makes at most two early attempts per interviewer turn. This option can
 therefore add model calls and Priority-processing cost, and the UI labels its
-output as partial and experimental. Like Plausible Rehearsal itself, it resets
-when the interview ends.
+output as partial and experimental. Both preferences remain enabled across
+interviews and app relaunches until the user explicitly turns them off.
 
 Both behaviors give the same Responses API call access to OpenAI's hosted web
 search when current or public facts would materially improve a cue. Search is

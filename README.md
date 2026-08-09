@@ -116,7 +116,7 @@ OPENAI_API_KEY="..." RUN_ASSISTANT_QUALITY_EVALS=1 \
 The eval generates real cues and uses a structured model judge for directness,
 spoken naturalness, plain spoken language, specificity, causal usefulness,
 grounding safety, mechanistic depth, verification rigor, plausibility safety,
-and concise usability. Set
+answer-mode usefulness, and concise usability. Set
 `ANSWER_MIRROR_EVAL_JUDGE_MODEL` to use a different available judge model. The
 eval makes hosted API requests and may incur usage charges. To iterate on one
 fixture, also set `ANSWER_MIRROR_EVAL_CASE` to its printed case name.

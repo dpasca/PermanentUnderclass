@@ -2082,6 +2082,52 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
+    func testAssistantPreferencesPersistUntilExplicitlyChanged() throws {
+        let defaults = try scratchDefaults()
+
+        XCTAssertEqual(
+            MeetingController.storedAssistantAnswerMode(defaults: defaults),
+            .grounded
+        )
+        XCTAssertFalse(
+            MeetingController.storedAssistantEarlyBridgeEnabled(
+                defaults: defaults
+            )
+        )
+
+        MeetingController.storeAssistantPreferences(
+            answerMode: .plausibleRehearsal,
+            earlyBridgeEnabled: true,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            MeetingController.storedAssistantAnswerMode(defaults: defaults),
+            .plausibleRehearsal
+        )
+        XCTAssertTrue(
+            MeetingController.storedAssistantEarlyBridgeEnabled(
+                defaults: defaults
+            )
+        )
+
+        MeetingController.storeAssistantPreferences(
+            answerMode: .grounded,
+            earlyBridgeEnabled: true,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            MeetingController.storedAssistantAnswerMode(defaults: defaults),
+            .grounded
+        )
+        XCTAssertFalse(
+            MeetingController.storedAssistantEarlyBridgeEnabled(
+                defaults: defaults
+            )
+        )
+    }
+
     func testLegacyLocalOnlyModeNeverOverridesANewerChoice() throws {
         let defaults = try scratchDefaults()
         defaults.set(true, forKey: MeetingController.legacyLocalOnlyModeDefaultsKey)

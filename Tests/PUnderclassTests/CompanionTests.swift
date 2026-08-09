@@ -945,6 +945,9 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(beats["maxItems"] as? Int, 3)
         XCTAssertNotNil(properties["usedExtrapolation"])
         XCTAssertNotNil(properties["plausibleAssumptions"])
+        XCTAssertNotNil(properties["spokenCueContainsMetaCommentary"])
+        let required = try XCTUnwrap(schema["required"] as? [String])
+        XCTAssertTrue(required.contains("spokenCueContainsMetaCommentary"))
 
         let highReasoningData = try LiveAssistantClient.requestBody(
             for: plan,
@@ -1054,6 +1057,7 @@ final class CompanionTests: XCTestCase {
             meetingSchema["properties"] as? [String: Any]
         )
         XCTAssertNil(meetingProperties["preamble"])
+        XCTAssertNil(meetingProperties["spokenCueContainsMetaCommentary"])
         let meetingBeats = try XCTUnwrap(
             meetingProperties["beats"] as? [String: Any]
         )

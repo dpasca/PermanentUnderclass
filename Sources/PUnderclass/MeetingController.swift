@@ -129,6 +129,10 @@ final class MeetingController: ObservableObject {
         "PUnderclass.PrivacyLock"
     static let refinementEngineDefaultsKey =
         "PUnderclass.RefinementEngine"
+    static let assistantAnswerModeDefaultsKey =
+        "PUnderclass.AssistantAnswerMode"
+    static let assistantEarlyBridgeDefaultsKey =
+        "PUnderclass.AssistantEarlyBridgeEnabled"
     /// Renamed when local-only stopped being the primary gate and became a
     /// privacy override.
     static let legacyLocalOnlyModeDefaultsKey =
@@ -186,6 +190,9 @@ final class MeetingController: ObservableObject {
         {
             refinementEngine = engine
         }
+        assistantAnswerMode = Self.storedAssistantAnswerMode()
+        assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
+            && Self.storedAssistantEarlyBridgeEnabled()
         // A cloud choice left over from before the key was removed must not
         // break dictation on the next launch.
         refinementEngine = capability.resolvedEngine(preferring: refinementEngine)
@@ -708,8 +715,6 @@ final class MeetingController: ObservableObject {
             } else {
                 self?.statusMessage = "Stopped"
             }
-            self?.assistantAnswerMode = .grounded
-            self?.assistantEarlyBridgeEnabled = false
             self?.publishCompanionSession()
         }
     }
@@ -766,6 +771,62 @@ final class MeetingController: ObservableObject {
         defaults.set(
             defaults.bool(forKey: legacyLocalOnlyModeDefaultsKey),
             forKey: privacyLockDefaultsKey
+        )
+    }
+
+    static func storedAssistantAnswerMode(
+        defaults: UserDefaults = .standard
+    ) -> AssistantAnswerMode {
+        guard
+            let rawValue = defaults.string(
+                forKey: assistantAnswerModeDefaultsKey
+            ),
+            let mode = AssistantAnswerMode(rawValue: rawValue)
+        else {
+            return .grounded
+        }
+        return mode
+    }
+
+    static func storedAssistantEarlyBridgeEnabled(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        defaults.object(forKey: assistantEarlyBridgeDefaultsKey) as? Bool
+            ?? false
+    }
+
+    static func storeAssistantPreferences(
+        answerMode: AssistantAnswerMode,
+        earlyBridgeEnabled: Bool,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            answerMode.rawValue,
+            forKey: assistantAnswerModeDefaultsKey
+        )
+        defaults.set(
+            answerMode == .plausibleRehearsal && earlyBridgeEnabled,
+            forKey: assistantEarlyBridgeDefaultsKey
+        )
+    }
+
+    func setAssistantAnswerModePreference(_ mode: AssistantAnswerMode) {
+        assistantAnswerMode = mode
+        if mode == .grounded {
+            assistantEarlyBridgeEnabled = false
+        }
+        Self.storeAssistantPreferences(
+            answerMode: assistantAnswerMode,
+            earlyBridgeEnabled: assistantEarlyBridgeEnabled
+        )
+    }
+
+    func setAssistantEarlyBridgePreference(_ enabled: Bool) {
+        assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
+            && enabled
+        Self.storeAssistantPreferences(
+            answerMode: assistantAnswerMode,
+            earlyBridgeEnabled: assistantEarlyBridgeEnabled
         )
     }
 
@@ -1672,8 +1733,6 @@ final class MeetingController: ObservableObject {
         syntheticInterviewState.title = title
         syntheticInterviewState.detail = detail
         statusMessage = title
-        assistantAnswerMode = .grounded
-        assistantEarlyBridgeEnabled = false
         publishCompanionSession()
     }
 
@@ -3436,8 +3495,6 @@ final class MeetingController: ObservableObject {
         activeSessionID = nil
         activeAssistantAnswerMode = .grounded
         activeAssistantEarlyBridgeEnabled = false
-        assistantAnswerMode = .grounded
-        assistantEarlyBridgeEnabled = false
         isListening = false
         capturePurpose = nil
         localTrack.socket = .idle

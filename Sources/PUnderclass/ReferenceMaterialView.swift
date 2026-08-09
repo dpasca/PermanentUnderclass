@@ -36,13 +36,15 @@ struct ReferenceMaterialView: View {
             "Enable Plausible Rehearsal?",
             isPresented: $showsPlausibleRehearsalConfirmation
         ) {
-            Button("Enable for One Interview", role: .destructive) {
-                controller.assistantAnswerMode = .plausibleRehearsal
+            Button("Enable Until Turned Off", role: .destructive) {
+                controller.setAssistantAnswerModePreference(
+                    .plausibleRehearsal
+                )
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The assistant display will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts."
+                "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The assistant display will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts. This choice stays enabled for future interviews until you switch back to Grounded."
             )
         }
     }
@@ -191,7 +193,7 @@ struct ReferenceMaterialView: View {
                     Divider()
 
                     Toggle(
-                        isOn: $controller.assistantEarlyBridgeEnabled
+                        isOn: earlyBridgeBinding
                     ) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Early speaking bridge (experimental)")
@@ -213,8 +215,8 @@ struct ReferenceMaterialView: View {
 
                 Text(
                     controller.assistantAnswerMode == .plausibleRehearsal
-                        ? "The assistant may choose a relevant project, infer a modest bottleneck, action, validation, and outcome, and disclose those assumptions to the display. Extreme financial, popularity, and performance claims remain forbidden. This resets to Grounded when the interview ends."
-                        : "Past-experience claims must come from the transcript or indexed references. When evidence is missing, the assistant stays hypothetical instead of inventing history."
+                        ? "The assistant may choose a relevant project, infer a modest bottleneck, action, validation, and outcome, and disclose those assumptions to the display. Extreme financial, popularity, and performance claims remain forbidden. This stays enabled until you switch back to Grounded."
+                        : "Past-experience claims must come from the transcript or indexed references. When evidence is missing, the assistant gives a concrete first-person approach without claiming that it already happened."
                 )
                 .font(.body)
                 .foregroundStyle(.secondary)
@@ -602,10 +604,16 @@ struct ReferenceMaterialView: View {
                 if mode == .plausibleRehearsal {
                     showsPlausibleRehearsalConfirmation = true
                 } else {
-                    controller.assistantAnswerMode = .grounded
-                    controller.assistantEarlyBridgeEnabled = false
+                    controller.setAssistantAnswerModePreference(.grounded)
                 }
             }
+        )
+    }
+
+    private var earlyBridgeBinding: Binding<Bool> {
+        Binding(
+            get: { controller.assistantEarlyBridgeEnabled },
+            set: { controller.setAssistantEarlyBridgePreference($0) }
         )
     }
 

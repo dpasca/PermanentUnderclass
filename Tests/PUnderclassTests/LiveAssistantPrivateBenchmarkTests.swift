@@ -134,6 +134,8 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                                     assessment.groundingSafety,
                                 plausibilitySafety:
                                     assessment.plausibilitySafety,
+                                answerModeUsefulness:
+                                    assessment.answerModeUsefulness,
                                 conciseUsability:
                                     assessment.conciseUsability,
                                 grounding: suggestion.grounding.rawValue,
@@ -300,6 +302,7 @@ private struct PrivateBenchmarkResult: Encodable {
     let verificationRigor: Int
     let groundingSafety: Int
     let plausibilitySafety: Int
+    let answerModeUsefulness: Int
     let conciseUsability: Int
     let grounding: String
     let answerMode: String
