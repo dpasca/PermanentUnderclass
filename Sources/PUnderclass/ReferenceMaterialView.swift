@@ -42,7 +42,7 @@ struct ReferenceMaterialView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The iPad will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts."
+                "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The assistant display will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts."
             )
         }
     }

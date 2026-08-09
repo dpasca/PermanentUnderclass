@@ -81,9 +81,9 @@ unsupported factual answers for verification rather than inventing commitments,
 metrics, deadlines, or status. **Answer Mirror** defaults to a grounded
 interview answer outline. Its explicitly confirmed, session-scoped **Plausible
 Rehearsal** mode may attach a draft to a relevant project and extrapolate a
-modest bottleneck, action, validation step, and outcome. The Mac and iPad mark
-the result as a rehearsal to verify, and the structured result carries the
-material assumptions separately. Extreme financial, popularity, and
+modest bottleneck, action, validation step, and outcome. The preparation UI and
+assistant display mark the result as a rehearsal to verify, and the structured
+result carries the material assumptions separately. Extreme financial, popularity, and
 performance claims remain forbidden.
 
 Both behaviors give the same Responses API call access to OpenAI's hosted web
