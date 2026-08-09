@@ -16,6 +16,7 @@ struct ContentView: View {
     /// Dictation leads: it is the part that works with no account, no key, and
     /// no configuration.
     @State private var selectedTab: AppTab = .quickDictation
+    @State private var expandedTranscriptPurpose: CapturePurpose?
 
     init(
         controller: MeetingController,
@@ -91,66 +92,91 @@ struct ContentView: View {
     }
 
     private func captureTab(for purpose: CapturePurpose) -> some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                VStack(spacing: 12) {
-                    captureControlPanel(for: purpose)
-                    audioRoutePanel(for: purpose)
+        let isTranscriptExpanded = expandedTranscriptPurpose == purpose
+
+        return VStack(spacing: 0) {
+            if !isTranscriptExpanded {
+                ScrollView {
+                    captureWidgets(for: purpose)
+                        .padding(16)
                 }
+
+                Divider()
+            }
+
+            transcriptPanel(
+                for: purpose,
+                isExpanded: isTranscriptExpanded
+            ) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedTranscriptPurpose = isTranscriptExpanded
+                        ? nil
+                        : purpose
+                }
+            }
+            .frame(
+                minHeight: isTranscriptExpanded ? 0 : 240,
+                maxHeight: isTranscriptExpanded ? .infinity : 240
+            )
+            .padding(16)
+        }
+    }
+
+    private func captureWidgets(for purpose: CapturePurpose) -> some View {
+        VStack(spacing: 12) {
+            VStack(spacing: 12) {
+                captureControlPanel(for: purpose)
+                audioRoutePanel(for: purpose)
+            }
+            .locked(
+                liveFeature(for: purpose),
+                access: controller.access(to: liveFeature(for: purpose)),
+                onResolve: showSettings
+            )
+
+            preparationAccessPanel(for: purpose)
+
+            generatedReplayPanel(for: purpose)
                 .locked(
-                    liveFeature(for: purpose),
-                    access: controller.access(to: liveFeature(for: purpose)),
+                    replayFeature(for: purpose),
+                    access: controller.access(to: replayFeature(for: purpose)),
                     onResolve: showSettings
                 )
 
-                preparationAccessPanel(for: purpose)
-
-                generatedReplayPanel(for: purpose)
-                    .locked(
-                        replayFeature(for: purpose),
-                        access: controller.access(to: replayFeature(for: purpose)),
-                        onResolve: showSettings
-                    )
-
-                if let error = controller.errorMessage {
-                    errorBanner(error)
-                }
-
-                TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    HStack(spacing: 16) {
-                        TrackCard(
-                            title: "MICROPHONE INPUT",
-                            systemImage: "mic.fill",
-                            subtitle: controller.microphoneName,
-                            color: .blue,
-                            state: controller.localTrack(for: purpose),
-                            health: controller.captureMicrophoneHealth(
-                                for: purpose,
-                                at: timeline.date
-                            )
-                        )
-                        TrackCard(
-                            title: purpose == .meeting
-                                ? "MEETING AUDIO"
-                                : "INTERVIEWER AUDIO",
-                            systemImage: controller.selectedProcessID == nil
-                                ? "speaker.wave.2.fill"
-                                : "macwindow.on.rectangle",
-                            subtitle: selectedSystemAudioName,
-                            color: .purple,
-                            state: controller.remoteTrack(for: purpose),
-                            health: controller.captureSystemAudioHealth(
-                                for: purpose,
-                                at: timeline.date
-                            )
-                        )
-                    }
-                }
-
-                transcriptPanel(for: purpose)
-                    .frame(minHeight: 180)
+            if let error = controller.errorMessage {
+                errorBanner(error)
             }
-            .padding(16)
+
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                HStack(spacing: 16) {
+                    TrackCard(
+                        title: "MICROPHONE INPUT",
+                        systemImage: "mic.fill",
+                        subtitle: controller.microphoneName,
+                        color: .blue,
+                        state: controller.localTrack(for: purpose),
+                        health: controller.captureMicrophoneHealth(
+                            for: purpose,
+                            at: timeline.date
+                        )
+                    )
+                    TrackCard(
+                        title: purpose == .meeting
+                            ? "MEETING AUDIO"
+                            : "INTERVIEWER AUDIO",
+                        systemImage: controller.selectedProcessID == nil
+                            ? "speaker.wave.2.fill"
+                            : "macwindow.on.rectangle",
+                        subtitle: selectedSystemAudioName,
+                        color: .purple,
+                        state: controller.remoteTrack(for: purpose),
+                        health: controller.captureSystemAudioHealth(
+                            for: purpose,
+                            at: timeline.date
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -819,15 +845,31 @@ struct ContentView: View {
     }
 
     private func transcriptPanel(
-        for purpose: CapturePurpose
+        for purpose: CapturePurpose,
+        isExpanded: Bool,
+        toggleExpansion: @escaping () -> Void
     ) -> some View {
         let turns = controller.transcript(for: purpose)
+        let newestTurnID = turns.last?.id
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("\(purpose.title) transcript", systemImage: "text.bubble")
                     .font(.headline)
                 Spacer()
+                Button(action: toggleExpansion) {
+                    Label(
+                        isExpanded ? "Show controls" : "Expand",
+                        systemImage: isExpanded
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right"
+                    )
+                }
+                .help(
+                    isExpanded
+                        ? "Restore the \(purpose.title.lowercased()) controls"
+                        : "Expand the transcript over the \(purpose.title.lowercased()) controls"
+                )
                 Button("Copy") { controller.copyTranscript(for: purpose) }
                     .disabled(turns.isEmpty)
                 Button("Export…") { controller.exportTranscript(for: purpose) }
@@ -836,25 +878,34 @@ struct ContentView: View {
                     .disabled(turns.isEmpty)
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if turns.isEmpty {
-                        ContentUnavailableView(
-                            "No \(purpose.title.lowercased()) transcript yet",
-                            systemImage: "waveform",
-                            description: Text(
-                                "Finalized \(purpose.title.lowercased()) turns appear here in chronological order."
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if turns.isEmpty {
+                            ContentUnavailableView(
+                                "No \(purpose.title.lowercased()) transcript yet",
+                                systemImage: "waveform",
+                                description: Text(
+                                    "New \(purpose.title.lowercased()) turns appear at the top."
+                                )
                             )
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 150)
-                    } else {
-                        ForEach(turns) { turn in
-                            TranscriptRow(turn: turn)
+                            .frame(maxWidth: .infinity, minHeight: 150)
+                        } else {
+                            ForEach(turns.reversed()) { turn in
+                                TranscriptRow(turn: turn)
+                                    .id(turn.id)
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
+                .onChange(of: newestTurnID) { _, newID in
+                    guard let newID else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        scrollProxy.scrollTo(newID, anchor: .top)
+                    }
+                }
             }
             .background(.background, in: RoundedRectangle(cornerRadius: 10))
             .overlay {
@@ -863,6 +914,12 @@ struct ContentView: View {
             }
         }
         .frame(maxHeight: .infinity)
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.separator.opacity(0.6), lineWidth: 1)
+        }
     }
 
     private func referenceSummary(
