@@ -161,10 +161,14 @@ button:focus-visible {
 }
 
 .listening-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: clamp(24px, 4vw, 64px);
+  align-items: end;
   margin-bottom: clamp(28px, 4.5vh, 52px);
 }
 
-.listening-strip > span:nth-child(2) {
+.topic-copy {
   display: grid;
   gap: 8px;
 }
@@ -179,10 +183,52 @@ button:focus-visible {
 .listening-strip strong {
   max-width: 58ch;
   color: var(--muted);
-  font-size: clamp(18px, 1.85vw, 28px);
+  font-size: clamp(24px, 2.45vw, 38px);
   font-weight: 500;
-  letter-spacing: 0;
-  line-height: 1.42;
+  letter-spacing: -.01em;
+  line-height: 1.32;
+}
+
+.topic-context {
+  display: grid;
+  grid-auto-flow: column;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.topic-stat {
+  display: grid;
+  min-width: clamp(82px, 7vw, 106px);
+  gap: 5px;
+  padding: 11px 14px 12px;
+}
+
+.topic-stat + .topic-stat {
+  border-left: 1px solid rgba(255, 255, 255, .08);
+}
+
+.topic-context .topic-stat small {
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: .15em;
+}
+
+.topic-context .topic-stat strong {
+  color: var(--ink);
+  font: 600 clamp(20px, 1.8vw, 27px)/1.05 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.035em;
+}
+
+.listening-strip.is-updating .topic-context {
+  border-color: rgba(242, 189, 113, .22);
+}
+
+.listening-strip.is-updating #topicEyebrow {
+  color: var(--amber);
 }
 
 .answer-card {
@@ -579,6 +625,16 @@ kbd {
   .teleprompter {
     padding-right: 24px;
     padding-left: 24px;
+  }
+
+  .listening-strip {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .topic-context {
+    grid-auto-flow: column;
+    justify-self: start;
   }
 
   .answer-beats span {

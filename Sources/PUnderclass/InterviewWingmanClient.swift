@@ -326,7 +326,8 @@ struct LiveAssistantClient: Sendable {
             grounding: output.grounding,
             confidence: output.confidence,
             generatedAt: Date(),
-            generationMilliseconds: generationMilliseconds
+            generationMilliseconds: generationMilliseconds,
+            topicNumber: nil
         )
         return LiveAssistantGeneration(
             suggestion: suggestion,

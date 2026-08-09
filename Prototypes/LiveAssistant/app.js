@@ -121,6 +121,9 @@ const state = {
   mockGeneration: 0,
   mockHistory: [],
   renderedSuggestionID: null,
+  fallbackTopicNumbers: new Map(),
+  nextFallbackTopicNumber: 0,
+  topicStartedAtBySuggestionID: new Map(),
   mockElapsedSeconds: 24 * 60 + 18
 };
 
@@ -153,6 +156,17 @@ function formatTime(dateValue) {
     minute: "2-digit",
     second: "2-digit"
   }).format(date);
+}
+
+function formatElapsedClock(totalSeconds) {
+  const elapsed = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = String(elapsed % 60).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`;
+  }
+  return `${minutes}:${seconds}`;
 }
 
 function triggerLabel(trigger) {
@@ -550,6 +564,54 @@ function answerHistoryFor(assistant) {
   return unique.slice(0, 4);
 }
 
+function fallbackTopicNumber(suggestion, suggestions) {
+  [...suggestions].reverse().forEach((item) => {
+    if (!item?.id || state.fallbackTopicNumbers.has(item.id)) return;
+    state.nextFallbackTopicNumber += 1;
+    state.fallbackTopicNumbers.set(item.id, state.nextFallbackTopicNumber);
+  });
+  if (!state.fallbackTopicNumbers.has(suggestion.id)) {
+    state.nextFallbackTopicNumber += 1;
+    state.fallbackTopicNumbers.set(suggestion.id, state.nextFallbackTopicNumber);
+  }
+  return state.fallbackTopicNumbers.get(suggestion.id);
+}
+
+function renderTopicContext(suggestion, suggestions) {
+  const context = $("#topicContext");
+  context.hidden = !suggestion;
+  if (!suggestion) return;
+
+  const suppliedTopicNumber = Number(suggestion.topicNumber);
+  const topicNumber = Number.isInteger(suppliedTopicNumber) && suppliedTopicNumber > 0
+    ? suppliedTopicNumber
+    : fallbackTopicNumber(suggestion, suggestions);
+  $("#topicNumber").textContent = topicNumber.toLocaleString();
+
+  if (!state.topicStartedAtBySuggestionID.has(suggestion.id)) {
+    const generatedAt = new Date(suggestion.generatedAt).getTime();
+    state.topicStartedAtBySuggestionID.set(
+      suggestion.id,
+      Number.isFinite(generatedAt) ? generatedAt : Date.now()
+    );
+  }
+  updateTopicElapsedTime();
+}
+
+function updateTopicElapsedTime() {
+  const suggestion = state.currentSuggestion;
+  if (!suggestion) return;
+  const startedAt = state.topicStartedAtBySuggestionID.get(suggestion.id);
+  if (!Number.isFinite(startedAt)) return;
+  const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const topicNumber = $("#topicNumber").textContent;
+  $("#topicElapsed").textContent = formatElapsedClock(elapsed);
+  $("#topicContext").setAttribute(
+    "aria-label",
+    `Topic ${topicNumber}, elapsed ${formatDuration(elapsed)}`
+  );
+}
+
 function replaceAnswerBeats(container, beats) {
   container.replaceChildren();
   (beats || []).forEach((beat) => {
@@ -665,6 +727,7 @@ function renderSuggestionStack(assistant) {
   const current = assistant?.suggestion || suggestions[0] || null;
   state.visibleSuggestions = suggestions;
   state.currentSuggestion = current;
+  renderTopicContext(current, suggestions);
   $("#answerStack").hidden = !current;
   if (!current) {
     $("#answerHistory").hidden = true;
@@ -720,9 +783,16 @@ function renderSuggestionStack(assistant) {
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
   renderInferenceStatus();
   const empty = $("#pausedState");
+  const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
   const suggestion = renderSuggestionStack(assistant);
-  $("#listeningStrip").hidden = true;
+  listeningStrip.hidden = !suggestion;
+  listeningStrip.classList.remove("is-updating");
+  $("#topicEyebrow").textContent = "CURRENT TOPIC";
+  if (suggestion) {
+    $("#questionText").textContent = suggestion.question;
+    $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
+  }
 
   if (paused) {
     empty.hidden = Boolean(suggestion);
@@ -735,8 +805,14 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   }
 
   if (assistant?.phase === "working") {
-    $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = `Drafting shorthand beats from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
+    listeningStrip.hidden = false;
+    listeningStrip.classList.add("is-updating");
+    if (suggestion) {
+      $("#topicEyebrow").textContent = "CURRENT TOPIC · NEXT CUE DRAFTING";
+    } else {
+      $("#topicEyebrow").textContent = "NEXT TOPIC";
+      $("#questionText").textContent = `Drafting shorthand beats from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
+    }
     empty.hidden = true;
     $("#assistantState").textContent = "Drafting an answer outline";
     return;
@@ -782,13 +858,17 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
 
   empty.hidden = true;
   if (assistant?.phase === "ready") {
-    $("#listeningStrip").hidden = false;
-    $("#questionText").textContent = suggestion.question;
-    $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
+    listeningStrip.hidden = false;
   }
 }
 
 function renderSnapshot(snapshot) {
+  if (state.snapshot?.streamId !== snapshot.streamId) {
+    state.renderedSuggestionID = null;
+    state.fallbackTopicNumbers.clear();
+    state.nextFallbackTopicNumber = 0;
+    state.topicStartedAtBySuggestionID.clear();
+  }
   state.snapshot = snapshot;
   state.cursor = { streamId: snapshot.streamId, sequence: snapshot.watermark };
   renderSession(snapshot.session);
@@ -1015,7 +1095,8 @@ function renderMockScenario(index) {
     generatedAt: new Date().toISOString(),
     generationMilliseconds: scenario.generationMilliseconds || 640,
     trigger: "partialTranscript",
-    totalLatencyMilliseconds: scenario.totalLatencyMilliseconds || 1_440
+    totalLatencyMilliseconds: scenario.totalLatencyMilliseconds || 1_440,
+    topicNumber: state.mockGeneration
   };
   state.mockHistory = [suggestion, ...state.mockHistory].slice(0, 4);
   $("#transcriptQuestion").textContent = scenario.question.replaceAll("“", "").replaceAll("”", "");
@@ -1237,6 +1318,7 @@ function updateElapsedTime() {
   const minutes = Math.floor(elapsed / 60);
   const seconds = String(elapsed % 60).padStart(2, "0");
   $("#elapsedTime").textContent = `${minutes}:${seconds}`;
+  updateTopicElapsedTime();
 }
 
 async function initialize() {

@@ -19,8 +19,9 @@ sends complete suggestion data;
 source files, prompts, audio, and credentials do not cross into the display
 client. The display reduces that data to a connection light and a stack of
 conversation rounds. The current question and its first-person cues stay large
-at the top; up to three earlier questions and their cues remain below at a
-smaller, quieter scale so a back-and-forth remains easy to follow. Each new
+at the top, with a stable topic number and an elapsed timer based on when that
+cue was generated. Up to three earlier questions and their cues remain below at
+a smaller, quieter scale so a back-and-forth remains easy to follow. Each new
 suggestion resets the teleprompter to the new current round, even if the
 previous cue had been scrolled.
 

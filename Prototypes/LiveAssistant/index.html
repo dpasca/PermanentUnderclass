@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#080a09">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23080a09'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%236fe69b'/%3E%3C/svg%3E">
   <title>PermanentUnderclass Teleprompter</title>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
   <button class="connection-chip is-reconnecting" id="connectionButton" type="button" aria-expanded="false">
@@ -30,10 +30,20 @@
 
     <div class="listening-strip" id="listeningStrip">
       <span class="wave-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <span>
-        <small>CURRENT TOPIC</small>
+      <span class="topic-copy">
+        <small id="topicEyebrow">CURRENT TOPIC</small>
         <strong id="questionText">Tell me about a time you improved the performance of a critical system.</strong>
       </span>
+      <div class="topic-context" id="topicContext" aria-label="Topic 1, elapsed 0 seconds">
+        <span class="topic-stat">
+          <small>TOPIC</small>
+          <strong id="topicNumber">1</strong>
+        </span>
+        <span class="topic-stat">
+          <small>ELAPSED</small>
+          <strong id="topicElapsed" role="timer">0:00</strong>
+        </span>
+      </div>
       <span class="confidence" id="confidenceLabel"><i></i> high confidence</span>
     </div>
 
@@ -152,6 +162,6 @@
     </dialog>
   </section>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

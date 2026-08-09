@@ -124,6 +124,7 @@ An `assistant.suggestion` payload is already a view model, for example:
 {
   "id": "sg_01J...",
   "basedOnSequence": 2487,
+  "topicNumber": 3,
   "question": "Tell me about a time you improved a critical system.",
   "beats": [
     {"label": "Context", "point": "I inherited a checkout path whose latency was hurting conversion."},
@@ -133,6 +134,7 @@ An `assistant.suggestion` payload is already a view model, for example:
   "citations": [{"label": "Checkout latency", "path": "Projects/Checkout.md"}],
   "grounding": "localReferences",
   "confidence": "high",
+  "generatedAt": "2026-08-09T07:40:00Z",
   "generationMilliseconds": 640,
   "trigger": "partialTranscript",
   "totalLatencyMilliseconds": 1440
@@ -144,7 +146,8 @@ structure; the teleprompter displays only the self-contained speaking cues.
 `assistant.suggestionHistory`
 in the atomic snapshot retains the newest four outlines in newest-first order.
 The focused display uses that history as a typographic round stack: the current
-question and cues are primary, while up to three distinct earlier questions and
+question, its session-stable `topicNumber`, and an elapsed timer derived from
+`generatedAt` are primary, while up to three distinct earlier questions and
 their cues remain below at a smaller scale. It may also copy, pin, or dismiss
 these objects, but it does not
 receive retrieved chunks and does not run a second interpretation step.

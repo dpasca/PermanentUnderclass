@@ -177,20 +177,32 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(snapshot.assistant.lastEvaluationLatencyMilliseconds, 1_700)
     }
 
-    func testAssistantKeepsNewestFourAnswersAndDismissRevealsPrevious() async {
+    func testAssistantKeepsNewestFourAnswersAndDismissRevealsPrevious() async throws {
         let hub = CompanionEventHub(streamID: "test-stream")
+        var lastEvent: CompanionEvent?
         for index in 1...5 {
-            _ = await hub.assistantSuggested(
+            lastEvent = await hub.assistantSuggested(
                 answerSuggestion(id: "answer-\(index)", sequence: index)
             )
         }
 
         var snapshot = await hub.snapshot()
         XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-5")
+        XCTAssertEqual(snapshot.assistant.suggestion?.topicNumber, 5)
         XCTAssertEqual(
             snapshot.assistant.suggestionHistory.map(\.id),
             ["answer-5", "answer-4", "answer-3", "answer-2"]
         )
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.topicNumber),
+            [5, 4, 3, 2]
+        )
+        let event = try XCTUnwrap(lastEvent)
+        let publishedSuggestion = try CompanionJSON.decoder().decode(
+            CompanionAssistantSuggestion.self,
+            from: CompanionJSON.encoder().encode(event.payload)
+        )
+        XCTAssertEqual(publishedSuggestion.topicNumber, 5)
 
         _ = await hub.assistantFinishedWithoutSuggestion(basedOnSequence: 6)
         snapshot = await hub.snapshot()
@@ -206,10 +218,18 @@ final class CompanionTests: XCTestCase {
         )
         snapshot = await hub.snapshot()
         XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-4")
+        XCTAssertEqual(snapshot.assistant.suggestion?.topicNumber, 4)
         XCTAssertEqual(
             snapshot.assistant.suggestionHistory.map(\.id),
             ["answer-4", "answer-3", "answer-2"]
         )
+
+        _ = await hub.clearTranscript()
+        _ = await hub.assistantSuggested(
+            answerSuggestion(id: "answer-new-session", sequence: 7)
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.suggestion?.topicNumber, 1)
     }
 
     func testAssistantEvaluationPolicyStartsStablePartialsBeforeFinalTurns() {
@@ -942,7 +962,8 @@ final class CompanionTests: XCTestCase {
             generationMilliseconds: 250,
             trigger: .partialTranscript,
             triggeredAt: Date(timeIntervalSince1970: Double(sequence)),
-            totalLatencyMilliseconds: 1_050
+            totalLatencyMilliseconds: 1_050,
+            topicNumber: nil
         )
     }
 

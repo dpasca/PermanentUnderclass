@@ -198,6 +198,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var trigger: CompanionAssistantTrigger?
     var triggeredAt: Date?
     var totalLatencyMilliseconds: Int?
+    var topicNumber: Int?
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -319,6 +320,7 @@ actor CompanionEventHub {
     private var subscribers: [UUID: AsyncStream<CompanionStreamItem>.Continuation] = [:]
     private var commandResults: [String: CompanionCommandResponse] = [:]
     private var commandResultOrder: [String] = []
+    private var topicCount = 0
     private var state: CompanionSnapshot
 
     init(
@@ -427,6 +429,7 @@ actor CompanionEventHub {
         state.transcript = CompanionTranscriptState()
         let event = publish(name: "transcript.cleared", payload: state.transcript)
         state.assistant = CompanionAssistantState()
+        topicCount = 0
         _ = publish(name: "assistant.state", payload: state.assistant)
         return event
     }
@@ -469,12 +472,21 @@ actor CompanionEventHub {
 
     @discardableResult
     func assistantSuggested(_ suggestion: CompanionAssistantSuggestion) -> CompanionEvent {
-        state.assistant.phase = .ready
-        state.assistant.suggestion = suggestion
-        state.assistant.suggestionHistory.removeAll {
-            $0.id == suggestion.id
+        var numberedSuggestion = suggestion
+        if let existingTopicNumber = state.assistant.suggestionHistory
+            .first(where: { $0.id == suggestion.id })?.topicNumber
+        {
+            numberedSuggestion.topicNumber = existingTopicNumber
+        } else {
+            topicCount += 1
+            numberedSuggestion.topicNumber = topicCount
         }
-        state.assistant.suggestionHistory.insert(suggestion, at: 0)
+        state.assistant.phase = .ready
+        state.assistant.suggestion = numberedSuggestion
+        state.assistant.suggestionHistory.removeAll {
+            $0.id == numberedSuggestion.id
+        }
+        state.assistant.suggestionHistory.insert(numberedSuggestion, at: 0)
         if state.assistant.suggestionHistory.count
             > Self.suggestionHistoryLimit
         {
@@ -488,13 +500,13 @@ actor CompanionEventHub {
         state.assistant.evaluatingTrigger = nil
         state.assistant.evaluationTriggeredAt = nil
         state.assistant.evaluationStartedAt = nil
-        state.assistant.lastEvaluatedSequence = suggestion.basedOnSequence
-        state.assistant.lastEvaluationAt = suggestion.generatedAt
+        state.assistant.lastEvaluatedSequence = numberedSuggestion.basedOnSequence
+        state.assistant.lastEvaluationAt = numberedSuggestion.generatedAt
         state.assistant.lastEvaluationOutcome = .suggestion
-        state.assistant.lastEvaluationTrigger = suggestion.trigger
+        state.assistant.lastEvaluationTrigger = numberedSuggestion.trigger
         state.assistant.lastEvaluationLatencyMilliseconds =
-            suggestion.totalLatencyMilliseconds
-        return publish(name: "assistant.suggestion", payload: suggestion)
+            numberedSuggestion.totalLatencyMilliseconds
+        return publish(name: "assistant.suggestion", payload: numberedSuggestion)
     }
 
     @discardableResult
