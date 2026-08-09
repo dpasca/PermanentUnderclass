@@ -232,6 +232,45 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(snapshot.assistant.suggestion?.topicNumber, 1)
     }
 
+    func testAssistantKeepsEarlierCueWhenFinalTurnRevisesSameTopic() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        _ = await hub.assistantSuggested(
+            answerSuggestion(
+                id: "answer-partial",
+                sequence: 1,
+                topicID: "other-turn-1"
+            )
+        )
+        _ = await hub.assistantSuggested(
+            answerSuggestion(
+                id: "answer-final",
+                sequence: 2,
+                topicID: "other-turn-1"
+            )
+        )
+        _ = await hub.assistantSuggested(
+            answerSuggestion(
+                id: "answer-next-topic",
+                sequence: 3,
+                topicID: "other-turn-2"
+            )
+        )
+
+        let snapshot = await hub.snapshot()
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.id),
+            ["answer-next-topic", "answer-final", "answer-partial"]
+        )
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.topicID),
+            ["other-turn-2", "other-turn-1", "other-turn-1"]
+        )
+        XCTAssertEqual(
+            snapshot.assistant.suggestionHistory.map(\.topicNumber),
+            [2, 1, 1]
+        )
+    }
+
     func testAssistantEvaluationPolicyStartsStablePartialsBeforeFinalTurns() {
         XCTAssertEqual(
             AssistantEvaluationPolicy.delayMilliseconds(for: .partialTranscript),
@@ -982,7 +1021,8 @@ final class CompanionTests: XCTestCase {
 
     private func answerSuggestion(
         id: String,
-        sequence: Int
+        sequence: Int,
+        topicID: String? = nil
     ) -> CompanionAssistantSuggestion {
         CompanionAssistantSuggestion(
             id: id,
@@ -1001,6 +1041,7 @@ final class CompanionTests: XCTestCase {
             trigger: .partialTranscript,
             triggeredAt: Date(timeIntervalSince1970: Double(sequence)),
             totalLatencyMilliseconds: 1_050,
+            topicID: topicID,
             topicNumber: nil
         )
     }

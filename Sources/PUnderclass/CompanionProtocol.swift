@@ -198,6 +198,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var trigger: CompanionAssistantTrigger?
     var triggeredAt: Date?
     var totalLatencyMilliseconds: Int?
+    var topicID: String?
     var topicNumber: Int?
 }
 
@@ -321,6 +322,7 @@ actor CompanionEventHub {
     private var commandResults: [String: CompanionCommandResponse] = [:]
     private var commandResultOrder: [String] = []
     private var topicCount = 0
+    private var topicNumbersByID: [String: Int] = [:]
     private var state: CompanionSnapshot
 
     init(
@@ -430,6 +432,7 @@ actor CompanionEventHub {
         let event = publish(name: "transcript.cleared", payload: state.transcript)
         state.assistant = CompanionAssistantState()
         topicCount = 0
+        topicNumbersByID.removeAll()
         _ = publish(name: "assistant.state", payload: state.assistant)
         return event
     }
@@ -473,13 +476,13 @@ actor CompanionEventHub {
     @discardableResult
     func assistantSuggested(_ suggestion: CompanionAssistantSuggestion) -> CompanionEvent {
         var numberedSuggestion = suggestion
-        if let existingTopicNumber = state.assistant.suggestionHistory
-            .first(where: { $0.id == suggestion.id })?.topicNumber
-        {
+        let topicID = suggestion.topicID ?? suggestion.id
+        if let existingTopicNumber = topicNumbersByID[topicID] {
             numberedSuggestion.topicNumber = existingTopicNumber
         } else {
             topicCount += 1
             numberedSuggestion.topicNumber = topicCount
+            topicNumbersByID[topicID] = topicCount
         }
         state.assistant.phase = .ready
         state.assistant.suggestion = numberedSuggestion

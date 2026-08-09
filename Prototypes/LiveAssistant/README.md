@@ -20,10 +20,12 @@ source files, prompts, audio, and credentials do not cross into the display
 client. The display reduces that data to a connection light and a stack of
 conversation rounds. The current question and its first-person cues stay large
 at the top, with a stable topic number and an elapsed timer based on when that
-cue was generated. Up to three earlier questions and their cues remain below at
-a smaller, quieter scale so a back-and-forth remains easy to follow. Each new
-suggestion resets the teleprompter to the new current round, even if the
-previous cue had been scrolled.
+topic first produced a cue. Up to three earlier cues remain immediately below
+at a smaller, quieter scale. When a finalized transcript revises the same
+question, each pause-time point appears inline beneath its newer counterpart;
+earlier questions from the back-and-forth remain in the separate history
+stack. Each new suggestion resets the teleprompter to the new current cue, even
+if the previous cue had been scrolled.
 
 Useful interactions:
 

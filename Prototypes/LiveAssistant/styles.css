@@ -264,7 +264,7 @@ button:focus-visible {
   display: none;
 }
 
-.answer-beats span {
+.answer-beat-current {
   display: block;
   max-width: 34ch;
   color: var(--ink);
@@ -272,6 +272,29 @@ button:focus-visible {
   font-weight: 500;
   letter-spacing: -.018em;
   line-height: 1.16;
+}
+
+.answer-beat-earlier {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  max-width: 46rem;
+  margin-top: clamp(9px, 1.2vh, 14px);
+  color: #747b76;
+}
+
+.answer-beat-earlier small {
+  color: #5f6661;
+  font: 700 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .14em;
+}
+
+.answer-beat-earlier span {
+  font-size: clamp(1.25rem, 1.85vw, 1.9rem);
+  font-weight: 450;
+  letter-spacing: -.004em;
+  line-height: 1.35;
 }
 
 .web-citations,
@@ -318,7 +341,7 @@ button:focus-visible {
 }
 
 .answer-history {
-  margin-top: clamp(72px, 12vh, 132px);
+  margin-top: clamp(40px, 7vh, 72px);
   padding-top: clamp(24px, 4vh, 44px);
   border-top: 1px solid rgba(255, 255, 255, .1);
 }
@@ -637,8 +660,13 @@ kbd {
     justify-self: start;
   }
 
-  .answer-beats span {
+  .answer-beat-current {
     font-size: clamp(2rem, 8.4vw, 3rem);
+  }
+
+  .answer-beat-earlier {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .history-cues span {

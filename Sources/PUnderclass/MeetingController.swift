@@ -2504,6 +2504,7 @@ final class MeetingController: ObservableObject {
                     suggestion.triggeredAt = observedAt
                     suggestion.totalLatencyMilliseconds =
                         totalLatencyMilliseconds
+                    suggestion.topicID = turnID
                     await hub.assistantSuggested(suggestion)
                 } else {
                     await hub.assistantFinishedWithoutSuggestion(

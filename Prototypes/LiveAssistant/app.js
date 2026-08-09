@@ -123,7 +123,7 @@ const state = {
   renderedSuggestionID: null,
   fallbackTopicNumbers: new Map(),
   nextFallbackTopicNumber: 0,
-  topicStartedAtBySuggestionID: new Map(),
+  topicStartedAtByTopicID: new Map(),
   mockElapsedSeconds: 24 * 60 + 18
 };
 
@@ -564,17 +564,23 @@ function answerHistoryFor(assistant) {
   return unique.slice(0, 4);
 }
 
+function topicIDFor(suggestion) {
+  return suggestion?.topicID || suggestion?.id || "";
+}
+
 function fallbackTopicNumber(suggestion, suggestions) {
   [...suggestions].reverse().forEach((item) => {
-    if (!item?.id || state.fallbackTopicNumbers.has(item.id)) return;
+    const topicID = topicIDFor(item);
+    if (!topicID || state.fallbackTopicNumbers.has(topicID)) return;
     state.nextFallbackTopicNumber += 1;
-    state.fallbackTopicNumbers.set(item.id, state.nextFallbackTopicNumber);
+    state.fallbackTopicNumbers.set(topicID, state.nextFallbackTopicNumber);
   });
-  if (!state.fallbackTopicNumbers.has(suggestion.id)) {
+  const topicID = topicIDFor(suggestion);
+  if (!state.fallbackTopicNumbers.has(topicID)) {
     state.nextFallbackTopicNumber += 1;
-    state.fallbackTopicNumbers.set(suggestion.id, state.nextFallbackTopicNumber);
+    state.fallbackTopicNumbers.set(topicID, state.nextFallbackTopicNumber);
   }
-  return state.fallbackTopicNumbers.get(suggestion.id);
+  return state.fallbackTopicNumbers.get(topicID);
 }
 
 function renderTopicContext(suggestion, suggestions) {
@@ -588,11 +594,15 @@ function renderTopicContext(suggestion, suggestions) {
     : fallbackTopicNumber(suggestion, suggestions);
   $("#topicNumber").textContent = topicNumber.toLocaleString();
 
-  if (!state.topicStartedAtBySuggestionID.has(suggestion.id)) {
-    const generatedAt = new Date(suggestion.generatedAt).getTime();
-    state.topicStartedAtBySuggestionID.set(
-      suggestion.id,
-      Number.isFinite(generatedAt) ? generatedAt : Date.now()
+  const topicID = topicIDFor(suggestion);
+  if (!state.topicStartedAtByTopicID.has(topicID)) {
+    const topicTimes = suggestions
+      .filter((item) => topicIDFor(item) === topicID)
+      .map((item) => new Date(item.generatedAt).getTime())
+      .filter(Number.isFinite);
+    state.topicStartedAtByTopicID.set(
+      topicID,
+      topicTimes.length ? Math.min(...topicTimes) : Date.now()
     );
   }
   updateTopicElapsedTime();
@@ -601,7 +611,7 @@ function renderTopicContext(suggestion, suggestions) {
 function updateTopicElapsedTime() {
   const suggestion = state.currentSuggestion;
   if (!suggestion) return;
-  const startedAt = state.topicStartedAtBySuggestionID.get(suggestion.id);
+  const startedAt = state.topicStartedAtByTopicID.get(topicIDFor(suggestion));
   if (!Number.isFinite(startedAt)) return;
   const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   const topicNumber = $("#topicNumber").textContent;
@@ -612,33 +622,57 @@ function updateTopicElapsedTime() {
   );
 }
 
-function replaceAnswerBeats(container, beats) {
+function replaceAnswerBeats(container, beats, previousBeats = []) {
   container.replaceChildren();
-  (beats || []).forEach((beat) => {
+  const currentBeats = beats || [];
+  const previousByCurrentIndex = currentBeats.map(() => []);
+  previousBeats.forEach((beat, index) => {
+    if (!previousByCurrentIndex.length) return;
+    const targetIndex = Math.min(index, previousByCurrentIndex.length - 1);
+    previousByCurrentIndex[targetIndex].push(beat);
+  });
+
+  currentBeats.forEach((beat, index) => {
     const item = document.createElement("li");
     const label = document.createElement("strong");
     label.textContent = beat.label;
     const point = document.createElement("span");
+    point.className = "answer-beat-current";
     point.textContent = beat.point;
     item.append(label, point);
+
+    previousByCurrentIndex[index].forEach((previousBeat) => {
+      const previous = document.createElement("div");
+      previous.className = "answer-beat-earlier";
+      const previousLabel = document.createElement("small");
+      previousLabel.textContent = "EARLIER";
+      const previousPoint = document.createElement("span");
+      previousPoint.textContent = previousBeat.point;
+      previous.append(previousLabel, previousPoint);
+      item.append(previous);
+    });
     container.append(item);
   });
 }
 
-function previousRoundsFor(suggestions, current) {
-  const currentQuestion = current?.question?.trim().toLocaleLowerCase() || "";
-  const seen = new Set(currentQuestion ? [currentQuestion] : []);
-  const previous = [];
+function previousVersionFor(suggestions, current) {
+  const currentTopicID = topicIDFor(current);
+  return suggestions.find((suggestion) => (
+    suggestion
+      && suggestion.id !== current?.id
+      && topicIDFor(suggestion) === currentTopicID
+  )) || null;
+}
 
-  suggestions.forEach((suggestion) => {
-    if (!suggestion || suggestion.id === current?.id) return;
-    const question = suggestion.question?.trim();
-    const key = question?.toLocaleLowerCase();
-    if (!question || seen.has(key)) return;
-    seen.add(key);
-    previous.push(suggestion);
-  });
-  return previous.slice(0, 3);
+function previousEntriesFor(suggestions, current) {
+  const currentTopicID = topicIDFor(current);
+  return suggestions
+    .filter((suggestion) => (
+      suggestion
+        && suggestion.id !== current?.id
+        && topicIDFor(suggestion) !== currentTopicID
+    ))
+    .slice(0, 3);
 }
 
 function outlineText(suggestion) {
@@ -698,7 +732,11 @@ function createHistoryRound(suggestion, index) {
 
   const header = document.createElement("header");
   const eyebrow = document.createElement("small");
-  eyebrow.textContent = index === 0 ? "PREVIOUS ROUND" : `${index + 1} ROUNDS BACK`;
+  const suppliedTopicNumber = Number(suggestion.topicNumber);
+  const topicLabel = Number.isInteger(suppliedTopicNumber) && suppliedTopicNumber > 0
+    ? ` · TOPIC ${suppliedTopicNumber.toLocaleString()}`
+    : "";
+  eyebrow.textContent = `${index === 0 ? "PREVIOUS TOPIC" : "EARLIER TOPIC"}${topicLabel}`;
   const question = document.createElement("strong");
   question.textContent = suggestion.question;
   header.append(eyebrow, question);
@@ -739,7 +777,12 @@ function renderSuggestionStack(assistant) {
   $("#answerQuestion").textContent = current.question;
   const meeting = state.snapshot?.session?.purpose === "meeting";
   $("#answerLead").textContent = meeting ? "Respond from here" : "Speak from here";
-  replaceAnswerBeats($("#answerBeats"), current.beats);
+  const previousVersion = previousVersionFor(suggestions, current);
+  replaceAnswerBeats(
+    $("#answerBeats"),
+    current.beats,
+    previousVersion?.beats || []
+  );
   const webCitations = createWebCitationLinks(current, "web-citations");
   $("#webCitations").replaceChildren(...(webCitations?.children || []));
   $("#webCitations").hidden = !webCitations;
@@ -763,9 +806,9 @@ function renderSuggestionStack(assistant) {
   $("#sourceCitation").hidden = !citation;
   $("#pinButton").classList.toggle("is-active", assistant?.pinnedSuggestionID === current.id);
 
-  const previous = previousRoundsFor(suggestions, current);
+  const previous = previousEntriesFor(suggestions, current);
   $("#answerHistory").hidden = previous.length === 0;
-  $("#answerHistoryCount").textContent = `${previous.length} previous round${previous.length === 1 ? "" : "s"}`;
+  $("#answerHistoryCount").textContent = `${previous.length} previous topic${previous.length === 1 ? "" : "s"}`;
   const historyCards = $("#answerHistoryCards");
   historyCards.replaceChildren(...previous.map(createHistoryRound));
 
@@ -867,7 +910,7 @@ function renderSnapshot(snapshot) {
     state.renderedSuggestionID = null;
     state.fallbackTopicNumbers.clear();
     state.nextFallbackTopicNumber = 0;
-    state.topicStartedAtBySuggestionID.clear();
+    state.topicStartedAtByTopicID.clear();
   }
   state.snapshot = snapshot;
   state.cursor = { streamId: snapshot.streamId, sequence: snapshot.watermark };
@@ -1096,6 +1139,7 @@ function renderMockScenario(index) {
     generationMilliseconds: scenario.generationMilliseconds || 640,
     trigger: "partialTranscript",
     totalLatencyMilliseconds: scenario.totalLatencyMilliseconds || 1_440,
+    topicID: `mock-topic-${state.mockGeneration}`,
     topicNumber: state.mockGeneration
   };
   state.mockHistory = [suggestion, ...state.mockHistory].slice(0, 4);

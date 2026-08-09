@@ -125,6 +125,7 @@ An `assistant.suggestion` payload is already a view model, for example:
 {
   "id": "sg_01J...",
   "basedOnSequence": 2487,
+  "topicID": "Other-item-91",
   "topicNumber": 3,
   "question": "Tell me about a time you improved a critical system.",
   "beats": [
@@ -144,6 +145,12 @@ An `assistant.suggestion` payload is already a view model, for example:
 
 The host chooses the facts and concise first-person wording. Labels are internal
 structure; the teleprompter displays only the self-contained speaking cues.
+Suggestions generated from the pause-time partial and finalized text of the
+same transcript turn share one `topicID` and `topicNumber`. The newest cue is
+primary while each point from the latest earlier version appears directly
+beneath its corresponding new point in smaller, dimmer type. Earlier topics
+remain in the separate cue history. A transcript correction therefore does
+not erase useful context or reset the topic timer.
 `assistant.suggestionHistory`
 in the atomic snapshot retains the newest four outlines in newest-first order.
 The focused display uses that history as a typographic round stack: the current

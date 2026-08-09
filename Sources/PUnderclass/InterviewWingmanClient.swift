@@ -327,6 +327,7 @@ struct LiveAssistantClient: Sendable {
             confidence: output.confidence,
             generatedAt: Date(),
             generationMilliseconds: generationMilliseconds,
+            topicID: nil,
             topicNumber: nil
         )
         return LiveAssistantGeneration(
