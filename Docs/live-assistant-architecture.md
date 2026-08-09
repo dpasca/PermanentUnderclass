@@ -109,6 +109,8 @@ Initial event set:
 - `transcript.partial`: replace the partial for one `turnId`; safe to coalesce.
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
+- `assistant.bridge`: ephemeral, fact-free opening generated from a still-forming
+  interviewer partial. It is never added to suggestion history.
 - `assistant.working`: generation started for a transcript watermark.
 - `assistant.suggestion`: newest structured answer outline with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
@@ -143,10 +145,42 @@ An `assistant.suggestion` payload is already a view model, for example:
 }
 ```
 
+When the session-scoped experimental switch is active, `assistant.bridge`
+publishes a smaller object before the full suggestion:
+
+```json
+{
+  "id": "bridge_01J...",
+  "topicID": "Other-item-91",
+  "sourceText": "How did you verify that you found the right bottleneck?",
+  "text": "I'd first check where the time is going, then narrow it down.",
+  "generatedAt": "2026-08-09T07:39:58Z",
+  "generationMilliseconds": 1276
+}
+```
+
+The display temporarily hides the previous answer, shows this one opening, and
+then replaces it with `assistant.suggestion`. The full prompt receives the
+bridge too: it keeps the exact sentence as its preamble when the completed
+question is compatible, or corrects it when a later qualifier changed the
+request.
+
 The host chooses the facts and concise first-person wording. For Answer Mirror,
 the teleprompter shows the spoken preamble first; labels remain internal
 structure for the supporting cues. Meeting Assistant suggestions omit the
 preamble field and retain their direct three-to-five-beat shape.
+Answer Mirror uses ordinary vocabulary, short clauses, and contractions while
+keeping exact technical nouns when they carry the substance. The prompt rejects
+report-like signposting and abstract noun stacks, but it does not add fake
+hesitation or filler to simulate speech. Recent candidate turns provide a style
+sample for sentence length and formality, with fillers, mistakes, and abandoned
+phrases explicitly excluded.
+Plausible Rehearsal also requires a structured substance map: project anchor,
+observed signal, before-to-after mechanism change, discriminating check, and
+bounded outcome. All five must appear in the spoken preamble and three beats.
+The map remains machine-readable for evaluation and diagnostics, while the
+display shows the cue and its separate verify-before-use warning rather than a
+second block of planning prose.
 Suggestions generated from the pause-time partial and finalized text of the
 same transcript turn share one `topicID` and `topicNumber`. The newest cue is
 primary while each point from the latest earlier version appears directly
@@ -178,6 +212,21 @@ completed decision that returns no outline leaves the previous suggestion intact
 is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
+
+Plausible Rehearsal can optionally start an independent early-bridge lane 600
+ms after the first `Other` partial arrives, without waiting for silence. It
+uses `gpt-5.6-luna`, no reasoning, a strict one-string schema, and Priority
+processing. The model—not a keyword or regex gate—decides whether the partial
+already establishes a stable answer shape. An unclear fragment returns an
+empty string. If the partial grew while that request ran, the host may try once
+more after 200 ms; the limit is two calls per interviewer turn. A bridge may
+name only what matters first, what should be checked, or the type of example
+that should come next. It uses short clauses and ordinary words rather than
+formal coaching language. It
+receives recent dialogue and session context, but no reference documents, and
+cannot claim a project, employer, action, result, metric, achievement, or other
+personal history. A new interviewer turn cancels the older full and bridge
+generations so a stale result cannot erase the new bridge.
 
 The structured decision labels every displayed outline as `localReferences`,
 `webSearch`, or `generalKnowledge`. Local grounding requires at least one
@@ -393,13 +442,31 @@ The external-fixture benchmark records structured quality, generation latency,
 timeouts, incomplete responses, and grounding retries without committing
 personal interview material.
 
-An August 2026 focused run used two plausible-rehearsal performance questions.
-Terra/low averaged 4.43/5 quality at roughly 3.54 seconds; Luna/low averaged
-4.36/5 at roughly 3.27 seconds. Luna/xhigh took 8.35–10.58 seconds on its two
-successful cells and failed two others, once by timeout and once by exhausting
-a 1,200-token response budget. An extra causal-chain prompt tied the selected
-base prompt's quality on Terra/low but was slower, so it was not added. This is
-a small internal sample, not a universal model ranking.
+An August 2026 model-routing run used two plausible-rehearsal performance
+questions. Terra/low averaged 4.43/5 quality at roughly 3.54 seconds; Luna/low
+averaged 4.36/5 at roughly 3.27 seconds. Luna/xhigh took 8.35–10.58 seconds on
+its two successful cells and failed two others, once by timeout and once by
+exhausting a 1,200-token response budget.
+
+A later substance-focused run strengthened both the prompt contract and judge
+around before-to-after mechanics and discriminating verification. On three
+private rendering fixtures, including a profiling follow-up, Terra/low passed
+3/3 with 4.48/5 mean quality, 4.58 seconds median generation, and 4.71 seconds
+maximum generation. Its then-nine-dimension rubric was stricter than the earlier
+seven-dimension run, so the scores are not directly comparable. The current
+rubric adds plain spoken language as a tenth score. Both are small internal
+samples, not a universal model ranking.
+
+The experimental early lane has its own public, non-personal hosted eval. In
+two consecutive August 2026 runs over the same three partials, it withheld a
+bridge for both unfinished-fragment trials and returned structural openings in
+all four complete-request trials. Priority Luna/no reasoning measured
+0.95–1.77 seconds across the six calls, with a 1.35 second overall median. The
+same small request measured roughly 4.5–5.5 seconds on the default service
+tier, so Priority processing is part of the prototype's latency contract
+rather than a cosmetic setting. These numbers measure model generation after
+request start; the 600 ms collection window and live transcription delay occur
+before it.
 
 ## Usage and cost
 
@@ -413,9 +480,9 @@ The initial meter covers:
 - `gpt-live-transcribe` for each live audio track;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` scenario-generation and `gpt-5.6-terra` live-assistant calls from each model
-  response's own token usage (tracked separately until a dollar rate is
-  configured).
+- `gpt-5.6-luna` scenario generation and experimental Priority early-bridge
+  calls, plus `gpt-5.6-terra` live-assistant calls, from each model response's
+  own token usage (tracked separately until a dollar rate is configured).
 
 For GPT-5.6 assistant calls, record uncached input, cached input, cache writes,
 output, and reasoning tokens separately. This makes a folder edit's one-time

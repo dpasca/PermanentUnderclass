@@ -121,9 +121,15 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                                 directness: assessment.directness,
                                 spokenNaturalness:
                                     assessment.spokenNaturalness,
+                                plainSpokenLanguage:
+                                    assessment.plainSpokenLanguage,
                                 specificity: assessment.specificity,
                                 causalUsefulness:
                                     assessment.causalUsefulness,
+                                mechanisticDepth:
+                                    assessment.mechanisticDepth,
+                                verificationRigor:
+                                    assessment.verificationRigor,
                                 groundingSafety:
                                     assessment.groundingSafety,
                                 plausibilitySafety:
@@ -137,6 +143,8 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                                     .joined(separator: " / "),
                                 plausibleAssumptions:
                                     suggestion.plausibleAssumptions,
+                                plausibleRehearsalPlan:
+                                    suggestion.plausibleRehearsalPlan,
                                 rationale: assessment.rationale
                             )
                             results.append(result)
@@ -285,8 +293,11 @@ private struct PrivateBenchmarkResult: Encodable {
     let qualityMean: Double
     let directness: Int
     let spokenNaturalness: Int
+    let plainSpokenLanguage: Int
     let specificity: Int
     let causalUsefulness: Int
+    let mechanisticDepth: Int
+    let verificationRigor: Int
     let groundingSafety: Int
     let plausibilitySafety: Int
     let conciseUsability: Int
@@ -294,6 +305,7 @@ private struct PrivateBenchmarkResult: Encodable {
     let answerMode: String
     let cue: String
     let plausibleAssumptions: [String]
+    let plausibleRehearsalPlan: CompanionPlausibleRehearsalPlan?
     let rationale: String
 }
 

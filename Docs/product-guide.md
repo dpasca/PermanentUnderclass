@@ -81,10 +81,27 @@ unsupported factual answers for verification rather than inventing commitments,
 metrics, deadlines, or status. **Answer Mirror** defaults to a grounded
 interview answer outline. Its explicitly confirmed, session-scoped **Plausible
 Rehearsal** mode may attach a draft to a relevant project and extrapolate a
-modest bottleneck, action, validation step, and outcome. The preparation UI and
-assistant display mark the result as a rehearsal to verify, and the structured
-result carries the material assumptions separately. Extreme financial, popularity, and
+modest incident. Before writing, it maps that incident to one project, an
+observed signal, a before-to-after mechanism change, a discriminating check,
+and a bounded outcome. A follow-up preserves that story and adds the requested
+depth instead of restating it. The preparation UI and assistant display mark
+the result as a rehearsal to verify, and the structured result carries the
+material assumptions separately. Extreme financial, popularity, and
 performance claims remain forbidden.
+
+Inside Plausible Rehearsal, **Early speaking bridge (experimental)** is a
+separate opt-in switch for the current interview. It does not wait for the 800
+ms end-of-speech pause. After a short 600 ms partial-transcript collection
+window, a Priority `gpt-5.6-luna` request can show one structural opening such
+as “I'd first check where the time is going, then narrow it down.” It
+never receives résumé documents and is instructed not to claim personal facts.
+The normal `gpt-5.6-terra` cue continues independently and replaces the bridge;
+when the completed question still fits, its preamble repeats the bridge so the
+spoken answer continues naturally. An unclear fragment produces no bridge, and
+the host makes at most two early attempts per interviewer turn. This option can
+therefore add model calls and Priority-processing cost, and the UI labels its
+output as partial and experimental. Like Plausible Rehearsal itself, it resets
+when the interview ends.
 
 Both behaviors give the same Responses API call access to OpenAI's hosted web
 search when current or public facts would materially improve a cue. Search is
@@ -101,12 +118,21 @@ a fallback, and an exact partial/final duplicate is coalesced rather than billed
 twice. The user's speech stays visible in the transcript but does not replace
 the model outline. Explicit speaker and capture-purpose state provides this
 routing; there is no keyword or regex gate.
+The experimental early bridge is the only pre-pause path. It is available only
+when both Plausible Rehearsal and its own switch are active. A new interviewer
+turn cancels work for the previous turn, while the early opener and full answer
+use independent requests so the fast lane cannot reduce the full cue's quality.
 Each Answer Mirror result starts with a brief spoken preamble and follows with
-two or three labeled beats rather than polished prose. The preamble gives the
-direct answer or qualifies an important version, assumption, scope, or contrast;
-the beats then preserve concrete evidence, mechanics, caveats, and checks in
-plain conversational wording. Meeting Assistant retains its direct three-to-five
-beat response outline. This makes it possible to compare substance without reading a script. The
+two or three labeled beats rather than polished prose; Plausible Rehearsal uses
+exactly three. The preamble gives the direct answer or qualifies an important
+version, assumption, scope, or contrast; the beats then preserve concrete
+evidence, mechanics, caveats, and checks. The wording uses ordinary vocabulary,
+short clauses, contractions, and precise technical nouns only where they add
+real meaning. When recent candidate speech provides a useful sample, the cue
+matches its sentence length and formality without copying hesitation, errors,
+or filler.
+Meeting Assistant retains its direct three-to-five beat response outline. This
+makes it possible to compare substance without reading a script. The
 newest card appears first and the host retains three previous cards in the
 snapshot, preserving the stack across browser refreshes and reconnects.
 Indexed local files are preferred when they support the outline. If they do
@@ -390,6 +416,10 @@ The proof of concept includes:
   response outline.
   Privacy-safe lifecycle logs include trigger-to-start, model, and total
   transcript-to-result timings.
+- Plausible Rehearsal can optionally run a Priority Luna early bridge from the
+  still-forming interviewer partial. It shows one fact-free opening while Terra
+  drafts the complete cue, limits itself to two attempts per turn, and records
+  separate `assistant_bridge_*` lifecycle timings.
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt

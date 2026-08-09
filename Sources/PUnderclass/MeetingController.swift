@@ -14,8 +14,10 @@ final class MeetingController: ObservableObject {
     @Published var delay: TranscriptionDelay = .medium
     @Published var preparationPurpose: CapturePurpose = .meeting
     @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
+    @Published var assistantEarlyBridgeEnabled = false
     @Published private(set) var activeAssistantAnswerMode:
         AssistantAnswerMode = .grounded
+    @Published private(set) var activeAssistantEarlyBridgeEnabled = false
     /// Local-first: the app is fully usable on a fresh install with no key.
     @Published var refinementEngine: TranscriptRefinementEngine = .localWhisper
     @Published var processes: [AudioProcessInfo] = []
@@ -90,12 +92,19 @@ final class MeetingController: ObservableObject {
     private let companionGateway = CompanionGateway()
     private var companionGatewayAttemptID: UUID?
     private let liveAssistantClient = LiveAssistantClient()
+    private let earlyInterviewBridgeClient = EarlyInterviewBridgeClient()
     private let syntheticInterviewGeneratorClient =
         SyntheticInterviewGeneratorClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTask: Task<Void, Never>?
     private var assistantGenerationRequestID: UUID?
     private var assistantGenerationIdentity: AssistantEvaluationIdentity?
+    private var assistantBridgeTask: Task<Void, Never>?
+    private var assistantBridgeRequestID: UUID?
+    private var assistantBridgeTurnID: String?
+    private var assistantBridgeLatestText = ""
+    private var assistantBridgeAttemptCount = 0
+    private var activeAssistantBridge: CompanionAssistantBridge?
     private let syntheticSpeechPlayer = SyntheticSpeechPlayer()
     private var syntheticInterviewTask: Task<Void, Never>?
     private var syntheticInterviewRunID: UUID?
@@ -700,6 +709,7 @@ final class MeetingController: ObservableObject {
                 self?.statusMessage = "Stopped"
             }
             self?.assistantAnswerMode = .grounded
+            self?.assistantEarlyBridgeEnabled = false
             self?.publishCompanionSession()
         }
     }
@@ -1369,6 +1379,7 @@ final class MeetingController: ObservableObject {
         syntheticInterviewReferences = nil
         capturePurpose = .interview
         activeAssistantAnswerMode = .grounded
+        activeAssistantEarlyBridgeEnabled = false
         prepareCompanionForNewSession()
         localTrack = TrackViewState()
         remoteTrack = TrackViewState()
@@ -1560,6 +1571,12 @@ final class MeetingController: ObservableObject {
             remoteTrack.partialTranscript = text
         }
         publishCompanionPartial(id: id, speaker: speaker, text: text)
+        scheduleEarlyInterviewBridge(
+            turnID: id,
+            sourceText: text,
+            speaker: speaker,
+            purpose: syntheticInterviewState.purpose
+        )
     }
 
     @MainActor
@@ -1656,6 +1673,7 @@ final class MeetingController: ObservableObject {
         syntheticInterviewState.detail = detail
         statusMessage = title
         assistantAnswerMode = .grounded
+        assistantEarlyBridgeEnabled = false
         publishCompanionSession()
     }
 
@@ -1726,6 +1744,12 @@ final class MeetingController: ObservableObject {
                     id: "\(speaker.rawValue)-\(itemID)",
                     speaker: speaker,
                     text: text
+                )
+                self.scheduleEarlyInterviewBridge(
+                    turnID: "\(speaker.rawValue)-\(itemID)",
+                    sourceText: text,
+                    speaker: speaker,
+                    purpose: purpose
                 )
             },
             onFinal: { [weak self] itemID, text, startedAt, endedAt, pcm16Audio in
@@ -2196,6 +2220,13 @@ final class MeetingController: ObservableObject {
         assistantGenerationTask = nil
         assistantGenerationRequestID = nil
         assistantGenerationIdentity = nil
+        assistantBridgeTask?.cancel()
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        assistantBridgeTurnID = nil
+        assistantBridgeLatestText = ""
+        assistantBridgeAttemptCount = 0
+        activeAssistantBridge = nil
         enqueueCompanionUpdate { hub in
             await hub.clearTranscript()
         }
@@ -2205,6 +2236,9 @@ final class MeetingController: ObservableObject {
         activeAssistantAnswerMode = purpose == .interview
             ? assistantAnswerMode
             : .grounded
+        activeAssistantEarlyBridgeEnabled = purpose == .interview
+            && assistantAnswerMode == .plausibleRehearsal
+            && assistantEarlyBridgeEnabled
     }
 
     private func publishCompanionSession() {
@@ -2225,6 +2259,7 @@ final class MeetingController: ObservableObject {
         let answerMode = purpose == .interview
             ? activeAssistantAnswerMode
             : .grounded
+        let earlyBridgeEnabled = activeAssistantEarlyBridgeEnabled
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
@@ -2233,7 +2268,8 @@ final class MeetingController: ObservableObject {
                 source: source,
                 title: title,
                 isPreparingSyntheticInterview: isPreparingSyntheticInterview,
-                answerMode: answerMode
+                answerMode: answerMode,
+                earlyBridgeEnabled: earlyBridgeEnabled
             )
         }
     }
@@ -2336,6 +2372,253 @@ final class MeetingController: ObservableObject {
         enqueueCompanionUpdate { hub in
             await hub.updateUsage(usage)
         }
+    }
+
+    private func scheduleEarlyInterviewBridge(
+        turnID: String,
+        sourceText: String,
+        speaker: SpeakerTag,
+        purpose: CapturePurpose
+    ) {
+        guard EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+            speaker: speaker,
+            purpose: purpose,
+            answerMode: activeAssistantAnswerMode,
+            isEnabled: activeAssistantEarlyBridgeEnabled
+        ) else {
+            return
+        }
+        let normalizedText = sourceText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalizedText.isEmpty else { return }
+
+        if assistantBridgeTurnID != turnID {
+            assistantGenerationTask?.cancel()
+            assistantGenerationTask = nil
+            assistantGenerationRequestID = nil
+            assistantGenerationIdentity = nil
+            assistantBridgeTask?.cancel()
+            assistantBridgeTask = nil
+            assistantBridgeRequestID = nil
+            assistantBridgeTurnID = turnID
+            assistantBridgeLatestText = ""
+            assistantBridgeAttemptCount = 0
+            activeAssistantBridge = nil
+            enqueueCompanionUpdate { hub in
+                await hub.assistantSupersededForNewTurn()
+            }
+        }
+        assistantBridgeLatestText = normalizedText
+
+        guard
+            activeAssistantBridge == nil,
+            assistantBridgeTask == nil,
+            assistantBridgeAttemptCount
+                < EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn
+        else {
+            return
+        }
+
+        let isLocalOnly = privacyLockEnabled
+        let apiKey = capability.isAvailable(.answerMirror)
+            ? apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        guard !isLocalOnly, !apiKey.isEmpty else { return }
+
+        let attempt = assistantBridgeAttemptCount
+        assistantBridgeAttemptCount += 1
+        let requestID = UUID()
+        assistantBridgeRequestID = requestID
+        let delayMilliseconds =
+            EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
+                forAttempt: attempt
+            )
+        let recentTranscript = transcript
+            .filter { $0.purpose == purpose }
+            .suffix(4)
+            .map { "\($0.speaker.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+        let sessionContext = contextPrompt(for: purpose).trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let pendingCompanionUpdates = companionUpdateTail
+        let hub = companionGateway.hub
+        let client = earlyInterviewBridgeClient
+        let controller = WeakMeetingController(self)
+
+        Self.liveAssistantLogger.notice(
+            "assistant_bridge_scheduled turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) delay_ms=\(delayMilliseconds, privacy: .public) model=\(EarlyInterviewBridgeClient.model, privacy: .public) service_tier=\(EarlyInterviewBridgeClient.serviceTier, privacy: .public)"
+        )
+
+        assistantBridgeTask = Task {
+            do {
+                if delayMilliseconds > 0 {
+                    try await Task.sleep(
+                        for: .milliseconds(delayMilliseconds)
+                    )
+                }
+                guard !Task.isCancelled else { return }
+                await pendingCompanionUpdates?.value
+                guard !(await hub.suggestionsPaused()) else {
+                    _ = await MainActor.run {
+                        controller.value?.completeAssistantBridgeRequest(
+                            requestID: requestID,
+                            attemptedText: nil,
+                            retryIfTextChanged: false
+                        )
+                    }
+                    return
+                }
+                let latestTextForRequest = await MainActor.run {
+                    controller.value?.assistantBridgeSourceText(
+                        requestID: requestID,
+                        turnID: turnID
+                    )
+                }
+                guard let latestText = latestTextForRequest else {
+                    return
+                }
+
+                let generation = try await client.generate(
+                    apiKey: apiKey,
+                    currentPartial: latestText,
+                    recentTranscript: recentTranscript,
+                    sessionContext: sessionContext
+                )
+                await MainActor.run {
+                    controller.value?.recordAssistantUsage(generation.usage)
+                }
+                guard !Task.isCancelled else { return }
+                guard !(await hub.suggestionsPaused()) else {
+                    _ = await MainActor.run {
+                        controller.value?.completeAssistantBridgeRequest(
+                            requestID: requestID,
+                            attemptedText: latestText,
+                            retryIfTextChanged: false
+                        )
+                    }
+                    return
+                }
+
+                if let text = generation.bridge {
+                    let bridge = CompanionAssistantBridge(
+                        id: UUID().uuidString.lowercased(),
+                        topicID: turnID,
+                        sourceText: latestText,
+                        text: text,
+                        generatedAt: Date(),
+                        generationMilliseconds:
+                            generation.generationMilliseconds
+                    )
+                    let accepted = await MainActor.run {
+                        controller.value?.acceptAssistantBridge(
+                            bridge,
+                            requestID: requestID
+                        ) ?? false
+                    }
+                    guard accepted else { return }
+                    await hub.assistantBridged(bridge)
+                    Self.liveAssistantLogger.notice(
+                        "assistant_bridge_completed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=bridge model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
+                    )
+                    return
+                }
+
+                let retryText = await MainActor.run {
+                    controller.value?.completeAssistantBridgeRequest(
+                        requestID: requestID,
+                        attemptedText: latestText,
+                        retryIfTextChanged: true
+                    )
+                }
+                Self.liveAssistantLogger.notice(
+                    "assistant_bridge_completed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=not_ready model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
+                )
+                if let retryText {
+                    await MainActor.run {
+                        controller.value?.scheduleEarlyInterviewBridge(
+                            turnID: turnID,
+                            sourceText: retryText,
+                            speaker: speaker,
+                            purpose: purpose
+                        )
+                    }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                _ = await MainActor.run {
+                    controller.value?.completeAssistantBridgeRequest(
+                        requestID: requestID,
+                        attemptedText: nil,
+                        retryIfTextChanged: false
+                    )
+                }
+                let errorType = String(describing: type(of: error))
+                Self.liveAssistantLogger.error(
+                    "assistant_bridge_failed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) error_type=\(errorType, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func assistantBridgeSourceText(
+        requestID: UUID,
+        turnID: String
+    ) -> String? {
+        guard
+            assistantBridgeRequestID == requestID,
+            assistantBridgeTurnID == turnID,
+            activeAssistantBridge == nil
+        else {
+            return nil
+        }
+        return assistantBridgeLatestText
+    }
+
+    @discardableResult
+    private func completeAssistantBridgeRequest(
+        requestID: UUID,
+        attemptedText: String?,
+        retryIfTextChanged: Bool
+    ) -> String? {
+        guard assistantBridgeRequestID == requestID else { return nil }
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        guard
+            retryIfTextChanged,
+            activeAssistantBridge == nil,
+            assistantBridgeAttemptCount
+                < EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn,
+            let attemptedText,
+            assistantBridgeLatestText != attemptedText
+        else {
+            return nil
+        }
+        return assistantBridgeLatestText
+    }
+
+    private func acceptAssistantBridge(
+        _ bridge: CompanionAssistantBridge,
+        requestID: UUID
+    ) -> Bool {
+        guard
+            assistantBridgeRequestID == requestID,
+            assistantBridgeTurnID == bridge.topicID,
+            activeAssistantEarlyBridgeEnabled
+        else {
+            return false
+        }
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        activeAssistantBridge = bridge
+        return true
+    }
+
+    private func activeAssistantBridgeText(for turnID: String) -> String? {
+        guard activeAssistantBridge?.topicID == turnID else { return nil }
+        return activeAssistantBridge?.text
     }
 
     private func scheduleLiveAssistant(
@@ -2481,13 +2764,21 @@ final class MeetingController: ObservableObject {
                     startedAt: evaluationStartedAt
                 )
 
+                let earlyBridgeText = await MainActor.run {
+                    controller.value?.activeAssistantBridgeText(for: turnID)
+                }
+                let generationSessionContext = Self.sessionContext(
+                    sessionContext,
+                    continuingFromEarlyBridge: earlyBridgeText
+                )
+
                 let generation = try await client.generate(
                     apiKey: apiKey,
                     references: references,
                     recentTranscript: recentTranscript,
                     currentPartial: partialTranscript,
                     otherSpeakerText: normalizedText,
-                    sessionContext: sessionContext,
+                    sessionContext: generationSessionContext,
                     purpose: purpose,
                     basedOnSequence: basedOnSequence,
                     trigger: trigger,
@@ -2590,6 +2881,23 @@ final class MeetingController: ObservableObject {
             return syntheticInterviewReferences?.revision
         }
         return referenceLibraryState.snapshot?.revision
+    }
+
+    private static func sessionContext(
+        _ sessionContext: String,
+        continuingFromEarlyBridge earlyBridge: String?
+    ) -> String {
+        guard let earlyBridge, !earlyBridge.isEmpty else {
+            return sessionContext
+        }
+        return """
+        \(sessionContext)
+
+        EARLY SPEAKING BRIDGE THAT MAY ALREADY HAVE BEEN SAID
+        \(earlyBridge)
+
+        If that sentence still fits the completed question, return it exactly as the preamble and make every beat continue from it. If a later qualifier made it incompatible, replace it with a corrected preamble instead of forcing the earlier frame.
+        """
     }
 
     private func allowAssistantRetry(requestID: UUID) {
@@ -3098,6 +3406,13 @@ final class MeetingController: ObservableObject {
     private func stopImmediately() {
         assistantGenerationTask?.cancel()
         assistantGenerationTask = nil
+        assistantBridgeTask?.cancel()
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        assistantBridgeTurnID = nil
+        assistantBridgeLatestText = ""
+        assistantBridgeAttemptCount = 0
+        activeAssistantBridge = nil
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil
@@ -3120,7 +3435,9 @@ final class MeetingController: ObservableObject {
         activeContext = nil
         activeSessionID = nil
         activeAssistantAnswerMode = .grounded
+        activeAssistantEarlyBridgeEnabled = false
         assistantAnswerMode = .grounded
+        assistantEarlyBridgeEnabled = false
         isListening = false
         capturePurpose = nil
         localTrack.socket = .idle
@@ -3137,6 +3454,7 @@ final class MeetingController: ObservableObject {
 
     deinit {
         assistantGenerationTask?.cancel()
+        assistantBridgeTask?.cancel()
         whisperWarmupTask?.cancel()
         parakeetWarmupTask?.cancel()
         referenceLibraryService?.stop()

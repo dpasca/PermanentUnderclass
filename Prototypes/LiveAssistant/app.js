@@ -8,6 +8,7 @@ const eventNames = [
   "transcript.cleared",
   "reference.status",
   "usage.updated",
+  "assistant.bridge",
   "assistant.working",
   "assistant.suggestion",
   "assistant.failed",
@@ -311,6 +312,22 @@ function renderInferenceStatus() {
       "INFERENCE FAILED",
       "The latest model check failed",
       assistant.lastError || "Transcript capture continues while the assistant needs attention.",
+      checkCount
+    );
+    return;
+  }
+
+  if (assistant?.bridge) {
+    const bridgeTime = Number.isFinite(assistant.bridge.generationMilliseconds)
+      ? ` in ${assistant.bridge.generationMilliseconds.toLocaleString()} ms`
+      : "";
+    setInferenceStatus(
+      "general",
+      "EARLY BRIDGE · EXPERIMENTAL",
+      `A fact-free opening is ready${bridgeTime}`,
+      assistant.phase === "working"
+        ? "The full Answer Mirror cue is still being drafted and will replace it."
+        : "This came from partial interviewer speech and may be replaced as the question becomes clearer.",
       checkCount
     );
     return;
@@ -825,7 +842,9 @@ function scheduleCurrentStageFit() {
   let attempts = 0;
   const fit = () => {
     const teleprompter = $(".teleprompter");
-    const card = $("#answerCard");
+    const card = $("#earlyBridge").hidden
+      ? $("#answerCard")
+      : $("#earlyBridge");
     const teleprompterStyle = getComputedStyle(teleprompter);
     const availableHeight = teleprompter.clientHeight
       - (parseFloat(teleprompterStyle.paddingTop) || 0)
@@ -844,6 +863,16 @@ function scheduleCurrentStageFit() {
     }
   };
   currentStageFitFrame = requestAnimationFrame(fit);
+}
+
+function renderEarlyBridge(bridge) {
+  const panel = $("#earlyBridge");
+  panel.hidden = !bridge;
+  if (!bridge) return;
+  $("#earlyBridgeText").textContent = bridge.text;
+  $("#earlyBridgeTime").textContent = Number.isFinite(bridge.generationMilliseconds)
+    ? `${bridge.generationMilliseconds.toLocaleString()} ms`
+    : "";
 }
 
 function renderSuggestionStack(assistant) {
@@ -928,7 +957,13 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   const empty = $("#pausedState");
   const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
-  const suggestion = renderSuggestionStack(assistant);
+  const bridge = assistant?.bridge || null;
+  const suggestion = renderSuggestionStack(
+    bridge
+      ? { ...assistant, suggestion: null, suggestionHistory: [] }
+      : assistant
+  );
+  renderEarlyBridge(bridge);
   const plausibleRehearsal = suggestion?.answerMode === "plausibleRehearsal"
     || state.snapshot?.session?.answerMode === "plausibleRehearsal";
   listeningStrip.hidden = !suggestion;
@@ -940,6 +975,23 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   if (suggestion) {
     $("#questionText").textContent = suggestion.question;
     $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
+  }
+
+  if (bridge) {
+    $("#currentStage").classList.add("has-current");
+    $("#answerStack").hidden = true;
+    $("#answerHistory").hidden = true;
+    listeningStrip.hidden = false;
+    listeningStrip.classList.add("is-updating", "is-plausible");
+    $("#topicEyebrow").textContent = "EARLY BRIDGE · PARTIAL QUESTION";
+    $("#questionText").textContent = bridge.sourceText;
+    $("#topicContext").hidden = true;
+    empty.hidden = true;
+    $("#assistantState").textContent = assistant?.phase === "working"
+      ? "Early bridge ready; drafting the full cue"
+      : "Early bridge ready from partial speech";
+    scheduleCurrentStageFit();
+    return;
   }
 
   if (paused) {
@@ -1094,8 +1146,13 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.evaluationStartedAt = payload.startedAt;
       renderAssistant(state.snapshot.assistant);
       break;
+    case "assistant.bridge":
+      state.snapshot.assistant.bridge = payload;
+      renderAssistant(state.snapshot.assistant);
+      break;
     case "assistant.suggestion":
       state.snapshot.assistant.phase = "ready";
+      state.snapshot.assistant.bridge = null;
       state.snapshot.assistant.suggestion = payload;
       state.snapshot.assistant.suggestionHistory = [
         payload,
@@ -1115,6 +1172,7 @@ function applyEnvelope(envelope) {
       break;
     case "assistant.failed":
       state.snapshot.assistant.phase = payload.phase || "failed";
+      state.snapshot.assistant.bridge = null;
       state.snapshot.assistant.lastError = payload.message;
       state.snapshot.assistant.lastEvaluationOutcome = payload.outcome || "failed";
       state.snapshot.assistant.evaluatingSequence = null;

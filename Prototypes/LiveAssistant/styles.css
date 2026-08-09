@@ -174,6 +174,52 @@ button:focus-visible {
   width: 100%;
 }
 
+.early-bridge {
+  width: 100%;
+  padding: clamp(18px, 3vh, 30px) clamp(20px, 3vw, 38px);
+  border: 1px solid rgba(242, 189, 113, .28);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(242, 189, 113, .09), rgba(242, 189, 113, .025)),
+    rgba(255, 255, 255, .018);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .24);
+}
+
+.early-bridge > small {
+  color: var(--amber);
+  font-size: clamp(10px, .82vw, 13px);
+  font-weight: 750;
+  letter-spacing: .18em;
+}
+
+.early-bridge p {
+  max-width: 40ch;
+  margin: clamp(14px, 2.5vh, 24px) 0 0;
+  color: var(--ink);
+  font-size: clamp(
+    calc(2rem * var(--cue-scale)),
+    calc(4.35vw * var(--cue-scale)),
+    calc(4.8rem * var(--cue-scale))
+  );
+  font-weight: 620;
+  letter-spacing: -.026em;
+  line-height: 1.12;
+}
+
+.early-bridge footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: clamp(16px, 2.7vh, 26px);
+  color: var(--muted);
+  font-size: clamp(11px, .9vw, 14px);
+}
+
+.early-bridge footer span:last-child {
+  color: var(--amber);
+  white-space: nowrap;
+}
+
 .listening-strip {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

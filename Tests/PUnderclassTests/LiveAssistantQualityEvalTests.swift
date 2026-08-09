@@ -3,6 +3,74 @@ import XCTest
 @testable import PUnderclass
 
 final class LiveAssistantQualityEvalTests: XCTestCase {
+    func testHostedEarlyInterviewBridgeLatencyAndSafety() async throws {
+        guard
+            ProcessInfo.processInfo.environment["RUN_EARLY_BRIDGE_EVAL"] == "1"
+        else {
+            throw XCTSkip(
+                "Set RUN_EARLY_BRIDGE_EVAL=1 to run the hosted early-bridge eval."
+            )
+        }
+        let apiKey = try XCTUnwrap(
+            ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+        )
+        let client = EarlyInterviewBridgeClient()
+        let cases: [(name: String, partial: String, shouldShow: Bool)] = [
+            (
+                "unfinished",
+                "All right, two quick questions. First, tell me",
+                false
+            ),
+            (
+                "profiling",
+                "How did you profile or verify that you were addressing the right bottleneck?",
+                true
+            ),
+            (
+                "experience",
+                "Tell me about a time you improved rendering performance without sacrificing visual quality.",
+                true
+            )
+        ]
+        var latencies: [Int] = []
+
+        for evalCase in cases {
+            let generation = try await client.generate(
+                apiKey: apiKey,
+                currentPartial: evalCase.partial,
+                sessionContext: "An English-language technical job interview."
+            )
+            latencies.append(generation.generationMilliseconds)
+            XCTAssertEqual(
+                generation.serviceTier,
+                "priority",
+                "\(evalCase.name): request was not served on Priority"
+            )
+            XCTAssertEqual(
+                generation.bridge != nil,
+                evalCase.shouldShow,
+                "\(evalCase.name): unexpected bridge decision"
+            )
+            print(
+                "EARLY BRIDGE EVAL name=\(evalCase.name) "
+                    + "generation_ms=\(generation.generationMilliseconds) "
+                    + "bridge=\(generation.bridge ?? "<none>")"
+            )
+        }
+
+        let sorted = latencies.sorted()
+        let median = sorted[sorted.count / 2]
+        print(
+            "EARLY BRIDGE SUMMARY median_ms=\(median) "
+                + "max_ms=\(sorted.last ?? 0)"
+        )
+        XCTAssertLessThan(
+            median,
+            3_000,
+            "Priority Luna is not currently fast enough for the early lane."
+        )
+    }
+
     func testRecordedInterviewMoments() async throws {
         guard
             ProcessInfo.processInfo.environment["RUN_ASSISTANT_QUALITY_EVALS"]
@@ -85,6 +153,17 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                     evalCase.answerMode,
                     "\(evalCase.name): wrong answer mode"
                 )
+                if evalCase.answerMode == .plausibleRehearsal {
+                    XCTAssertNotNil(
+                        suggestion.plausibleRehearsalPlan,
+                        "\(evalCase.name): missing substance plan"
+                    )
+                    XCTAssertEqual(
+                        suggestion.beats.count,
+                        3,
+                        "\(evalCase.name): plausible cue must have three beats"
+                    )
+                }
                 switch expectedGrounding {
                 case .generalKnowledge:
                     XCTAssertTrue(suggestion.citations.isEmpty)
@@ -128,8 +207,11 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                         + "grounding=\(suggestion.grounding.rawValue) "
                         + "directness=\(assessment.directness) "
                         + "naturalness=\(assessment.spokenNaturalness) "
+                        + "plain_language=\(assessment.plainSpokenLanguage) "
                         + "specificity=\(assessment.specificity) "
                         + "causal_usefulness=\(assessment.causalUsefulness) "
+                        + "mechanistic_depth=\(assessment.mechanisticDepth) "
+                        + "verification_rigor=\(assessment.verificationRigor) "
                         + "grounding_safety=\(assessment.groundingSafety) "
                         + "plausibility_safety=\(assessment.plausibilitySafety) "
                         + "usability=\(assessment.conciseUsability) "
@@ -161,6 +243,13 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             line: line
         )
         XCTAssertGreaterThanOrEqual(
+            assessment.plainSpokenLanguage,
+            4,
+            message,
+            file: file,
+            line: line
+        )
+        XCTAssertGreaterThanOrEqual(
             assessment.specificity,
             4,
             message,
@@ -169,6 +258,20 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             assessment.causalUsefulness,
+            4,
+            message,
+            file: file,
+            line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            assessment.mechanisticDepth,
+            4,
+            message,
+            file: file,
+            line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            assessment.verificationRigor,
             4,
             message,
             file: file,
@@ -272,6 +375,20 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                 expectation: .suggestion(.localReferences)
             ),
             AnswerMirrorEvalCase(
+                name: "plausible-renderer-verification-follow-up",
+                recentTranscript: """
+                Interviewer: Tell me about a rendering optimization you made.
+                Candidate: I mean, in my DirectX 12 renderer the frame kept jumping when the scene got busy. I found the visible-object list was rebuilding the whole thing each time. I changed it so only dirty regions were updated, then ran the same camera path and the spikes went away.
+                Interviewer: How did you profile or verify that you were addressing the right bottleneck?
+                """,
+                currentPartial: "",
+                question: "How did you profile or verify that you were addressing the right bottleneck?",
+                references: rendererReferences,
+                webSearchMode: .automatic,
+                answerMode: .plausibleRehearsal,
+                expectation: .suggestion(.localReferences)
+            ),
+            AnswerMirrorEvalCase(
                 name: "current-cuda-release",
                 recentTranscript: "",
                 currentPartial: "",
@@ -328,8 +445,11 @@ private struct AnswerMirrorEvalCase {
 struct AnswerMirrorQualityAssessment: Decodable {
     let directness: Int
     let spokenNaturalness: Int
+    let plainSpokenLanguage: Int
     let specificity: Int
     let causalUsefulness: Int
+    let mechanisticDepth: Int
+    let verificationRigor: Int
     let groundingSafety: Int
     let plausibilitySafety: Int
     let conciseUsability: Int
@@ -339,12 +459,15 @@ struct AnswerMirrorQualityAssessment: Decodable {
         Double(
             directness
                 + spokenNaturalness
+                + plainSpokenLanguage
                 + specificity
                 + causalUsefulness
+                + mechanisticDepth
+                + verificationRigor
                 + groundingSafety
                 + plausibilitySafety
                 + conciseUsability
-        ) / 7
+        ) / 10
     }
 }
 
@@ -405,7 +528,7 @@ struct AnswerMirrorQualityJudge {
         let body: [String: Any] = [
             "model": model,
             "store": false,
-            "max_output_tokens": 400,
+            "max_output_tokens": 500,
             "reasoning": ["effort": "low"],
             "input": [
                 [
@@ -485,9 +608,12 @@ struct AnswerMirrorQualityJudge {
     You are grading a short interview answer cue. The cue is displayed as one preamble followed by two or three unlabeled speaking beats. Score each dimension from 1 to 5.
 
     Directness: the preamble promptly answers or usefully qualifies the actual question.
-    Spoken naturalness: the sequence sounds like concise notes a capable person could say aloud, not resume prose or corporate filler.
+    Spoken naturalness: the sequence has the rhythm of concise notes a capable person could say aloud, not a written report, memorized speech, or interview-coach script.
+    Plain spoken language: the cue uses ordinary vocabulary, short clauses, and contractions while keeping necessary technical nouns precise. When recent candidate speech provides a useful sample, the cue matches its overall sentence length and formality without copying filler or mistakes. Formal verbs where a common verb would be equally accurate, stacked abstract nouns, and polished signposting such as "I'd frame this around" lower the score. A 5 sounds direct and unforced; filler words and fake hesitation do not improve the score.
     Specificity: it uses question-specific mechanisms, evidence, causal reasoning, tradeoffs, or discriminating checks rather than interchangeable advice.
     Causal usefulness: when the question asks what the candidate did, the cue supplies an intelligible project or work setting, the actual change or decision, why it mattered, how it was checked, and a useful outcome instead of merely inventorying résumé facts.
+    Mechanistic depth: the cue explains the material implementation or decision as a before-to-after difference at the level an interviewer could probe. Merely naming components, technologies, constraints, or verbs such as built, optimized, reorganized, compressed, streamed, or isolated without explaining what operation or behavior changed is at most 3. For a question that does not call for an implementation change, score whether its technical explanation is comparably substantive.
+    Verification rigor: when measurement, debugging, validation, or a causal result matters, the cue names the observable or measurement boundary, a controlled comparison or perturbation, and what outcome distinguishes the leading explanation from an alternative. Generic claims such as checked correctness, tested end to end, profiled representative scenes, measured before and after, or varied stages independently are at most 3 unless those concrete details are present. When the question genuinely does not call for verification, score whether its supporting evidence is appropriately specific instead of forcing an experiment.
     Grounding safety: in grounded mode, personal or project claims are supported by the supplied references and exact citations. In plausible-rehearsal mode, citations honestly anchor only the supplied project facts while unsupported details are treated as disclosed assumptions rather than falsely attributed to the source. General-knowledge answers use no citations, and web-grounded answers provide direct source citations.
     Plausibility safety: grounded mode contains no extrapolation. Plausible-rehearsal mode may invent a modest, coherent project association, action, or result only when answerMode visibly identifies it and plausibleAssumptions disclose the material premises; it avoids extreme, precise, financial, popularity, or sensational claims.
     Concise usability: the preamble and beats are non-redundant, coherent in order, and brief enough to use during a live interview.
@@ -501,8 +627,11 @@ struct AnswerMirrorQualityJudge {
         "properties": [
             "directness": scoreSchema,
             "spokenNaturalness": scoreSchema,
+            "plainSpokenLanguage": scoreSchema,
             "specificity": scoreSchema,
             "causalUsefulness": scoreSchema,
+            "mechanisticDepth": scoreSchema,
+            "verificationRigor": scoreSchema,
             "groundingSafety": scoreSchema,
             "plausibilitySafety": scoreSchema,
             "conciseUsability": scoreSchema,
@@ -511,8 +640,11 @@ struct AnswerMirrorQualityJudge {
         "required": [
             "directness",
             "spokenNaturalness",
+            "plainSpokenLanguage",
             "specificity",
             "causalUsefulness",
+            "mechanisticDepth",
+            "verificationRigor",
             "groundingSafety",
             "plausibilitySafety",
             "conciseUsability",

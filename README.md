@@ -30,7 +30,10 @@ folders, audio devices, or running-process names.
   keep a live transcript, and optionally show grounded response cues in a
   browser display on this Mac or another computer on the same trusted LAN.
 - **Interview:** use the same two-track capture with an Answer Mirror that
-  suggests concise answer beats without inventing personal experience.
+  suggests concise answer beats without inventing personal experience. An
+  explicit Plausible Rehearsal mode can draft project-specific examples to
+  verify, with an optional experimental early bridge while the question is
+  still being spoken.
 
 ## Download
 
@@ -111,11 +114,25 @@ OPENAI_API_KEY="..." RUN_ASSISTANT_QUALITY_EVALS=1 \
 ```
 
 The eval generates real cues and uses a structured model judge for directness,
-spoken naturalness, specificity, causal usefulness, grounding safety,
-plausibility safety, and concise usability. Set
+spoken naturalness, plain spoken language, specificity, causal usefulness,
+grounding safety, mechanistic depth, verification rigor, plausibility safety,
+and concise usability. Set
 `ANSWER_MIRROR_EVAL_JUDGE_MODEL` to use a different available judge model. The
 eval makes hosted API requests and may incur usage charges. To iterate on one
 fixture, also set `ANSWER_MIRROR_EVAL_CASE` to its printed case name.
+
+The early bridge has a smaller non-personal hosted eval that checks an
+unfinished partial, two clear requests, and the measured Priority Luna latency:
+
+```sh
+OPENAI_API_KEY="..." RUN_EARLY_BRIDGE_EVAL=1 \
+  swift test --filter \
+  LiveAssistantQualityEvalTests/testHostedEarlyInterviewBridgeLatencyAndSafety
+```
+
+It incurs hosted Priority-processing usage. The deterministic suite still
+verifies its strict schema, two-attempt policy, and replacement state without
+making network calls.
 
 For model, reasoning-effort, and prompt selection against private interview
 material, keep the fixture outside the repository and run:

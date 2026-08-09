@@ -24,3 +24,23 @@ enum AssistantEvaluationPolicy {
         0
     }
 }
+
+enum EarlyInterviewBridgeEvaluationPolicy {
+    static let maximumAttemptsPerTurn = 2
+
+    static func shouldEvaluate(
+        speaker: SpeakerTag,
+        purpose: CapturePurpose,
+        answerMode: AssistantAnswerMode,
+        isEnabled: Bool
+    ) -> Bool {
+        isEnabled
+            && speaker == .other
+            && purpose == .interview
+            && answerMode == .plausibleRehearsal
+    }
+
+    static func delayMilliseconds(forAttempt attempt: Int) -> Int {
+        attempt == 0 ? 600 : 200
+    }
+}

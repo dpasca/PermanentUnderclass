@@ -187,6 +187,28 @@ struct ReferenceMaterialView: View {
                     )
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.orange)
+
+                    Divider()
+
+                    Toggle(
+                        isOn: $controller.assistantEarlyBridgeEnabled
+                    ) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Early speaking bridge (experimental)")
+                                .font(.body.weight(.semibold))
+                            Text(
+                                "Uses a fast Priority request while the interviewer is still speaking. It shows one fact-free opening sentence, then the complete Answer Mirror cue replaces it. This can make an additional model call and may misread an unfinished question."
+                            )
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(
+                        controller.isListening
+                            || controller.syntheticInterviewState.isActive
+                    )
                 }
 
                 Text(
@@ -581,6 +603,7 @@ struct ReferenceMaterialView: View {
                     showsPlausibleRehearsalConfirmation = true
                 } else {
                     controller.assistantAnswerMode = .grounded
+                    controller.assistantEarlyBridgeEnabled = false
                 }
             }
         )

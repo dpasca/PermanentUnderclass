@@ -108,6 +108,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var title: String?
     var isPreparingSyntheticInterview = false
     var answerMode: AssistantAnswerMode = .grounded
+    var earlyBridgeEnabled = false
 }
 
 enum CompanionSessionSource: String, Codable, Equatable, Sendable {
@@ -173,6 +174,14 @@ struct CompanionAnswerBeat: Codable, Equatable, Sendable {
     let point: String
 }
 
+struct CompanionPlausibleRehearsalPlan: Codable, Equatable, Sendable {
+    let projectAnchor: String
+    let observedSignal: String
+    let mechanismChange: String
+    let discriminatingCheck: String
+    let boundedOutcome: String
+}
+
 enum CompanionSuggestionConfidence: String, Codable, Equatable, Sendable {
     case low
     case medium
@@ -224,6 +233,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var groundingRepairMilliseconds: Int? = nil
     var answerMode: AssistantAnswerMode = .grounded
     var plausibleAssumptions: [String] = []
+    var plausibleRehearsalPlan: CompanionPlausibleRehearsalPlan? = nil
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -243,8 +253,18 @@ enum CompanionInferenceOutcome: String, Codable, Equatable, Sendable {
     case failed
 }
 
+struct CompanionAssistantBridge: Codable, Equatable, Sendable {
+    let id: String
+    let topicID: String
+    let sourceText: String
+    let text: String
+    let generatedAt: Date
+    let generationMilliseconds: Int
+}
+
 struct CompanionAssistantState: Codable, Equatable, Sendable {
     var phase: CompanionAssistantPhase = .idle
+    var bridge: CompanionAssistantBridge?
     var suggestion: CompanionAssistantSuggestion?
     var suggestionHistory: [CompanionAssistantSuggestion] = []
     var lastError: String?
@@ -391,7 +411,8 @@ actor CompanionEventHub {
         source: CompanionSessionSource = .liveCapture,
         title: String? = nil,
         isPreparingSyntheticInterview: Bool = false,
-        answerMode: AssistantAnswerMode = .grounded
+        answerMode: AssistantAnswerMode = .grounded,
+        earlyBridgeEnabled: Bool = false
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
@@ -409,6 +430,9 @@ actor CompanionEventHub {
         state.session.answerMode = purpose == .interview
             ? answerMode
             : .grounded
+        state.session.earlyBridgeEnabled = purpose == .interview
+            && answerMode == .plausibleRehearsal
+            && earlyBridgeEnabled
         switch purpose {
         case .meeting:
             state.session.behaviorName = "Meeting assistant"
@@ -416,9 +440,14 @@ actor CompanionEventHub {
                 "Ground concise response cues in the meeting references"
         case .interview:
             state.session.behaviorName = "Answer mirror"
-            state.session.behaviorDetail = answerMode == .plausibleRehearsal
-                ? "Draft plausible, project-specific rehearsal answers to verify"
-                : "Show grounded shorthand beats when the interviewer pauses"
+            if state.session.earlyBridgeEnabled {
+                state.session.behaviorDetail =
+                    "Show an experimental early bridge, then a plausible rehearsal draft"
+            } else {
+                state.session.behaviorDetail = answerMode == .plausibleRehearsal
+                    ? "Draft plausible, project-specific rehearsal answers to verify"
+                    : "Show grounded shorthand beats when the interviewer pauses"
+            }
         case nil:
             state.session.behaviorName = "Answer mirror"
             state.session.behaviorDetail =
@@ -506,6 +535,28 @@ actor CompanionEventHub {
     }
 
     @discardableResult
+    func assistantBridged(
+        _ bridge: CompanionAssistantBridge
+    ) -> CompanionEvent {
+        state.assistant.bridge = bridge
+        return publish(name: "assistant.bridge", payload: bridge)
+    }
+
+    @discardableResult
+    func assistantSupersededForNewTurn() -> CompanionEvent {
+        state.assistant.phase = state.assistant.suggestion == nil
+            ? .idle
+            : .ready
+        state.assistant.bridge = nil
+        state.assistant.lastError = nil
+        state.assistant.evaluatingSequence = nil
+        state.assistant.evaluatingTrigger = nil
+        state.assistant.evaluationTriggeredAt = nil
+        state.assistant.evaluationStartedAt = nil
+        return publish(name: "assistant.state", payload: state.assistant)
+    }
+
+    @discardableResult
     func assistantSuggested(
         _ suggestion: CompanionAssistantSuggestion,
         outcome: CompanionInferenceOutcome? = nil
@@ -524,6 +575,7 @@ actor CompanionEventHub {
             topicNumbersByID[topicID] = topicCount
         }
         state.assistant.phase = .ready
+        state.assistant.bridge = nil
         state.assistant.suggestion = numberedSuggestion
         state.assistant.suggestionHistory.removeAll {
             $0.id == numberedSuggestion.id
@@ -563,6 +615,7 @@ actor CompanionEventHub {
         let evaluationTriggeredAt = triggeredAt
             ?? state.assistant.evaluationTriggeredAt
         state.assistant.phase = .idle
+        state.assistant.bridge = nil
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
         state.assistant.evaluatingTrigger = nil
@@ -586,6 +639,7 @@ actor CompanionEventHub {
         outcome: CompanionInferenceOutcome = .failed
     ) -> CompanionEvent {
         state.assistant.phase = unavailable ? .unavailable : .failed
+        state.assistant.bridge = nil
         state.assistant.lastError = message
         if !unavailable, let sequence = state.assistant.evaluatingSequence {
             state.assistant.lastEvaluatedSequence = sequence

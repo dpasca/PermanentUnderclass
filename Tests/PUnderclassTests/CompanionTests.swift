@@ -159,6 +159,90 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.behaviorDetail.contains("plausible"))
     }
 
+    func testInterviewSessionOnlyPublishesEarlyBridgeForPlausibleMode() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .interview,
+            answerMode: .grounded,
+            earlyBridgeEnabled: true
+        )
+        var snapshot = await hub.snapshot()
+        XCTAssertFalse(snapshot.session.earlyBridgeEnabled)
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .interview,
+            answerMode: .plausibleRehearsal,
+            earlyBridgeEnabled: true
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertTrue(snapshot.session.earlyBridgeEnabled)
+        XCTAssertTrue(snapshot.session.behaviorDetail.contains("early bridge"))
+    }
+
+    func testEarlyBridgeSurvivesWorkingStateAndFullSuggestionReplacesIt() async
+        throws
+    {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        let bridge = CompanionAssistantBridge(
+            id: "bridge-1",
+            topicID: "other-turn-1",
+            sourceText: "How did you verify the bottleneck?",
+            text: "I'd first check where the time is going, then narrow it down.",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generationMilliseconds: 1_420
+        )
+
+        let event = await hub.assistantBridged(bridge)
+        let published = try CompanionJSON.decoder().decode(
+            CompanionAssistantBridge.self,
+            from: CompanionJSON.encoder().encode(event.payload)
+        )
+        XCTAssertEqual(published, bridge)
+
+        _ = await hub.assistantWorking(basedOnSequence: 4)
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.bridge, bridge)
+
+        _ = await hub.assistantSuggested(
+            answerSuggestion(
+                id: "answer-1",
+                sequence: 5,
+                topicID: "other-turn-1"
+            )
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.assistant.bridge)
+        XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-1")
+    }
+
+    func testNewInterviewerTurnSupersedesStaleBridgeAndWorkingState() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        _ = await hub.assistantBridged(
+            CompanionAssistantBridge(
+                id: "bridge-old",
+                topicID: "other-turn-old",
+                sourceText: "Tell me about an optimization.",
+                text: "I'd start with what changed, then how I checked it.",
+                generatedAt: Date(timeIntervalSince1970: 100),
+                generationMilliseconds: 1_300
+            )
+        )
+        _ = await hub.assistantWorking(basedOnSequence: 4)
+
+        _ = await hub.assistantSupersededForNewTurn()
+
+        let snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.assistant.bridge)
+        XCTAssertEqual(snapshot.assistant.phase, .idle)
+        XCTAssertNil(snapshot.assistant.evaluatingSequence)
+        XCTAssertNil(snapshot.assistant.evaluatingTrigger)
+    }
+
     func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
         let hub = CompanionEventHub(streamID: "test-stream")
         let triggeredAt = Date(timeIntervalSince1970: 100)
@@ -353,6 +437,129 @@ final class CompanionTests: XCTestCase {
                 purpose: .meeting
             )
         )
+        XCTAssertTrue(
+            EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+                speaker: .other,
+                purpose: .interview,
+                answerMode: .plausibleRehearsal,
+                isEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+                speaker: .other,
+                purpose: .interview,
+                answerMode: .grounded,
+                isEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+                speaker: .other,
+                purpose: .meeting,
+                answerMode: .plausibleRehearsal,
+                isEnabled: true
+            )
+        )
+        XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn,
+            2
+        )
+        XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
+                forAttempt: 0
+            ),
+            600
+        )
+        XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
+                forAttempt: 1
+            ),
+            200
+        )
+    }
+
+    func testEarlyInterviewBridgeUsesPriorityLunaAndStrictOutput() throws {
+        let data = try EarlyInterviewBridgeClient.requestBody(
+            currentPartial:
+                "How did you verify that you found the right bottleneck?",
+            recentTranscript: "You: I changed the upload path.",
+            sessionContext: "Rendering systems interview."
+        )
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
+        XCTAssertEqual(root["service_tier"] as? String, "priority")
+        XCTAssertEqual(root["store"] as? Bool, false)
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 60)
+        XCTAssertNil(root["tools"])
+        XCTAssertEqual(
+            (root["reasoning"] as? [String: String])?["effort"],
+            "none"
+        )
+
+        let input = try XCTUnwrap(root["input"] as? [[String: Any]])
+        let developerContent = try XCTUnwrap(
+            input[0]["content"] as? [[String: Any]]
+        )
+        let developerPrompt = try XCTUnwrap(
+            developerContent[0]["text"] as? String
+        )
+        XCTAssertTrue(developerPrompt.contains("temporary first sentence"))
+        XCTAssertTrue(developerPrompt.contains("Never claim or imply a project"))
+        XCTAssertTrue(developerPrompt.contains("short clauses, contractions"))
+        XCTAssertTrue(developerPrompt.contains("Avoid formal coaching language"))
+        let userContent = try XCTUnwrap(
+            input[1]["content"] as? [[String: Any]]
+        )
+        let userPrompt = try XCTUnwrap(userContent[0]["text"] as? String)
+        XCTAssertTrue(userPrompt.contains("CURRENT PARTIAL INTERVIEWER SPEECH"))
+        XCTAssertTrue(userPrompt.contains("right bottleneck"))
+
+        let text = try XCTUnwrap(root["text"] as? [String: Any])
+        let format = try XCTUnwrap(text["format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_schema")
+        XCTAssertEqual(format["strict"] as? Bool, true)
+        let schema = try XCTUnwrap(format["schema"] as? [String: Any])
+        XCTAssertEqual(schema["additionalProperties"] as? Bool, false)
+        XCTAssertEqual(schema["required"] as? [String], ["bridge"])
+    }
+
+    func testEarlyInterviewBridgeParsesSafeBridgeAndNoShow() throws {
+        let shown = try EarlyInterviewBridgeClient.parseResponse(
+            try earlyBridgeResponseData(
+                bridge:
+                    "I'd first check where the time is going, then narrow it down."
+            ),
+            generationMilliseconds: 1_420
+        )
+        XCTAssertEqual(
+            shown.bridge,
+            "I'd first check where the time is going, then narrow it down."
+        )
+        XCTAssertEqual(shown.generationMilliseconds, 1_420)
+        XCTAssertEqual(shown.serviceTier, "priority")
+        XCTAssertEqual(shown.usage.inputTokens, 132)
+        XCTAssertEqual(shown.usage.outputTokens, 29)
+
+        let hidden = try EarlyInterviewBridgeClient.parseResponse(
+            try earlyBridgeResponseData(bridge: ""),
+            generationMilliseconds: 900
+        )
+        XCTAssertNil(hidden.bridge)
+
+        XCTAssertThrowsError(
+            try EarlyInterviewBridgeClient.parseResponse(
+                try earlyBridgeResponseData(
+                    bridge: Array(repeating: "word", count: 19)
+                        .joined(separator: " ")
+                ),
+                generationMilliseconds: 900
+            )
+        ) { error in
+            XCTAssertEqual(error as? LiveAssistantError, .invalidResponse)
+        }
     }
 
     func testSyntheticInterviewGenerationUsesReferencesAndBuildsFiveExchanges() throws {
@@ -607,7 +814,22 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertTrue(
             LiveAssistantClient.interviewBehaviorInstructions.contains(
-                "plain, conversational wording"
+                "ordinary vocabulary, short clauses"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "match its usual sentence length and level of formality"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "Colloquial does not mean sloppy"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "the CPU spent less time submitting draws"
             )
         )
         XCTAssertTrue(
@@ -622,7 +844,32 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertTrue(
             LiveAssistantClient.plausibleRehearsalInstructions.contains(
-                "choose one plausible incident within that project"
+                "five non-empty fields"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "A component inventory is not a change"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "silent plain-language pass"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "Name the project or work setting once"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "let its field names shape the spoken wording"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "Never put provenance, uncertainty, or memory disclaimers"
             )
         )
         XCTAssertTrue(
@@ -719,6 +966,38 @@ final class CompanionTests: XCTestCase {
             (highReasoningRoot["reasoning"] as? [String: String])?["effort"],
             "xhigh"
         )
+        let highReasoningText = try XCTUnwrap(
+            highReasoningRoot["text"] as? [String: Any]
+        )
+        let highReasoningFormat = try XCTUnwrap(
+            highReasoningText["format"] as? [String: Any]
+        )
+        let plausibleSchema = try XCTUnwrap(
+            highReasoningFormat["schema"] as? [String: Any]
+        )
+        let plausibleProperties = try XCTUnwrap(
+            plausibleSchema["properties"] as? [String: Any]
+        )
+        let plausibleBeats = try XCTUnwrap(
+            plausibleProperties["beats"] as? [String: Any]
+        )
+        XCTAssertEqual(plausibleBeats["minItems"] as? Int, 3)
+        XCTAssertEqual(plausibleBeats["maxItems"] as? Int, 3)
+        XCTAssertNotNil(plausibleProperties["plausibleRehearsalPlan"])
+
+        let plausibleDefaultBudgetData = try LiveAssistantClient.requestBody(
+            for: plan,
+            purpose: .interview,
+            answerMode: .plausibleRehearsal
+        )
+        let plausibleDefaultBudgetRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: plausibleDefaultBudgetData)
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            plausibleDefaultBudgetRoot["max_output_tokens"] as? Int,
+            650
+        )
 
         let requiredSearchData = try LiveAssistantClient.requestBody(
             for: plan,
@@ -730,13 +1009,28 @@ final class CompanionTests: XCTestCase {
                 as? [String: Any]
         )
         XCTAssertEqual(requiredSearchRoot["tool_choice"] as? String, "required")
-        XCTAssertEqual(requiredSearchRoot["max_output_tokens"] as? Int, 600)
+        XCTAssertEqual(requiredSearchRoot["max_output_tokens"] as? Int, 800)
         let requiredSearchTools = try XCTUnwrap(
             requiredSearchRoot["tools"] as? [[String: Any]]
         )
         XCTAssertEqual(
             requiredSearchTools[0]["search_context_size"] as? String,
             "high"
+        )
+
+        let plausibleRequiredSearchData = try LiveAssistantClient.requestBody(
+            for: plan,
+            purpose: .interview,
+            webSearchMode: .required,
+            answerMode: .plausibleRehearsal
+        )
+        let plausibleRequiredSearchRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: plausibleRequiredSearchData)
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            plausibleRequiredSearchRoot["max_output_tokens"] as? Int,
+            900
         )
 
         let meetingData = try LiveAssistantClient.requestBody(
@@ -930,6 +1224,13 @@ final class CompanionTests: XCTestCase {
         plausibleOutput["plausibleAssumptions"] = [
             "The checkout project is real; the cache experiment is rehearsed."
         ]
+        plausibleOutput["plausibleRehearsalPlan"] = [
+            "projectAnchor": "Checkout path",
+            "observedSignal": "Repeated inventory lookups raised p95 latency",
+            "mechanismChange": "Batched the lookups instead of issuing one per item",
+            "discriminatingCheck": "Replayed the same recorded traffic before and after",
+            "boundedOutcome": "The repeated-query bottleneck stopped dominating p95"
+        ]
         let plausibleOutputData = try JSONSerialization.data(
             withJSONObject: plausibleOutput
         )
@@ -959,6 +1260,41 @@ final class CompanionTests: XCTestCase {
             plausibleGeneration.suggestion?.plausibleAssumptions,
             ["The checkout project is real; the cache experiment is rehearsed."]
         )
+        XCTAssertEqual(
+            plausibleGeneration.suggestion?.plausibleRehearsalPlan?
+                .mechanismChange,
+            "Batched the lookups instead of issuing one per item"
+        )
+        var missingPlanOutput = plausibleOutput
+        missingPlanOutput.removeValue(forKey: "plausibleRehearsalPlan")
+        let missingPlanOutputData = try JSONSerialization.data(
+            withJSONObject: missingPlanOutput
+        )
+        let missingPlanOutputText = try XCTUnwrap(
+            String(data: missingPlanOutputData, encoding: .utf8)
+        )
+        var missingPlanResponse = response
+        missingPlanResponse["output"] = [[
+            "type": "message",
+            "content": [[
+                "type": "output_text",
+                "text": missingPlanOutputText
+            ]]
+        ]]
+        let missingPlanData = try JSONSerialization.data(
+            withJSONObject: missingPlanResponse
+        )
+        XCTAssertThrowsError(
+            try LiveAssistantClient.parseResponse(
+                missingPlanData,
+                allowedReferencePaths: ["Projects/Checkout.md"],
+                basedOnSequence: 22,
+                generationMilliseconds: 300,
+                answerMode: .plausibleRehearsal
+            )
+        ) { error in
+            XCTAssertEqual(error as? LiveAssistantError, .invalidResponse)
+        }
         XCTAssertThrowsError(
             try LiveAssistantClient.parseResponse(
                 plausibleData,
@@ -1283,6 +1619,33 @@ final class CompanionTests: XCTestCase {
                 ],
                 "output_tokens": 180,
                 "output_tokens_details": ["reasoning_tokens": 20]
+            ]
+        ]
+        return try JSONSerialization.data(withJSONObject: response)
+    }
+
+    private func earlyBridgeResponseData(bridge: String) throws -> Data {
+        let outputData = try JSONSerialization.data(
+            withJSONObject: ["bridge": bridge]
+        )
+        let outputText = try XCTUnwrap(
+            String(data: outputData, encoding: .utf8)
+        )
+        let response: [String: Any] = [
+            "status": "completed",
+            "service_tier": "priority",
+            "output": [[
+                "type": "message",
+                "content": [["type": "output_text", "text": outputText]]
+            ]],
+            "usage": [
+                "input_tokens": 132,
+                "input_tokens_details": [
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0
+                ],
+                "output_tokens": 29,
+                "output_tokens_details": ["reasoning_tokens": 0]
             ]
         ]
         return try JSONSerialization.data(withJSONObject: response)
