@@ -804,13 +804,16 @@ final class CompanionTests: XCTestCase {
             [CompanionCitation(label: "Project brief", path: "Projects/Checkout.md")]
         )
 
-        let ungrounded = try LiveAssistantClient.parseResponse(
-            data,
-            allowedReferencePaths: [],
-            basedOnSequence: 19,
-            generationMilliseconds: 320
-        )
-        XCTAssertNil(ungrounded.suggestion)
+        XCTAssertThrowsError(
+            try LiveAssistantClient.parseResponse(
+                data,
+                allowedReferencePaths: [],
+                basedOnSequence: 19,
+                generationMilliseconds: 320
+            )
+        ) { error in
+            XCTAssertEqual(error as? LiveAssistantError, .invalidGrounding)
+        }
 
         var generalOutput = output
         generalOutput["grounding"] = "generalKnowledge"
@@ -889,13 +892,16 @@ final class CompanionTests: XCTestCase {
         let unsupportedWebData = try JSONSerialization.data(
             withJSONObject: unsupportedWebResponse
         )
-        let unsupportedWebGeneration = try LiveAssistantClient.parseResponse(
-            unsupportedWebData,
-            allowedReferencePaths: [],
-            basedOnSequence: 21,
-            generationMilliseconds: 410
-        )
-        XCTAssertNil(unsupportedWebGeneration.suggestion)
+        XCTAssertThrowsError(
+            try LiveAssistantClient.parseResponse(
+                unsupportedWebData,
+                allowedReferencePaths: [],
+                basedOnSequence: 21,
+                generationMilliseconds: 410
+            )
+        ) { error in
+            XCTAssertEqual(error as? LiveAssistantError, .invalidGrounding)
+        }
 
         var tooShortOutput = generalOutput
         let allBeats = try XCTUnwrap(
