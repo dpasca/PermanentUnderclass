@@ -78,8 +78,13 @@ There are two explicit live behaviors. **Meeting Assistant** drafts a concise,
 first-person response outline when the other participant asks a clear question,
 makes a request, or raises a decision. It prefers local project facts and marks
 unsupported factual answers for verification rather than inventing commitments,
-metrics, deadlines, or status. **Answer Mirror** drafts an interview answer
-outline without inventing personal experience.
+metrics, deadlines, or status. **Answer Mirror** defaults to a grounded
+interview answer outline. Its explicitly confirmed, session-scoped **Plausible
+Rehearsal** mode may attach a draft to a relevant project and extrapolate a
+modest bottleneck, action, validation step, and outcome. The Mac and iPad mark
+the result as a rehearsal to verify, and the structured result carries the
+material assumptions separately. Extreme financial, popularity, and
+performance claims remain forbidden.
 
 Both behaviors give the same Responses API call access to OpenAI's hosted web
 search when current or public facts would materially improve a cue. Search is
@@ -90,7 +95,7 @@ its cited URL is present in the response's hosted-search source metadata, and
 the display makes that source visible and clickable.
 
 In either mode, an 800 ms pause in the other speaker's audio can trigger a
-structured `gpt-5.6-luna` Responses API outline from the current partial
+structured `gpt-5.6-terra` Responses API outline at low reasoning effort from the current partial
 transcript before the 3 second final-turn boundary. The finalized turn remains
 a fallback, and an exact partial/final duplicate is coalesced rather than billed
 twice. The user's speech stays visible in the transcript but does not replace

@@ -13,6 +13,9 @@ final class MeetingController: ObservableObject {
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
     @Published var preparationPurpose: CapturePurpose = .meeting
+    @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
+    @Published private(set) var activeAssistantAnswerMode:
+        AssistantAnswerMode = .grounded
     /// Local-first: the app is fully usable on a fresh install with no key.
     @Published var refinementEngine: TranscriptRefinementEngine = .localWhisper
     @Published var processes: [AudioProcessInfo] = []
@@ -484,6 +487,7 @@ final class MeetingController: ObservableObject {
             syntheticInterviewState = SyntheticInterviewState.ready(for: purpose)
             syntheticInterviewReferences = nil
             capturePurpose = purpose
+            activateAssistantAnswerMode(for: purpose)
             prepareCompanionForNewSession()
             let context = try transcriptionContext(for: purpose)
             uniqueRefinementClients().forEach { $0.disconnect() }
@@ -695,6 +699,7 @@ final class MeetingController: ObservableObject {
             } else {
                 self?.statusMessage = "Stopped"
             }
+            self?.assistantAnswerMode = .grounded
             self?.publishCompanionSession()
         }
     }
@@ -1228,6 +1233,7 @@ final class MeetingController: ObservableObject {
         let runID = UUID()
         syntheticInterviewRunID = runID
         capturePurpose = purpose
+        activateAssistantAnswerMode(for: purpose)
         prepareCompanionForNewSession()
         localTrack = TrackViewState()
         remoteTrack = TrackViewState()
@@ -1362,6 +1368,7 @@ final class MeetingController: ObservableObject {
         syntheticInterviewRunID = runID
         syntheticInterviewReferences = nil
         capturePurpose = .interview
+        activeAssistantAnswerMode = .grounded
         prepareCompanionForNewSession()
         localTrack = TrackViewState()
         remoteTrack = TrackViewState()
@@ -1648,6 +1655,7 @@ final class MeetingController: ObservableObject {
         syntheticInterviewState.title = title
         syntheticInterviewState.detail = detail
         statusMessage = title
+        assistantAnswerMode = .grounded
         publishCompanionSession()
     }
 
@@ -2193,6 +2201,12 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    private func activateAssistantAnswerMode(for purpose: CapturePurpose) {
+        activeAssistantAnswerMode = purpose == .interview
+            ? assistantAnswerMode
+            : .grounded
+    }
+
     private func publishCompanionSession() {
         let listening = isListening || syntheticInterviewState.isRunning
         let status = statusMessage
@@ -2208,6 +2222,9 @@ final class MeetingController: ObservableObject {
             ? syntheticInterviewState.purpose
             : capturePurpose
         let isPreparingSyntheticInterview = syntheticInterviewState.isGenerating
+        let answerMode = purpose == .interview
+            ? activeAssistantAnswerMode
+            : .grounded
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
@@ -2215,7 +2232,8 @@ final class MeetingController: ObservableObject {
                 purpose: purpose,
                 source: source,
                 title: title,
-                isPreparingSyntheticInterview: isPreparingSyntheticInterview
+                isPreparingSyntheticInterview: isPreparingSyntheticInterview,
+                answerMode: answerMode
             )
         }
     }
@@ -2383,6 +2401,9 @@ final class MeetingController: ObservableObject {
         let sessionContext = contextPrompt(for: purpose).trimmingCharacters(
             in: .whitespacesAndNewlines
         )
+        let answerMode = purpose == .interview
+            ? activeAssistantAnswerMode
+            : .grounded
         let pendingCompanionUpdates = companionUpdateTail
         let hub = companionGateway.hub
         let client = liveAssistantClient
@@ -2395,7 +2416,7 @@ final class MeetingController: ObservableObject {
             : 0
 
         Self.liveAssistantLogger.notice(
-            "assistant_check_scheduled trigger=\(trigger.rawValue, privacy: .public) trigger_speaker=\(speaker.rawValue, privacy: .public) speech_pause_ms=\(speechPauseMilliseconds, privacy: .public) schedule_delay_ms=\(delayMilliseconds, privacy: .public)"
+            "assistant_check_scheduled trigger=\(trigger.rawValue, privacy: .public) trigger_speaker=\(speaker.rawValue, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) speech_pause_ms=\(speechPauseMilliseconds, privacy: .public) schedule_delay_ms=\(delayMilliseconds, privacy: .public)"
         )
 
         assistantGenerationTask = Task {
@@ -2470,7 +2491,8 @@ final class MeetingController: ObservableObject {
                     purpose: purpose,
                     basedOnSequence: basedOnSequence,
                     trigger: trigger,
-                    webSearchMode: webSearchMode
+                    webSearchMode: webSearchMode,
+                    answerMode: answerMode
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
@@ -2483,7 +2505,7 @@ final class MeetingController: ObservableObject {
                 let grounding = generation.suggestion?.grounding.rawValue
                     ?? "none"
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) model=\(LiveAssistantClient.model, privacy: .public) reasoning_effort=\(LiveAssistantConfiguration.production.reasoningEffort.rawValue, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
@@ -3097,6 +3119,8 @@ final class MeetingController: ObservableObject {
         refinementStates.removeAll()
         activeContext = nil
         activeSessionID = nil
+        activeAssistantAnswerMode = .grounded
+        assistantAnswerMode = .grounded
         isListening = false
         capturePurpose = nil
         localTrack.socket = .idle

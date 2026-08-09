@@ -111,10 +111,32 @@ OPENAI_API_KEY="..." RUN_ASSISTANT_QUALITY_EVALS=1 \
 ```
 
 The eval generates real cues and uses a structured model judge for directness,
-spoken naturalness, specificity, grounding safety, and concise usability. Set
+spoken naturalness, specificity, causal usefulness, grounding safety,
+plausibility safety, and concise usability. Set
 `ANSWER_MIRROR_EVAL_JUDGE_MODEL` to use a different available judge model. The
 eval makes hosted API requests and may incur usage charges. To iterate on one
 fixture, also set `ANSWER_MIRROR_EVAL_CASE` to its printed case name.
+
+For model, reasoning-effort, and prompt selection against private interview
+material, keep the fixture outside the repository and run:
+
+```sh
+OPENAI_API_KEY="..." RUN_ANSWER_MIRROR_PRIVATE_BENCHMARK=1 \
+  ANSWER_MIRROR_PRIVATE_BENCHMARK_PATH="/absolute/private-suite.json" \
+  swift test --filter LiveAssistantPrivateBenchmarkTests
+```
+
+The external JSON contains `cases` with `name`, `question`,
+`referenceFolderPath`, `answerMode`, and `expectedGrounding`; optional fields are
+`recentTranscript`, `currentPartial`, and `sessionContext`. It may also contain
+`promptVariants`, each with `name` and optional `instructions`. By default the
+benchmark compares Luna at none, low, and xhigh reasoning with Terra at none,
+low, and medium reasoning. Override the matrix with a comma-separated value such
+as `ANSWER_MIRROR_BENCHMARK_CONFIGS="gpt-5.6-terra:low,gpt-5.6-luna:xhigh"`
+and repeat each cell with `ANSWER_MIRROR_BENCHMARK_REPETITIONS=3`. It prints
+JSON result and aggregate lines with generation latency and structured quality
+scores. Files ending in `.answer-mirror-benchmark.json` and the local
+`.answer-mirror-benchmarks/` directory are ignored by Git.
 
 ## Documentation
 

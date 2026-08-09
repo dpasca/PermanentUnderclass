@@ -144,6 +144,21 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.behaviorDetail.contains("Ground concise"))
     }
 
+    func testInterviewSessionPublishesPlausibleRehearsalMode() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .interview,
+            answerMode: .plausibleRehearsal
+        )
+        let snapshot = await hub.snapshot()
+
+        XCTAssertEqual(snapshot.session.answerMode, .plausibleRehearsal)
+        XCTAssertTrue(snapshot.session.behaviorDetail.contains("plausible"))
+    }
+
     func testAssistantStateReportsACompletedCheckWithoutGuidance() async {
         let hub = CompanionEventHub(streamID: "test-stream")
         let triggeredAt = Date(timeIntervalSince1970: 100)
@@ -606,6 +621,11 @@ final class CompanionTests: XCTestCase {
             )
         )
         XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "choose one plausible incident within that project"
+            )
+        )
+        XCTAssertTrue(
             LiveAssistantClient.meetingBehaviorInstructions.contains(
                 "Never fabricate a commitment"
             )
@@ -627,7 +647,7 @@ final class CompanionTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
+        XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
@@ -644,7 +664,7 @@ final class CompanionTests: XCTestCase {
             ["web_search_call.action.sources"]
         )
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
-        XCTAssertEqual(reasoning["effort"], "none")
+        XCTAssertEqual(reasoning["effort"], "low")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]
@@ -676,6 +696,29 @@ final class CompanionTests: XCTestCase {
         XCTAssertNotNil(properties["preamble"])
         XCTAssertEqual(beats["minItems"] as? Int, 2)
         XCTAssertEqual(beats["maxItems"] as? Int, 3)
+        XCTAssertNotNil(properties["usedExtrapolation"])
+        XCTAssertNotNil(properties["plausibleAssumptions"])
+
+        let highReasoningData = try LiveAssistantClient.requestBody(
+            for: plan,
+            purpose: .interview,
+            answerMode: .plausibleRehearsal,
+            configuration: LiveAssistantConfiguration(
+                model: "gpt-5.6-terra",
+                reasoningEffort: .xhigh,
+                maximumOutputTokens: 1_200
+            )
+        )
+        let highReasoningRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: highReasoningData)
+                as? [String: Any]
+        )
+        XCTAssertEqual(highReasoningRoot["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(highReasoningRoot["max_output_tokens"] as? Int, 1_200)
+        XCTAssertEqual(
+            (highReasoningRoot["reasoning"] as? [String: String])?["effort"],
+            "xhigh"
+        )
 
         let requiredSearchData = try LiveAssistantClient.requestBody(
             for: plan,
@@ -881,6 +924,52 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(fallback.suggestion?.grounding, .generalKnowledge)
         XCTAssertEqual(fallback.suggestion?.citations, [])
         XCTAssertEqual(fallback.outcome, .suggestion)
+
+        var plausibleOutput = output
+        plausibleOutput["usedExtrapolation"] = true
+        plausibleOutput["plausibleAssumptions"] = [
+            "The checkout project is real; the cache experiment is rehearsed."
+        ]
+        let plausibleOutputData = try JSONSerialization.data(
+            withJSONObject: plausibleOutput
+        )
+        let plausibleOutputText = try XCTUnwrap(
+            String(data: plausibleOutputData, encoding: .utf8)
+        )
+        var plausibleResponse = response
+        plausibleResponse["output"] = [[
+            "type": "message",
+            "content": [["type": "output_text", "text": plausibleOutputText]]
+        ]]
+        let plausibleData = try JSONSerialization.data(
+            withJSONObject: plausibleResponse
+        )
+        let plausibleGeneration = try LiveAssistantClient.parseResponse(
+            plausibleData,
+            allowedReferencePaths: ["Projects/Checkout.md"],
+            basedOnSequence: 22,
+            generationMilliseconds: 300,
+            answerMode: .plausibleRehearsal
+        )
+        XCTAssertEqual(
+            plausibleGeneration.suggestion?.answerMode,
+            .plausibleRehearsal
+        )
+        XCTAssertEqual(
+            plausibleGeneration.suggestion?.plausibleAssumptions,
+            ["The checkout project is real; the cache experiment is rehearsed."]
+        )
+        XCTAssertThrowsError(
+            try LiveAssistantClient.parseResponse(
+                plausibleData,
+                allowedReferencePaths: ["Projects/Checkout.md"],
+                basedOnSequence: 22,
+                generationMilliseconds: 300,
+                answerMode: .grounded
+            )
+        ) { error in
+            XCTAssertEqual(error as? LiveAssistantError, .invalidGrounding)
+        }
 
         var hiddenOutput = generalOutput
         hiddenOutput["shouldShow"] = false

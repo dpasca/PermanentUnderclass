@@ -253,6 +253,41 @@ button:focus-visible {
   color: var(--amber);
 }
 
+.listening-strip.is-plausible #topicEyebrow {
+  color: var(--amber);
+}
+
+.answer-card.is-plausible .grounding-notice {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  max-width: 54rem;
+  margin: 0 0 clamp(
+    calc(12px * var(--cue-scale)),
+    calc(2vh * var(--cue-scale)),
+    calc(22px * var(--cue-scale))
+  );
+  padding: 9px 12px;
+  border: 1px solid rgba(242, 189, 113, .3);
+  border-radius: 9px;
+  background: rgba(242, 189, 113, .08);
+  color: var(--amber);
+  font-size: clamp(
+    calc(10px * var(--cue-scale)),
+    calc(.9vw * var(--cue-scale)),
+    calc(13px * var(--cue-scale))
+  );
+}
+
+.answer-card.is-plausible .grounding-notice > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.answer-card.is-plausible .grounding-notice small {
+  color: var(--muted);
+}
+
 .answer-card {
   width: 100%;
 }

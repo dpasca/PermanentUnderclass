@@ -41,7 +41,7 @@ private struct SyntheticInterviewGeneratorOutput: Decodable {
 }
 
 struct SyntheticInterviewGeneratorClient: Sendable {
-    static let model = LiveAssistantClient.model
+    static let model = "gpt-5.6-luna"
     static let endpoint = LiveAssistantClient.endpoint
 
     static let interviewBehaviorInstructions = """

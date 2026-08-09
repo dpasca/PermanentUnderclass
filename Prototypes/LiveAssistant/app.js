@@ -228,6 +228,7 @@ function renderInferenceStatus() {
   const meeting = session?.purpose === "meeting";
   const assistantName = meeting ? "Meeting Assistant" : "Answer Mirror";
   const otherSpeaker = meeting ? "other participant" : "interviewer";
+  const plausibleRehearsal = session?.answerMode === "plausibleRehearsal";
 
   if (state.mode === "mock") {
     setInferenceStatus(
@@ -325,8 +326,10 @@ function renderInferenceStatus() {
       ? `Triggered by the latest ${trigger}.`
       : `Triggered by the latest ${trigger}; inference started after ${startDelay.toLocaleString()} ms.`;
     setInferenceStatus(
-      hasLocalReferences ? "working" : "general",
-      hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
+      plausibleRehearsal ? "general" : hasLocalReferences ? "working" : "general",
+      plausibleRehearsal
+        ? "PLAUSIBLE REHEARSAL · VERIFY"
+        : hasLocalReferences ? "INFERENCE RUNNING NOW" : "INFERENCE RUNNING · GENERAL KNOWLEDGE",
       hasLocalReferences
         ? `Drafting ${meeting ? "grounded response" : "comparison"} beats from the latest ${trigger}`
         : `Drafting an honest response outline from the latest ${trigger}`,
@@ -339,6 +342,8 @@ function renderInferenceStatus() {
   }
 
   if (assistant?.phase === "ready" && assistant.suggestion) {
+    const suggestionIsPlausible = assistant.suggestion.answerMode === "plausibleRehearsal"
+      || plausibleRehearsal;
     const usesGeneralKnowledge = assistant.suggestion.grounding === "generalKnowledge"
       || !(assistant.suggestion.citations || []).length;
     const repairedGrounding = assistant.lastEvaluationOutcome === "repairedGrounding"
@@ -348,14 +353,20 @@ function renderInferenceStatus() {
       ? ` Grounding was corrected with one retry${Number.isFinite(repairMilliseconds) ? `, adding ${repairMilliseconds.toLocaleString()} ms` : ""}.`
       : "";
     setInferenceStatus(
-      usesGeneralKnowledge ? "general" : "active",
-      usesGeneralKnowledge
+      suggestionIsPlausible ? "general" : usesGeneralKnowledge ? "general" : "active",
+      suggestionIsPlausible
+        ? "PLAUSIBLE REHEARSAL · VERIFY"
+        : usesGeneralKnowledge
         ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
         : "INFERENCE ACTIVE · LOCALLY GROUNDED",
-      usesGeneralKnowledge
+      suggestionIsPlausible
+        ? "A project-specific rehearsal draft is ready"
+        : usesGeneralKnowledge
         ? `${assistantName} outline ready without local support`
         : "A locally grounded answer outline is ready",
-      usesGeneralKnowledge
+      suggestionIsPlausible
+        ? `Unsupported details are rehearsal assumptions, even when a citation anchors the real project.${repairDetail}`
+        : usesGeneralKnowledge
         ? meeting
           ? `The outline marks what should be verified and avoids invented project facts.${repairDetail}`
           : `The outline is approach-oriented and avoids unverified personal claims.${repairDetail}`
@@ -699,10 +710,18 @@ function previousEntriesFor(suggestions, current) {
 
 function outlineText(suggestion) {
   if (!suggestion) return "";
+  const assumptions = suggestion.answerMode === "plausibleRehearsal"
+    && (suggestion.plausibleAssumptions || []).length
+    ? `Verify: ${suggestion.plausibleAssumptions.join("; ")}`
+    : null;
   return [
+    suggestion.answerMode === "plausibleRehearsal"
+      ? "[PLAUSIBLE REHEARSAL — VERIFY ASSUMPTIONS]"
+      : null,
     suggestion.question,
     suggestion.preamble,
-    ...(suggestion.beats || []).map((beat) => beat.point)
+    ...(suggestion.beats || []).map((beat) => beat.point),
+    assumptions
   ].filter(Boolean).join("\n");
 }
 
@@ -711,6 +730,9 @@ function groundingText(suggestion) {
   const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
   const usesWebSearch = suggestion.grounding === "webSearch" && citationCount > 0;
   const meeting = state.snapshot?.session?.purpose === "meeting";
+  if (suggestion.answerMode === "plausibleRehearsal") {
+    return "Plausible rehearsal draft · verify assumptions";
+  }
   if (usesGeneralKnowledge) {
     return meeting
       ? "Needs verification · no project facts invented"
@@ -857,9 +879,17 @@ function renderSuggestionStack(assistant) {
   $("#webCitations").hidden = !webCitations;
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
+  const plausibleRehearsal = current.answerMode === "plausibleRehearsal";
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
-  $("#groundingNotice").hidden = !usesGeneralKnowledge;
-  if (usesGeneralKnowledge) {
+  $("#answerCard").classList.toggle("is-plausible", plausibleRehearsal);
+  $("#groundingNotice").hidden = !plausibleRehearsal && !usesGeneralKnowledge;
+  if (plausibleRehearsal) {
+    const assumptionCount = (current.plausibleAssumptions || []).length;
+    $("#groundingNotice strong").textContent = "PLAUSIBLE REHEARSAL · VERIFY";
+    $("#groundingNotice small").textContent = assumptionCount
+      ? `${assumptionCount} invented premise${assumptionCount === 1 ? "" : "s"} disclosed; replace them with your real example.`
+      : "Treat project details and causal claims as a template until verified.";
+  } else if (usesGeneralKnowledge) {
     $("#groundingNotice strong").textContent = meeting
       ? "VERIFY BEFORE STATING"
       : "GENERAL GUIDANCE";
@@ -899,9 +929,14 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
   const suggestion = renderSuggestionStack(assistant);
+  const plausibleRehearsal = suggestion?.answerMode === "plausibleRehearsal"
+    || state.snapshot?.session?.answerMode === "plausibleRehearsal";
   listeningStrip.hidden = !suggestion;
-  listeningStrip.classList.remove("is-updating");
-  $("#topicEyebrow").textContent = "CURRENT TOPIC";
+  listeningStrip.classList.remove("is-updating", "is-plausible");
+  listeningStrip.classList.toggle("is-plausible", plausibleRehearsal);
+  $("#topicEyebrow").textContent = plausibleRehearsal
+    ? "PLAUSIBLE REHEARSAL · VERIFY"
+    : "CURRENT TOPIC";
   if (suggestion) {
     $("#questionText").textContent = suggestion.question;
     $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
@@ -921,9 +956,13 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     listeningStrip.hidden = false;
     listeningStrip.classList.add("is-updating");
     if (suggestion) {
-      $("#topicEyebrow").textContent = "CURRENT TOPIC · NEXT CUE DRAFTING";
+      $("#topicEyebrow").textContent = plausibleRehearsal
+        ? "PLAUSIBLE REHEARSAL · NEXT DRAFT"
+        : "CURRENT TOPIC · NEXT CUE DRAFTING";
     } else {
-      $("#topicEyebrow").textContent = "NEXT TOPIC";
+      $("#topicEyebrow").textContent = plausibleRehearsal
+        ? "PLAUSIBLE REHEARSAL · DRAFTING"
+        : "NEXT TOPIC";
       $("#questionText").textContent = `Drafting shorthand beats from the latest ${triggerLabel(assistant.evaluatingTrigger)}…`;
     }
     empty.hidden = true;

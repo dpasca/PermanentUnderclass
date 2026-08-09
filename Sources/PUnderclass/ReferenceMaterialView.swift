@@ -7,6 +7,7 @@ enum PUnderclassWindow {
 
 struct ReferenceMaterialView: View {
     @ObservedObject var controller: MeetingController
+    @State private var showsPlausibleRehearsalConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,6 +17,9 @@ struct ReferenceMaterialView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     sessionGuidanceSection
+                    if purpose == .interview {
+                        answerModeSection
+                    }
                     folderSection
                     recognitionHintsSection
                     assistantUsesSection
@@ -28,6 +32,19 @@ struct ReferenceMaterialView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 700)
+        .alert(
+            "Enable Plausible Rehearsal?",
+            isPresented: $showsPlausibleRehearsalConfirmation
+        ) {
+            Button("Enable for One Interview", role: .destructive) {
+                controller.assistantAnswerMode = .plausibleRehearsal
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The iPad will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts."
+            )
+        }
     }
 
     private var header: some View {
@@ -145,6 +162,45 @@ struct ReferenceMaterialView: View {
             .padding(8)
         } label: {
             Label("Session Guidance", systemImage: "text.alignleft")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
+    private var answerModeSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Answer mode", selection: answerModeBinding) {
+                    Text("Grounded").tag(AssistantAnswerMode.grounded)
+                    Text("Plausible rehearsal")
+                        .tag(AssistantAnswerMode.plausibleRehearsal)
+                }
+                .pickerStyle(.segmented)
+                .disabled(
+                    controller.isListening
+                        || controller.syntheticInterviewState.isActive
+                )
+
+                if controller.assistantAnswerMode == .plausibleRehearsal {
+                    Label(
+                        "Danger mode: useful as an answer template, not as a factual account.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.orange)
+                }
+
+                Text(
+                    controller.assistantAnswerMode == .plausibleRehearsal
+                        ? "The assistant may choose a relevant project, infer a modest bottleneck, action, validation, and outcome, and disclose those assumptions to the display. Extreme financial, popularity, and performance claims remain forbidden. This resets to Grounded when the interview ends."
+                        : "Past-experience claims must come from the transcript or indexed references. When evidence is missing, the assistant stays hypothetical instead of inventing history."
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+        } label: {
+            Label("Answer Mode", systemImage: "wand.and.stars")
                 .font(.title3.weight(.semibold))
         }
     }
@@ -343,7 +399,9 @@ struct ReferenceMaterialView: View {
                     title: "Answer Mirror",
                     icon: "person.crop.rectangle",
                     color: .purple,
-                    detail: "Uses supported experience and role context without inventing personal claims."
+                    detail: controller.assistantAnswerMode == .plausibleRehearsal
+                        ? "Drafts visibly labeled, project-specific rehearsal answers and exposes assumptions to verify."
+                        : "Uses supported experience and role context without inventing personal claims."
                 )
                 assistantUse(
                     title: "Generated Replays",
@@ -513,6 +571,19 @@ struct ReferenceMaterialView: View {
         case .interview:
             $controller.interviewContextPrompt
         }
+    }
+
+    private var answerModeBinding: Binding<AssistantAnswerMode> {
+        Binding(
+            get: { controller.assistantAnswerMode },
+            set: { mode in
+                if mode == .plausibleRehearsal {
+                    showsPlausibleRehearsalConfirmation = true
+                } else {
+                    controller.assistantAnswerMode = .grounded
+                }
+            }
+        )
     }
 
     private func compactCount(_ count: Int) -> String {

@@ -48,3 +48,5 @@ QuickDictationRecoveries/
 APIExpenses.json
 SyntheticInterviewScenario.json
 SyntheticMeetingScenario.json
+.answer-mirror-benchmarks/
+*.answer-mirror-benchmark.json

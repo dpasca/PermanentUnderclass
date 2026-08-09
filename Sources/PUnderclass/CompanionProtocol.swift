@@ -107,6 +107,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var source: CompanionSessionSource?
     var title: String?
     var isPreparingSyntheticInterview = false
+    var answerMode: AssistantAnswerMode = .grounded
 }
 
 enum CompanionSessionSource: String, Codable, Equatable, Sendable {
@@ -184,6 +185,20 @@ enum CompanionSuggestionGrounding: String, Codable, Equatable, Sendable {
     case generalKnowledge
 }
 
+enum AssistantAnswerMode: String, Codable, Equatable, Sendable, CaseIterable {
+    case grounded
+    case plausibleRehearsal
+
+    var title: String {
+        switch self {
+        case .grounded:
+            "Grounded"
+        case .plausibleRehearsal:
+            "Plausible rehearsal"
+        }
+    }
+}
+
 enum CompanionAssistantTrigger: String, Codable, Equatable, Sendable {
     case partialTranscript
     case finalizedTurn
@@ -207,6 +222,8 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var topicNumber: Int?
     var inferenceOutcome: CompanionInferenceOutcome? = nil
     var groundingRepairMilliseconds: Int? = nil
+    var answerMode: AssistantAnswerMode = .grounded
+    var plausibleAssumptions: [String] = []
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -373,7 +390,8 @@ actor CompanionEventHub {
         purpose: CapturePurpose? = nil,
         source: CompanionSessionSource = .liveCapture,
         title: String? = nil,
-        isPreparingSyntheticInterview: Bool = false
+        isPreparingSyntheticInterview: Bool = false,
+        answerMode: AssistantAnswerMode = .grounded
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
@@ -388,6 +406,9 @@ actor CompanionEventHub {
         state.session.title = title
         state.session.isPreparingSyntheticInterview =
             isPreparingSyntheticInterview
+        state.session.answerMode = purpose == .interview
+            ? answerMode
+            : .grounded
         switch purpose {
         case .meeting:
             state.session.behaviorName = "Meeting assistant"
@@ -395,8 +416,9 @@ actor CompanionEventHub {
                 "Ground concise response cues in the meeting references"
         case .interview:
             state.session.behaviorName = "Answer mirror"
-            state.session.behaviorDetail =
-                "Show 3–5 shorthand beats when the interviewer pauses"
+            state.session.behaviorDetail = answerMode == .plausibleRehearsal
+                ? "Draft plausible, project-specific rehearsal answers to verify"
+                : "Show grounded shorthand beats when the interviewer pauses"
         case nil:
             state.session.behaviorName = "Answer mirror"
             state.session.behaviorDetail =

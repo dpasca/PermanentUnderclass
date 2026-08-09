@@ -384,21 +384,22 @@ supersede stale generations when a newer other-speaker moment arrives. No regex
 or keyword gate decides whether the moment needs a response; the selected
 behavior's model makes that structured decision.
 
-### Initial model hypothesis
+### Measured model selection
 
-Start the measured prototype with `gpt-5.6-luna` through the Responses API. It
-is the efficient, high-volume member of the current GPT-5.6 family and fits the
-frequent short-generation shape better than using the flagship model for every
-transcript change. The latency harness currently uses `reasoning.effort: none`
-and a 350-token output ceiling with the compact outline schema. Compare that
-configuration against `low` on the same cached meeting and interview moments before trading
-latency for more reasoning.
+The live assistant uses `gpt-5.6-terra` at `reasoning.effort: low`. Keep this as
+a measured default rather than a permanent routing assumption: compare
+representative private fixtures whenever the prompt or model family changes.
+The external-fixture benchmark records structured quality, generation latency,
+timeouts, incomplete responses, and grounding retries without committing
+personal interview material.
 
-Treat this as an eval hypothesis, not a permanent routing rule. Measure
-time-to-first-useful-card, grounded-fact accuracy, stale-card rate, output
-tokens, and cost. If Luna misses the quality bar, test `gpt-5.6-terra` at the
-same effort before increasing reasoning. A user-requested “deeper answer” can
-use that slower tier without putting it on the live critical path.
+An August 2026 focused run used two plausible-rehearsal performance questions.
+Terra/low averaged 4.43/5 quality at roughly 3.54 seconds; Luna/low averaged
+4.36/5 at roughly 3.27 seconds. Luna/xhigh took 8.35–10.58 seconds on its two
+successful cells and failed two others, once by timeout and once by exhausting
+a 1,200-token response budget. An extra causal-chain prompt tied the selected
+base prompt's quality on Terra/low but was slower, so it was not added. This is
+a small internal sample, not a universal model ranking.
 
 ## Usage and cost
 
@@ -412,7 +413,7 @@ The initial meter covers:
 - `gpt-live-transcribe` for each live audio track;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` scenario-generation and live-assistant calls from each model
+- `gpt-5.6-luna` scenario-generation and `gpt-5.6-terra` live-assistant calls from each model
   response's own token usage (tracked separately until a dollar rate is
   configured).
 
