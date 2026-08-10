@@ -317,16 +317,21 @@ function renderInferenceStatus() {
     return;
   }
 
-  const pendingSpeech = pendingInterviewerSpeech(assistant);
+  const pendingSpeech = unclassifiedInterviewerSpeech(assistant);
   if (pendingSpeech && !assistant?.bridge) {
     const drafting = assistant?.phase === "working";
+    const holdingCue = Boolean(assistant?.suggestion);
     setInferenceStatus(
       drafting ? "working" : "general",
-      drafting ? "QUICK CUE DRAFTING" : "LISTENING · NEW QUESTION",
-      drafting ? "The new answer is being generated" : "Waiting for a stable interviewer pause",
-      drafting
-        ? "The previous cue is out of the speaking position while Luna and the full answer work in parallel."
-        : "The previous cue is out of the speaking position so it cannot be mistaken for the new answer.",
+      holdingCue
+        ? "LISTENING · CURRENT CUE HELD"
+        : drafting ? "CHECKING INTERVIEWER SPEECH" : "LISTENING",
+      holdingCue
+        ? "Keeping the current answer visible"
+        : drafting ? "Checking whether an answer is needed" : "Waiting for a stable interviewer pause",
+      holdingCue
+        ? "Unclassified interviewer speech cannot replace the cue until a model accepts a new bridge or answer."
+        : "A model will decide whether this speech needs an answer before it takes over the display.",
       checkCount
     );
     return;
@@ -633,7 +638,7 @@ function topicIDFor(suggestion) {
   return suggestion?.topicID || suggestion?.id || "";
 }
 
-function pendingInterviewerSpeech(assistant) {
+function unclassifiedInterviewerSpeech(assistant) {
   const transcript = state.snapshot?.transcript;
   const currentTopicID = topicIDFor(assistant?.suggestion);
   const partials = (transcript?.partials || []).filter((item) => (
@@ -994,9 +999,9 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
   const bridge = assistant?.bridge || null;
-  const pendingSpeech = bridge ? null : pendingInterviewerSpeech(assistant);
+  const pendingSpeech = bridge ? null : unclassifiedInterviewerSpeech(assistant);
   const suggestion = renderSuggestionStack(
-    bridge || pendingSpeech
+    bridge
       ? { ...assistant, suggestion: null, suggestionHistory: [] }
       : assistant
   );
@@ -1034,21 +1039,32 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   }
 
   if (pendingSpeech) {
+    if (suggestion) {
+      listeningStrip.hidden = false;
+      listeningStrip.classList.add("is-updating");
+      $("#confidenceLabel").hidden = true;
+      $("#topicEyebrow").textContent = plausibleRehearsal
+        ? "PLAUSIBLE CUE HELD · VERIFY"
+        : "CURRENT CUE HELD · CHECKING SPEECH";
+      $("#questionText").textContent = suggestion.question;
+      empty.hidden = true;
+      $("#assistantState").textContent = "Keeping the current cue visible while checking interviewer speech";
+      scheduleCurrentStageFit();
+      return;
+    }
+
     $("#currentStage").classList.add("has-current");
     $("#answerStack").hidden = true;
     $("#answerHistory").hidden = true;
     listeningStrip.hidden = false;
     listeningStrip.classList.add("is-updating");
     $("#confidenceLabel").hidden = true;
-    $("#topicEyebrow").textContent = assistant?.phase === "working"
-      ? "QUICK CUE DRAFTING"
-      : "LISTENING · NEW QUESTION";
-    $("#questionText").textContent = pendingSpeech.text;
+    $("#topicEyebrow").textContent = "CHECKING INTERVIEWER SPEECH";
+    $("#questionText").textContent = "Waiting to see whether a new answer is needed…";
     $("#topicContext").hidden = true;
     empty.hidden = true;
-    $("#assistantState").textContent = assistant?.phase === "working"
-      ? "Drafting the new answer; previous cue retired"
-      : "Listening for a stable pause; previous cue retired";
+    $("#assistantState").textContent = "Checking interviewer speech before showing a cue";
+    scheduleCurrentStageFit();
     return;
   }
 

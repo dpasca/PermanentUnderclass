@@ -249,10 +249,11 @@ rather than formal coaching language. It receives recent dialogue and session
 context, but no reference documents, and cannot claim a project, employer,
 action, result, metric, achievement, or other personal history. A new
 interviewer turn cancels the older full and bridge generations so a stale result
-cannot erase the new bridge. The focused display also removes the previous cue
-from the speaking position as soon as a different `Other` partial appears; it
-shows the live question and explicit listening/drafting state until a new bridge
-or full cue arrives.
+cannot erase the new bridge. Raw `Other` speech is still unclassified, though,
+so it cannot remove a usable cue from the focused display by itself. The display
+marks that cue as held while the models check the interruption. Only an accepted
+`assistant.bridge` or `assistant.suggestion` moves the new turn into the speaking
+position; an acknowledgment or other no-answer result leaves the cue in place.
 
 ### Realtime audio-to-text answer lane
 
