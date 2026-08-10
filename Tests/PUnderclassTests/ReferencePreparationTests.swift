@@ -3,6 +3,191 @@ import XCTest
 @testable import PUnderclass
 
 final class ReferencePreparationTests: XCTestCase {
+    func testPrivatePreparedArchiveRetrievalTiming() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RUN_PRIVATE_PREPARED_RETRIEVAL_EVAL"] == "1" else {
+            throw XCTSkip(
+                "Set RUN_PRIVATE_PREPARED_RETRIEVAL_EVAL=1 and REFERENCE_PREPARATION_ARCHIVE_PATH to run the private retrieval timing eval."
+            )
+        }
+        let archivePath = try XCTUnwrap(
+            environment["REFERENCE_PREPARATION_ARCHIVE_PATH"]
+        )
+        let archive = try JSONDecoder().decode(
+            ReferencePreparationArchive.self,
+            from: Data(contentsOf: URL(fileURLWithPath: archivePath))
+        )
+        let sourceCards = try XCTUnwrap(archive.pack?.cards)
+        XCTAssertFalse(sourceCards.isEmpty)
+
+        let embeddingStarted = DispatchTime.now().uptimeNanoseconds
+        let cards = sourceCards.map { card in
+            PreparedReferenceCard(
+                id: card.id,
+                projectAnchor: card.projectAnchor,
+                period: card.period,
+                latestYear: card.latestYear,
+                role: card.role,
+                summary: card.summary,
+                concreteDetails: card.concreteDetails,
+                interviewUses: card.interviewUses,
+                sourcePaths: card.sourcePaths,
+                roleRelevance: card.roleRelevance,
+                semanticVector: PreparedReferenceEmbedding.vector(
+                    for: card.semanticText
+                ),
+                isEnabled: card.isEnabled
+            )
+        }
+        let embeddingMilliseconds = Double(
+            DispatchTime.now().uptimeNanoseconds - embeddingStarted
+        ) / 1_000_000
+
+        let questions = [
+            "Tell me about a concrete rendering optimization and how you verified it.",
+            "Walk me through a recent project that best represents your current work.",
+            "Tell me about a DirectX graphics compatibility problem you solved."
+        ]
+        let selector = PreparedReferenceSelector()
+        for question in questions {
+            var samples: [Double] = []
+            var selected: [PreparedReferenceCard] = []
+            for _ in 0..<25 {
+                let started = DispatchTime.now().uptimeNanoseconds
+                selected = selector.select(
+                    from: cards,
+                    question: question,
+                    maximumCards: 8
+                )
+                samples.append(
+                    Double(DispatchTime.now().uptimeNanoseconds - started)
+                        / 1_000_000
+                )
+            }
+            XCTAssertFalse(selected.isEmpty)
+            samples.sort()
+            let selectedSummary = selected.map {
+                "\($0.projectAnchor) [\($0.latestYear.map(String.init) ?? "unknown")]"
+            }.joined(separator: " | ")
+            let questionVector = PreparedReferenceEmbedding.vector(
+                for: question
+            )
+            let semanticSummary = cards.compactMap { card -> (String, Double)? in
+                guard
+                    let questionVector,
+                    let cardVector = card.semanticVector,
+                    let distance = PreparedReferenceEmbedding.cosineDistance(
+                        questionVector,
+                        cardVector
+                    )
+                else {
+                    return nil
+                }
+                return (card.projectAnchor, distance)
+            }.sorted { $0.1 < $1.1 }.map {
+                "\($0.0)=\(String(format: "%.3f", $0.1))"
+            }.joined(separator: " | ")
+            print(
+                "PRIVATE_PREPARED_RETRIEVAL question=\(question) median_ms=\(String(format: "%.3f", samples[samples.count / 2])) max_ms=\(String(format: "%.3f", samples.last ?? 0)) selected=\(selectedSummary) semantic=\(semanticSummary)"
+            )
+        }
+        print(
+            "PRIVATE_PREPARED_EMBEDDING cards=\(cards.count) total_ms=\(String(format: "%.1f", embeddingMilliseconds))"
+        )
+    }
+
+    func testPrivateSourceResolutionAndPreparationTiming() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RUN_PRIVATE_SOURCE_PREPARATION_EVAL"] == "1" else {
+            throw XCTSkip(
+                "Set RUN_PRIVATE_SOURCE_PREPARATION_EVAL=1 plus the private folder, resume, and archive paths to run this hosted eval."
+            )
+        }
+        let apiKey = try XCTUnwrap(environment["OPENAI_API_KEY"])
+        let folderPath = try XCTUnwrap(
+            environment["REFERENCE_PREPARATION_PRIVATE_FOLDER"]
+        )
+        let resumePath = try XCTUnwrap(
+            environment["REFERENCE_PREPARATION_PRIVATE_RESUME"]
+        )
+        let archivePath = try XCTUnwrap(
+            environment["REFERENCE_PREPARATION_ARCHIVE_PATH"]
+        )
+        let local = try ReferenceLibraryScanner().scan(
+            folderURL: URL(fileURLWithPath: folderPath, isDirectory: true)
+        )
+        let resumeURL = URL(fileURLWithPath: resumePath)
+        let resumeCitationPath = "Selected Resume/\(resumeURL.lastPathComponent)"
+        let resume = try ReferenceLibraryScanner().loadDocument(
+            fileURL: resumeURL,
+            relativePath: resumeCitationPath
+        )
+        let archive = try JSONDecoder().decode(
+            ReferencePreparationArchive.self,
+            from: Data(contentsOf: URL(fileURLWithPath: archivePath))
+        )
+        let combined = try ReferencePreparationClient.combinedReferences(
+            localReferences: local,
+            explicitResume: resume,
+            webSources: archive.webSources
+        )
+        let resumeSource = ReferenceResumeSource(
+            filePath: resumeURL.path,
+            citationPath: resumeCitationPath,
+            contentDigest: ReferencePreparationDigest.hash([resume.content]),
+            sourceByteCount: resume.sourceByteCount
+        )
+        let sessionContext = environment[
+            "REFERENCE_PREPARATION_PRIVATE_CONTEXT"
+        ] ?? "Senior GPU and graphics engineering interview focused on modern CUDA, rendering, performance debugging, and systems work."
+
+        let generation = try await ReferencePreparationClient().prepare(
+            apiKey: apiKey,
+            references: combined,
+            purpose: .interview,
+            sessionContext: sessionContext,
+            localReferenceRevision: ReferencePreparationDigest.localSourceRevision(
+                folderRevision: local.revision,
+                resumeSource: resumeSource
+            ),
+            webSourceRevision: ReferencePreparationDigest.webSourceRevision(
+                archive.webSources
+            ),
+            explicitResumePath: resumeCitationPath
+        )
+        let manifest = try XCTUnwrap(generation.pack.sourceManifest)
+        XCTAssertEqual(manifest.canonicalResumePath, resumeCitationPath)
+        XCTAssertFalse(manifest.requiresReview)
+        XCTAssertTrue(
+            generation.pack.cards.allSatisfy {
+                $0.sourcePaths.allSatisfy(
+                    manifest.factualSourcePaths.contains
+                )
+            }
+        )
+
+        let sourceSummary = manifest.sources.map {
+            "\($0.path)=\($0.kind.rawValue)/\($0.use.rawValue)"
+        }.joined(separator: " | ")
+        print(
+            "PRIVATE_SOURCE_PREPARATION preparation_ms=\(generation.generationMilliseconds) documents=\(combined.documents.count) cards=\(generation.pack.cards.count) sources=\(sourceSummary)"
+        )
+        for question in [
+            "Tell me about a concrete rendering optimization and how you verified it.",
+            "Walk me through a recent project that best represents your current work.",
+            "Tell me about a DirectX graphics compatibility problem you solved."
+        ] {
+            let selected = PreparedReferenceSelector().select(
+                from: generation.pack.cards,
+                question: question,
+                maximumCards: 8
+            )
+            print(
+                "PRIVATE_SOURCE_SELECTION question=\(question) selected=\(selected.map { "\($0.projectAnchor) [\($0.latestYear.map(String.init) ?? "unknown")]" }.joined(separator: " | "))"
+            )
+        }
+    }
+
     func testHostedPreparationBuildsRecentRoleSpecificCards() async throws {
         guard
             ProcessInfo.processInfo.environment[
@@ -20,16 +205,38 @@ final class ReferencePreparationTests: XCTestCase {
             folderURL: URL(fileURLWithPath: "/tmp/hosted-preparation-eval"),
             documents: [
                 ReferenceDocument(
-                    relativePath: "Career/Profile.md",
+                    relativePath: "Selected Resume/current-resume.md",
                     kind: .markdown,
                     content: """
-                    # Final Fantasy VIII compatibility work (1999)
+                    # Current resume, updated 2026
+
+                    ## Final Fantasy VIII compatibility work (1999)
                     Worked on an early fixed-function 3D compatibility path. Investigated DirectX-era state translation and visual differences on early consumer GPUs.
 
-                    # Modern streaming renderer (2024–2026)
+                    ## Modern streaming renderer (2024–2026)
                     Led rendering work on a current Vulkan-based visualization product. Built render-graph scheduling, explicit synchronization, streaming scene buffers, and GPU-timestamp capture around upload, compute, and draw passes. The source does not record a particular optimization incident, diagnostic comparison, change, or result.
                     """,
                     sourceByteCount: 650,
+                    isTruncated: false
+                ),
+                ReferenceDocument(
+                    relativePath: "Archive/resume-draft-2022.md",
+                    kind: .markdown,
+                    content: """
+                    # Resume draft, last updated 2022
+                    Graphics programmer. Final Fantasy VIII compatibility work (1999): investigated early DirectX state translation and visual differences on consumer GPUs.
+                    """,
+                    sourceByteCount: 180,
+                    isTruncated: false
+                ),
+                ReferenceDocument(
+                    relativePath: "Interview/sample-answers.md",
+                    kind: .markdown,
+                    content: """
+                    # Interview rehearsal notes
+                    Hypothetical example only: say that upload batching improved frame time by 42 percent after a profiler comparison. This is a practice answer, not a record of work performed.
+                    """,
+                    sourceByteCount: 190,
                     isTruncated: false
                 )
             ],
@@ -46,7 +253,27 @@ final class ReferencePreparationTests: XCTestCase {
             sessionContext:
                 "Senior graphics engineer interview focused on modern rendering, performance debugging, Vulkan, and GPU systems.",
             localReferenceRevision: references.revision,
-            webSourceRevision: "no-web-sources"
+            webSourceRevision: "no-web-sources",
+            explicitResumePath: "Selected Resume/current-resume.md"
+        )
+        XCTAssertEqual(
+            generation.pack.sourceManifest?.canonicalResumePath,
+            "Selected Resume/current-resume.md"
+        )
+        XCTAssertFalse(
+            generation.pack.sourceManifest?.requiresReview ?? true
+        )
+        XCTAssertEqual(
+            generation.pack.sourceManifest?.sources.first(where: {
+                $0.path == "Interview/sample-answers.md"
+            })?.use,
+            .contextOnly
+        )
+        XCTAssertFalse(
+            generation.pack.cards.contains {
+                $0.sourcePaths.contains("Interview/sample-answers.md")
+                    || $0.sourcePaths.contains("Archive/resume-draft-2022.md")
+            }
         )
         let recent = generation.pack.cards.filter {
             ($0.latestYear ?? 0) >= 2024
@@ -176,12 +403,14 @@ final class ReferencePreparationTests: XCTestCase {
             references: references,
             purpose: .interview,
             sessionContext: "Senior graphics role working on modern renderers.",
+            explicitResumePath: "Projects/ModernRenderer.md",
             preparedAt: Date(timeIntervalSince1970: 100)
         )
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 12_000)
         XCTAssertEqual(
             (root["reasoning"] as? [String: String])?["effort"],
             "medium"
@@ -194,6 +423,8 @@ final class ReferencePreparationTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Senior graphics role"))
         XCTAssertTrue(prompt.contains("Projects/ModernRenderer.md"))
         XCTAssertTrue(prompt.contains("Recency matters"))
+        XCTAssertTrue(prompt.contains("isExplicitResume"))
+        XCTAssertTrue(prompt.contains("contextOnly"))
 
         let text = try XCTUnwrap(root["text"] as? [String: Any])
         let format = try XCTUnwrap(text["format"] as? [String: Any])
@@ -245,6 +476,11 @@ final class ReferencePreparationTests: XCTestCase {
         XCTAssertFalse(generation.pack.cards[0].isEnabled)
         XCTAssertEqual(generation.pack.localReferenceRevision, "local-r1")
         XCTAssertEqual(generation.pack.webSourceRevision, "web-r1")
+        XCTAssertEqual(
+            generation.pack.sourceManifest?.sources.first?.use,
+            .factualSupplement
+        )
+        XCTAssertNotNil(generation.pack.cards[0].semanticVector)
         XCTAssertEqual(generation.usage.inputTokens, 800)
         XCTAssertEqual(generation.generationMilliseconds, 1_234)
     }
@@ -308,6 +544,259 @@ final class ReferencePreparationTests: XCTestCase {
         }
     }
 
+    func testPreparationDeconflictsResumeDraftsAndPreparationNotes() throws {
+        let references = ReferenceLibrarySnapshot(
+            folderURL: URL(fileURLWithPath: "/tmp/deconflict"),
+            documents: [
+                document(
+                    path: "Selected Resume/current.pdf",
+                    content: "Current resume covering work through 2026."
+                ),
+                document(
+                    path: "Archive/alternate-resume.md",
+                    content: "An older resume draft covering work through 2022."
+                ),
+                document(
+                    path: "Interview/answers.md",
+                    content: "Ideas and hypothetical examples for an interview."
+                )
+            ],
+            revision: "deconflict-r1",
+            indexedAt: Date(),
+            ignoredFileCount: 0,
+            issues: []
+        )
+        let manifest: [String: Any] = [
+            "canonicalResumePath": "Selected Resume/current.pdf",
+            "requiresReview": false,
+            "resolutionSummary":
+                "The explicitly selected current resume is authoritative; the older draft and notes are context only.",
+            "sources": [[
+                "path": "Selected Resume/current.pdf",
+                "title": "Current resume",
+                "kind": "resume",
+                "use": "primaryResume",
+                "confidence": 0.99,
+                "rationale": "It is the explicitly selected complete resume.",
+                "conflictsWith": ["Archive/alternate-resume.md"],
+                "conflictSummary": "The alternate draft ends in 2022."
+            ], [
+                "path": "Archive/alternate-resume.md",
+                "title": "Older resume draft",
+                "kind": "resume",
+                "use": "contextOnly",
+                "confidence": 0.97,
+                "rationale": "It is an older, incomplete resume version.",
+                "conflictsWith": ["Selected Resume/current.pdf"],
+                "conflictSummary": "It omits the candidate's later work."
+            ], [
+                "path": "Interview/answers.md",
+                "title": "Interview answer notes",
+                "kind": "interviewPreparation",
+                "use": "contextOnly",
+                "confidence": 0.98,
+                "rationale": "It contains rehearsal material, not career evidence.",
+                "conflictsWith": [],
+                "conflictSummary": ""
+            ]]
+        ]
+        let candidate = outputCard(
+            project: "Current project",
+            period: "2024–2026",
+            year: 2026,
+            paths: ["Selected Resume/current.pdf"]
+        )
+
+        let generation = try ReferencePreparationClient.parseResponse(
+            try openAIResponse(cards: [candidate], sourceManifest: manifest),
+            references: references,
+            purpose: .interview,
+            sessionContext: "Graphics role",
+            localReferenceRevision: "local-r1",
+            webSourceRevision: "web-r1",
+            explicitResumePath: "Selected Resume/current.pdf",
+            previousCards: [],
+            preparedAt: Date(),
+            generationMilliseconds: 10
+        )
+
+        XCTAssertEqual(
+            generation.pack.sourceManifest?.canonicalResumePath,
+            "Selected Resume/current.pdf"
+        )
+        XCTAssertEqual(
+            generation.pack.sourceManifest?.sources.first(where: {
+                $0.path == "Interview/answers.md"
+            })?.use,
+            .contextOnly
+        )
+        XCTAssertEqual(
+            generation.pack.cards.flatMap(\.sourcePaths),
+            ["Selected Resume/current.pdf"]
+        )
+    }
+
+    func testPreparationRejectsCandidateFactsFromContextOnlySource() throws {
+        let references = referenceSnapshot()
+        let manifest: [String: Any] = [
+            "canonicalResumePath": NSNull(),
+            "requiresReview": false,
+            "resolutionSummary": "Only interview preparation was supplied.",
+            "sources": [[
+                "path": "Projects/ModernRenderer.md",
+                "title": "Interview notes",
+                "kind": "interviewPreparation",
+                "use": "contextOnly",
+                "confidence": 0.95,
+                "rationale": "The text is rehearsal material.",
+                "conflictsWith": [],
+                "conflictSummary": ""
+            ]]
+        ]
+
+        XCTAssertThrowsError(
+            try ReferencePreparationClient.parseResponse(
+                try openAIResponse(
+                    cards: [outputCard(
+                        project: "Modern Renderer",
+                        period: "2024–2026",
+                        year: 2026,
+                        paths: ["Projects/ModernRenderer.md"]
+                    )],
+                    sourceManifest: manifest
+                ),
+                references: references,
+                purpose: .interview,
+                sessionContext: "Graphics role",
+                localReferenceRevision: "local-r1",
+                webSourceRevision: "web-r1",
+                previousCards: [],
+                preparedAt: Date(),
+                generationMilliseconds: 10
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ReferencePreparationError,
+                .invalidGrounding
+            )
+        }
+    }
+
+    func testPreparationAllowsResolvedContextWithNoCandidateFacts() throws {
+        let references = referenceSnapshot()
+        let manifest: [String: Any] = [
+            "canonicalResumePath": NSNull(),
+            "requiresReview": false,
+            "resolutionSummary": "Only a job description was supplied.",
+            "sources": [[
+                "path": "Projects/ModernRenderer.md",
+                "title": "Role description",
+                "kind": "jobDescription",
+                "use": "contextOnly",
+                "confidence": 0.98,
+                "rationale": "It describes the target role, not the candidate.",
+                "conflictsWith": [],
+                "conflictSummary": ""
+            ]]
+        ]
+
+        let generation = try ReferencePreparationClient.parseResponse(
+            try openAIResponse(cards: [], sourceManifest: manifest),
+            references: references,
+            purpose: .interview,
+            sessionContext: "Graphics role",
+            localReferenceRevision: "local-r1",
+            webSourceRevision: "web-r1",
+            previousCards: [],
+            preparedAt: Date(),
+            generationMilliseconds: 10
+        )
+
+        XCTAssertTrue(generation.pack.cards.isEmpty)
+        XCTAssertTrue(
+            generation.pack.sourceManifest?.factualSourcePaths.isEmpty == true
+        )
+    }
+
+    func testLegacyPreparedPackIsStaleUntilRebuiltWithSourceResolution() {
+        let pack = PreparedReferencePack(
+            preparationVersion: 1,
+            purpose: .interview,
+            localReferenceRevision: "local",
+            webSourceRevision: ReferencePreparationDigest.webSourceRevision([]),
+            sessionContext: "Graphics role",
+            preparedAt: Date(),
+            cards: [card(id: "card", project: "Project", year: 2025)]
+        )
+
+        XCTAssertFalse(
+            pack.isCurrent(
+                purpose: .interview,
+                localReferenceRevision: "local",
+                webSources: [],
+                sessionContext: "Graphics role"
+            )
+        )
+
+        let unclassifiedCurrentVersion = PreparedReferencePack(
+            purpose: .interview,
+            localReferenceRevision: "local",
+            webSourceRevision: ReferencePreparationDigest.webSourceRevision([]),
+            sessionContext: "Graphics role",
+            preparedAt: Date(),
+            cards: [card(id: "card", project: "Project", year: 2025)]
+        )
+        XCTAssertFalse(
+            unclassifiedCurrentVersion.isCurrent(
+                purpose: .interview,
+                localReferenceRevision: "local",
+                webSources: [],
+                sessionContext: "Graphics role"
+            )
+        )
+    }
+
+    func testExplicitResumeIsIncludedFirstAndDuplicateFolderCopyIsRemoved()
+        throws
+    {
+        let resume = document(
+            path: "Selected Resume/current.md",
+            content: "Current resume through 2026."
+        )
+        let local = ReferenceLibrarySnapshot(
+            folderURL: URL(fileURLWithPath: "/tmp/references"),
+            documents: [
+                document(
+                    path: "generated/resume-snapshot.md",
+                    content: resume.content
+                ),
+                document(
+                    path: "notes/interview.md",
+                    content: "Interview preparation notes."
+                )
+            ],
+            revision: "local-r1",
+            indexedAt: Date(),
+            ignoredFileCount: 0,
+            issues: []
+        )
+
+        let combined = try ReferencePreparationClient.combinedReferences(
+            localReferences: local,
+            explicitResume: resume,
+            webSources: []
+        )
+
+        XCTAssertEqual(
+            combined.documents.first?.relativePath,
+            "Selected Resume/current.md"
+        )
+        XCTAssertEqual(
+            combined.documents.filter { $0.content == resume.content }.count,
+            1
+        )
+    }
+
     func testSemanticSelectionPrefersRecentComparableWorkButKeepsUniqueOldWork() {
         let recent = card(
             id: "recent",
@@ -351,6 +840,49 @@ final class ReferencePreparationTests: XCTestCase {
         )
     }
 
+    func testSelectionReservesRawRelevanceAndRecentContextWithoutLegacyLeakage() {
+        let legacy = card(
+            id: "legacy",
+            project: "Legacy compatibility project",
+            year: 2000
+        )
+        let recent = (0..<8).map { index in
+            card(
+                id: "recent-\(index)",
+                project: "Recent project \(index)",
+                year: 2024 + (index % 3)
+            )
+        }
+        let selector = PreparedReferenceSelector(
+            currentYear: 2026,
+            semanticDistance: { question, text in
+                if text.contains("Legacy") {
+                    return question.contains("compatibility") ? 0.10 : 0.90
+                }
+                let id = Int(text.split(separator: " ").last ?? "0") ?? 0
+                return 0.11 + Double(id) * 0.01
+            }
+        )
+
+        let explicit = selector.select(
+            from: recent + [legacy],
+            question: "Tell me about a compatibility problem.",
+            maximumCards: 8
+        )
+        XCTAssertTrue(explicit.contains { $0.id == legacy.id })
+
+        let generic = selector.select(
+            from: recent + [legacy],
+            question: "Tell me about a recent optimization.",
+            maximumCards: 8
+        )
+        XCTAssertFalse(generic.contains { $0.id == legacy.id })
+        XCTAssertGreaterThanOrEqual(
+            generic.filter { ($0.latestYear ?? 0) >= 2024 }.count,
+            7
+        )
+    }
+
     func testPreparedSnapshotIncludesOnlyEnabledSelectedCardsWithProvenance()
         throws
     {
@@ -382,6 +914,41 @@ final class ReferencePreparationTests: XCTestCase {
         XCTAssertFalse(snapshot.documents[0].content.contains("Disabled"))
     }
 
+    func testPreparedPackRevisionChangesWhenCardEvidenceChanges() {
+        let original = card(id: "card", project: "Project", year: 2025)
+        let changed = PreparedReferenceCard(
+            id: original.id,
+            projectAnchor: original.projectAnchor,
+            period: original.period,
+            latestYear: original.latestYear,
+            role: original.role,
+            summary: "A materially different prepared summary.",
+            concreteDetails: original.concreteDetails,
+            interviewUses: original.interviewUses,
+            sourcePaths: original.sourcePaths,
+            roleRelevance: original.roleRelevance,
+            isEnabled: true
+        )
+        let originalPack = PreparedReferencePack(
+            purpose: .interview,
+            localReferenceRevision: "local",
+            webSourceRevision: "web",
+            sessionContext: "context",
+            preparedAt: Date(),
+            cards: [original]
+        )
+        let changedPack = PreparedReferencePack(
+            purpose: .interview,
+            localReferenceRevision: "local",
+            webSourceRevision: "web",
+            sessionContext: "context",
+            preparedAt: Date(),
+            cards: [changed]
+        )
+
+        XCTAssertNotEqual(originalPack.revision, changedPack.revision)
+    }
+
     func testPreparationStoreRoundTripsSourcesPackAndReviewState() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             UUID().uuidString,
@@ -397,7 +964,14 @@ final class ReferencePreparationTests: XCTestCase {
         source.status = .ready
         source.provider = .jinaReader
         source.content = String(repeating: "Details ", count: 20)
+        source.contentDigest = ReferencePreparationDigest.hash([source.content])
         var state = ReferencePreparationState()
+        state.resumeSource = ReferenceResumeSource(
+            filePath: "/tmp/current-resume.pdf",
+            citationPath: "Selected Resume/current-resume.pdf",
+            contentDigest: "resume-digest",
+            sourceByteCount: 1_024
+        )
         state.webSources = [source]
         state.pack = PreparedReferencePack(
             purpose: .interview,
@@ -412,6 +986,7 @@ final class ReferencePreparationTests: XCTestCase {
         try store.save(ReferencePreparationArchive(state: state))
         let restored = ReferencePreparationState(archive: try store.load())
 
+        XCTAssertEqual(restored.resumeSource, state.resumeSource)
         XCTAssertEqual(restored.webSources, state.webSources)
         XCTAssertEqual(restored.pack, state.pack)
         XCTAssertEqual(restored.phase, .ready)
@@ -434,6 +1009,16 @@ final class ReferencePreparationTests: XCTestCase {
             indexedAt: Date(timeIntervalSince1970: 50),
             ignoredFileCount: 0,
             issues: []
+        )
+    }
+
+    private func document(path: String, content: String) -> ReferenceDocument {
+        ReferenceDocument(
+            relativePath: path,
+            kind: .markdown,
+            content: content,
+            sourceByteCount: content.utf8.count,
+            isTruncated: false
         )
     }
 
@@ -478,9 +1063,32 @@ final class ReferencePreparationTests: XCTestCase {
         ]
     }
 
-    private func openAIResponse(cards: [[String: Any]]) throws -> Data {
+    private func openAIResponse(
+        cards: [[String: Any]],
+        sourceManifest: [String: Any]? = nil
+    ) throws -> Data {
+        let manifest = sourceManifest ?? [
+            "canonicalResumePath": NSNull(),
+            "requiresReview": false,
+            "resolutionSummary":
+                "No resume was supplied; the project document is a factual supplement.",
+            "sources": [[
+                "path": "Projects/ModernRenderer.md",
+                "title": "Modern Renderer",
+                "kind": "projectPage",
+                "use": "factualSupplement",
+                "confidence": 0.96,
+                "rationale":
+                    "The document directly describes the candidate's renderer work.",
+                "conflictsWith": [],
+                "conflictSummary": ""
+            ]]
+        ]
         let outputData = try JSONSerialization.data(
-            withJSONObject: ["cards": cards],
+            withJSONObject: [
+                "sourceManifest": manifest,
+                "cards": cards
+            ],
             options: [.sortedKeys, .withoutEscapingSlashes]
         )
         let outputText = try XCTUnwrap(

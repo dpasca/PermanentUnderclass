@@ -48,11 +48,23 @@ struct ReferenceLibraryLimits: Equatable, Sendable {
 
 enum ReferenceLibraryScanError: LocalizedError, Equatable {
     case folderUnavailable(String)
+    case fileUnavailable(String)
+    case unsupportedDocument(String)
+    case fileTooLarge(String, Int)
+    case emptyDocument(String)
 
     var errorDescription: String? {
         switch self {
         case let .folderUnavailable(path):
             "The reference folder is unavailable: \(path)"
+        case let .fileUnavailable(path):
+            "The document is unavailable: \(path)"
+        case let .unsupportedDocument(path):
+            "The document format is not supported: \(path)"
+        case let .fileTooLarge(path, maximumBytes):
+            "The document is larger than \(maximumBytes) bytes: \(path)"
+        case let .emptyDocument(path):
+            "No readable text was found in: \(path)"
         }
     }
 }
@@ -214,6 +226,49 @@ struct ReferenceLibraryScanner {
             indexedAt: indexedAt,
             ignoredFileCount: ignoredFileCount,
             issues: issues
+        )
+    }
+
+    func loadDocument(
+        fileURL: URL,
+        relativePath: String
+    ) throws -> ReferenceDocument {
+        let file = fileURL.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard
+            fileManager.fileExists(atPath: file.path, isDirectory: &isDirectory),
+            !isDirectory.boolValue
+        else {
+            throw ReferenceLibraryScanError.fileUnavailable(file.path)
+        }
+        guard let kind = Self.kind(forExtension: file.pathExtension) else {
+            throw ReferenceLibraryScanError.unsupportedDocument(file.path)
+        }
+        let values = try file.resourceValues(forKeys: [.fileSizeKey])
+        if let fileSize = values.fileSize,
+           fileSize > limits.maximumFileBytes
+        {
+            throw ReferenceLibraryScanError.fileTooLarge(
+                file.path,
+                limits.maximumFileBytes
+            )
+        }
+
+        let loaded = try loadText(from: file, kind: kind)
+        let normalized = Self.normalize(loaded)
+        guard !normalized.isEmpty else {
+            throw ReferenceLibraryScanError.emptyDocument(file.path)
+        }
+        let allowedCharacters = limits.maximumDocumentCharacters
+        let isTruncated = normalized.count > allowedCharacters
+        return ReferenceDocument(
+            relativePath: relativePath,
+            kind: kind,
+            content: isTruncated
+                ? String(normalized.prefix(allowedCharacters))
+                : normalized,
+            sourceByteCount: values.fileSize ?? 0,
+            isTruncated: isTruncated
         )
     }
 

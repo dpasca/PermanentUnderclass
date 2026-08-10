@@ -31,6 +31,7 @@ struct ReferenceMaterialView: View {
                             .opacity(
                                 controller.capability.isCloudEnabled ? 1 : 0.45
                             )
+                        resumeSection
                     }
                     folderSection
                     if purpose == .interview {
@@ -473,6 +474,70 @@ struct ReferenceMaterialView: View {
         }
     }
 
+    private var resumeSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(
+                    "Choose the current resume or CV explicitly. Evidence preparation checks it against every other document, uses it as the primary career summary, and treats conflicting drafts or preparation notes separately."
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if let source = controller.referencePreparationState.resumeSource {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "doc.text.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 30)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(source.displayName)
+                                .font(.body.weight(.semibold))
+                            Text(
+                                (source.filePath as NSString)
+                                    .abbreviatingWithTildeInPath
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            Text(
+                                "\(compactCount(source.sourceByteCount)) bytes · checked again whenever evidence is rebuilt"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Change…", action: controller.chooseResumeFile)
+                        Button("Reveal", action: controller.revealResumeFile)
+                        Button("Remove", role: .destructive) {
+                            controller.clearResumeFile()
+                        }
+                    }
+                } else {
+                    HStack(spacing: 12) {
+                        Label(
+                            "No resume has been identified explicitly.",
+                            systemImage: "doc.badge.plus"
+                        )
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(action: controller.chooseResumeFile) {
+                            Label("Choose Resume…", systemImage: "doc.badge.plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("Current Resume", systemImage: "person.text.rectangle")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
     private var webSourcesSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
@@ -598,7 +663,7 @@ struct ReferenceMaterialView: View {
                         Text(controller.interviewEvidenceReadinessDetail())
                             .font(.body.weight(.medium))
                             .foregroundStyle(
-                                controller.isInterviewEvidenceCurrent
+                                controller.isInterviewEvidenceResolved
                                     ? Color.green
                                     : .secondary
                             )
@@ -645,15 +710,80 @@ struct ReferenceMaterialView: View {
                         .font(.callout.weight(.semibold))
                         Spacer()
                         Text(
-                            controller.isInterviewEvidenceCurrent
-                                ? "CURRENT"
-                                : "STALE · REBUILD"
+                            pack.sourceManifest?.requiresReview == true
+                                ? "REVIEW REQUIRED"
+                                : controller.isInterviewEvidenceResolved
+                                    ? "CURRENT"
+                                    : "STALE · REBUILD"
                         )
                         .font(.caption.weight(.bold))
                         .foregroundStyle(
-                            controller.isInterviewEvidenceCurrent
+                            controller.isInterviewEvidenceResolved
                                 ? Color.green
-                                : .orange
+                                : Color.orange
+                        )
+                    }
+
+                    if let manifest = pack.sourceManifest {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(
+                                manifest.resolutionSummary,
+                                systemImage: manifest.requiresReview
+                                    ? "exclamationmark.triangle.fill"
+                                    : "checkmark.seal.fill"
+                            )
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(
+                                manifest.requiresReview ? Color.orange : .green
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            ForEach(manifest.sources) { source in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 7) {
+                                        Text(source.title)
+                                            .font(.callout.weight(.medium))
+                                        Text(source.kind.title.uppercased())
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(source.use.title)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(
+                                                source.use.canSupportCandidateFacts
+                                                    ? Color.primary
+                                                    : Color.secondary
+                                            )
+                                    }
+                                    Text(source.path)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .textSelection(.enabled)
+                                    Text(source.rationale)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(
+                                            horizontal: false,
+                                            vertical: true
+                                        )
+                                    if !source.conflictSummary.isEmpty {
+                                        Text(source.conflictSummary)
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                            .fixedSize(
+                                                horizontal: false,
+                                                vertical: true
+                                            )
+                                    }
+                                }
+                                .padding(.vertical, 3)
+                            }
+                        }
+                        .padding(10)
+                        .background(
+                            Color.secondary.opacity(0.07),
+                            in: RoundedRectangle(cornerRadius: 9)
                         )
                     }
 

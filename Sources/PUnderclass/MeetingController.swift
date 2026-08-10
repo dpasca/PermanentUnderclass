@@ -2,6 +2,7 @@ import AppKit
 import CoreAudio
 import Foundation
 import OSLog
+import UniformTypeIdentifiers
 
 final class MeetingController: ObservableObject {
     @Published var apiKeyDraft = ""
@@ -95,6 +96,7 @@ final class MeetingController: ObservableObject {
     private var dictationService: HoldToDictateService?
     private var whisperWarmupTask: Task<Void, Never>?
     private var parakeetWarmupTask: Task<Void, Never>?
+    private var referenceEmbeddingWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
     private var referencePreparationTask: Task<Void, Never>?
     private var referencePreparationRunID: UUID?
@@ -261,6 +263,7 @@ final class MeetingController: ObservableObject {
 
         startWhisperWarmup()
         configureReferenceLibrary()
+        startReferenceEmbeddingWarmupIfNeeded()
         startCompanionGateway()
         publishCompanionSession()
         publishCompanionReference()
@@ -1219,6 +1222,55 @@ final class MeetingController: ObservableObject {
         referenceLibraryService?.setFolder(folderURL)
     }
 
+    func chooseResumeFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose the Resume Used for Interview Evidence"
+        panel.message =
+            "Choose the current resume or CV. It will be checked against the other preparation sources and treated as authoritative when it is a resume."
+        panel.prompt = "Use Resume"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.pdf, .rtf, .text]
+        panel.directoryURL = referencePreparationState.resumeSource?.fileURL
+            .deletingLastPathComponent()
+            ?? referenceLibraryState.folderURL
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+
+        do {
+            let citationPath = Self.resumeCitationPath(for: fileURL)
+            let document = try ReferenceLibraryScanner().loadDocument(
+                fileURL: fileURL,
+                relativePath: citationPath
+            )
+            referencePreparationState.resumeSource = ReferenceResumeSource(
+                filePath: fileURL.standardizedFileURL.path,
+                citationPath: citationPath,
+                contentDigest: ReferencePreparationDigest.hash([
+                    document.content
+                ]),
+                sourceByteCount: document.sourceByteCount
+            )
+            referencePreparationState.phase = .idle
+            persistReferencePreparation()
+            statusMessage = "Selected \(fileURL.lastPathComponent) as the interview resume"
+        } catch {
+            present(error)
+        }
+    }
+
+    func revealResumeFile() {
+        guard let source = referencePreparationState.resumeSource else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([source.fileURL])
+    }
+
+    func clearResumeFile() {
+        guard !referencePreparationState.phase.isWorking else { return }
+        referencePreparationState.resumeSource = nil
+        referencePreparationState.phase = .idle
+        persistReferencePreparation()
+    }
+
     func rescanReferenceFolder() {
         referenceLibraryService?.rescan()
     }
@@ -1231,6 +1283,10 @@ final class MeetingController: ObservableObject {
     func clearReferenceFolder() {
         UserDefaults.standard.removeObject(forKey: Self.referenceFolderDefaultsKey)
         referenceLibraryService?.setFolder(nil)
+    }
+
+    private static func resumeCitationPath(for fileURL: URL) -> String {
+        "Selected Resume/\(fileURL.lastPathComponent)"
     }
 
     func addReferenceWebSource() {
@@ -1276,10 +1332,23 @@ final class MeetingController: ObservableObject {
     var isInterviewEvidenceCurrent: Bool {
         referencePreparationState.pack?.isCurrent(
             purpose: .interview,
-            localReferenceRevision: referenceLibraryState.snapshot?.revision,
+            localReferenceRevision: currentLocalReferenceRevision,
             webSources: referencePreparationState.webSources,
             sessionContext: interviewContextPrompt
         ) == true
+    }
+
+    var isInterviewEvidenceResolved: Bool {
+        isInterviewEvidenceCurrent
+            && referencePreparationState.pack?.sourceManifest?.requiresReview
+                != true
+    }
+
+    private var currentLocalReferenceRevision: String {
+        ReferencePreparationDigest.localSourceRevision(
+            folderRevision: referenceLibraryState.snapshot?.revision,
+            resumeSource: referencePreparationState.resumeSource
+        )
     }
 
     var canPrepareInterviewEvidence: Bool {
@@ -1291,7 +1360,8 @@ final class MeetingController: ObservableObject {
         else {
             return false
         }
-        return referenceLibraryState.snapshot?.documents.isEmpty == false
+        return referencePreparationState.resumeSource != nil
+            || referenceLibraryState.snapshot?.documents.isEmpty == false
             || !referencePreparationState.webSources.isEmpty
     }
 
@@ -1306,13 +1376,20 @@ final class MeetingController: ObservableObject {
             return referencePreparationState.phase.title
         }
         guard
-            referenceLibraryState.snapshot?.documents.isEmpty == false
+            referencePreparationState.resumeSource != nil
+                || referenceLibraryState.snapshot?.documents.isEmpty == false
                 || !referencePreparationState.webSources.isEmpty
         else {
-            return "Add a reference folder or at least one public profile URL."
+            return "Choose a resume, a reference folder, or at least one public profile URL."
         }
         if let pack = referencePreparationState.pack {
+            if pack.sourceManifest?.requiresReview == true {
+                return "Choose the current resume explicitly, then rebuild to resolve the source conflict."
+            }
             if isInterviewEvidenceCurrent {
+                if pack.enabledCardCount == 0 {
+                    return "Sources were classified, but none can establish candidate experience."
+                }
                 return "Ready: \(pack.enabledCardCount) enabled evidence cards."
             }
             return "Sources or role guidance changed. Rebuild before the next interview."
@@ -1330,13 +1407,39 @@ final class MeetingController: ObservableObject {
             return
         }
 
+        let explicitResume: ReferenceDocument?
+        do {
+            if let source = referencePreparationState.resumeSource {
+                let document = try ReferenceLibraryScanner().loadDocument(
+                    fileURL: source.fileURL,
+                    relativePath: source.citationPath
+                )
+                let refreshedSource = ReferenceResumeSource(
+                    filePath: source.filePath,
+                    citationPath: source.citationPath,
+                    contentDigest: ReferencePreparationDigest.hash([
+                        document.content
+                    ]),
+                    sourceByteCount: document.sourceByteCount
+                )
+                referencePreparationState.resumeSource = refreshedSource
+                explicitResume = document
+            } else {
+                explicitResume = nil
+            }
+        } catch {
+            referencePreparationState.phase = .failed(error.localizedDescription)
+            persistReferencePreparation()
+            present(error)
+            return
+        }
+
         referencePreparationTask?.cancel()
         let runID = UUID()
         referencePreparationRunID = runID
         let requestedSources = referencePreparationState.webSources
         let localReferences = referenceLibraryState.snapshot
-        let localRevision = localReferences?.revision
-            ?? PreparedReferencePack.noLocalRevision
+        let localRevision = currentLocalReferenceRevision
         let sessionContext = interviewContextPrompt
         let exaAPIKey = exaAPIKeyDraft.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -1372,6 +1475,9 @@ final class MeetingController: ObservableObject {
                             updated.resolvedURL = fetched.resolvedURL
                             updated.title = fetched.title
                             updated.content = fetched.content
+                            updated.contentDigest = ReferencePreparationDigest.hash([
+                                fetched.content
+                            ])
                             updated.fetchedAt = fetched.fetchedAt
                             updated.provider = fetched.provider
                             updated.status = .ready
@@ -1386,6 +1492,7 @@ final class MeetingController: ObservableObject {
                         }
                         self.updateWebSource(source.id) { updated in
                             updated.content = ""
+                            updated.contentDigest = nil
                             updated.status = Self.webSourceFailureStatus(
                                 for: error
                             )
@@ -1401,6 +1508,7 @@ final class MeetingController: ObservableObject {
                 let webSources = self.referencePreparationState.webSources
                 let combined = try ReferencePreparationClient.combinedReferences(
                     localReferences: localReferences,
+                    explicitResume: explicitResume,
                     webSources: webSources
                 )
                 let webRevision = ReferencePreparationDigest.webSourceRevision(
@@ -1413,6 +1521,7 @@ final class MeetingController: ObservableObject {
                     sessionContext: sessionContext,
                     localReferenceRevision: localRevision,
                     webSourceRevision: webRevision,
+                    explicitResumePath: explicitResume?.relativePath,
                     previousCards: previousCards
                 )
                 try Task.checkCancellation()
@@ -1491,9 +1600,10 @@ final class MeetingController: ObservableObject {
         if
             purpose == .interview,
             let pack = referencePreparationState.pack,
+            pack.sourceManifest?.requiresReview != true,
             pack.isCurrent(
                 purpose: .interview,
-                localReferenceRevision: referenceLibraryState.snapshot?.revision,
+                localReferenceRevision: currentLocalReferenceRevision,
                 webSources: referencePreparationState.webSources,
                 sessionContext: interviewContextPrompt
             )
@@ -1507,8 +1617,42 @@ final class MeetingController: ObservableObject {
         if purpose == .interview, referencePreparationState.pack != nil {
             return nil
         }
+        if purpose == .interview,
+           (referencePreparationState.resumeSource != nil
+                || !referencePreparationState.webSources.isEmpty)
+        {
+            return nil
+        }
         guard referenceLibraryState.phase == .ready else { return nil }
         return referenceLibraryState.snapshot
+    }
+
+    private func replaySourceStateRevision(
+        for purpose: CapturePurpose
+    ) -> String? {
+        // This method is called from SwiftUI readiness rendering. Keep it to
+        // persisted metadata; replayReferences performs semantic selection.
+        if purpose == .interview {
+            if let pack = referencePreparationState.pack {
+                guard isInterviewEvidenceResolved, pack.enabledCardCount > 0 else {
+                    return nil
+                }
+                return "prepared:\(pack.revision)"
+            }
+            if referencePreparationState.resumeSource != nil
+                || !referencePreparationState.webSources.isEmpty
+            {
+                return nil
+            }
+        }
+        guard
+            referenceLibraryState.phase == .ready,
+            let snapshot = referenceLibraryState.snapshot,
+            !snapshot.documents.isEmpty
+        else {
+            return nil
+        }
+        return "library:\(snapshot.revision)"
     }
 
     func canStartGeneratedReplay(for purpose: CapturePurpose) -> Bool {
@@ -1517,7 +1661,7 @@ final class MeetingController: ObservableObject {
             !isListening,
             !isDictationBusy,
             capability.isCloudEnabled,
-            replayReferences(for: purpose)?.documents.isEmpty == false
+            replaySourceStateRevision(for: purpose) != nil
         else {
             return false
         }
@@ -1562,10 +1706,40 @@ final class MeetingController: ObservableObject {
         {
             return "Rebuild the prepared interview evidence after the source or role-context change."
         }
-        if let references = replayReferences(for: purpose) {
+        if purpose == .interview,
+           referencePreparationState.pack?.sourceManifest?.requiresReview == true
+        {
+            return "Choose the current resume explicitly and rebuild before generating an interview."
+        }
+        if purpose == .interview,
+           let pack = referencePreparationState.pack,
+           isInterviewEvidenceResolved,
+           pack.enabledCardCount > 0
+        {
+            let label = pack.enabledCardCount == 1 ? "card" : "cards"
+            return "Ready to generate from \(pack.enabledCardCount) prepared evidence \(label); the matching scenario is cached for repeatable reruns."
+        }
+        if purpose == .interview,
+           let pack = referencePreparationState.pack,
+           isInterviewEvidenceResolved,
+           pack.enabledCardCount == 0
+        {
+            return "Prepared sources contain no candidate evidence to generate an interview from."
+        }
+        if purpose == .interview,
+           (referencePreparationState.resumeSource != nil
+                || !referencePreparationState.webSources.isEmpty)
+        {
+            return "Prepare the configured resume and web sources before generating an interview."
+        }
+        if
+            referenceLibraryState.phase == .ready,
+            let references = referenceLibraryState.snapshot,
+            !references.documents.isEmpty
+        {
             let count = references.documents.count
             let label = count == 1 ? "source" : "sources"
-            return "Ready to generate from \(count) prepared \(label); the matching scenario is cached for repeatable reruns."
+            return "Ready to generate from \(count) indexed \(label); the matching scenario is cached for repeatable reruns."
         }
         switch referenceLibraryState.phase {
         case .notConfigured:
@@ -1645,6 +1819,11 @@ final class MeetingController: ObservableObject {
             present(SyntheticInterviewError.referencesUnavailable)
             return
         }
+        guard let sourceStateRevision = replaySourceStateRevision(for: purpose)
+        else {
+            present(SyntheticInterviewError.referencesUnavailable)
+            return
+        }
 
         let scenarioStore = syntheticScenarioStore(for: purpose)
         let cachedScenario = forceRegeneration
@@ -1714,8 +1893,9 @@ final class MeetingController: ObservableObject {
                     }
                 }
                 guard
-                    self.replayReferences(for: purpose)?.revision
-                        == scenario.referenceRevision
+                    scenario.referenceRevision == references.revision,
+                    self.replaySourceStateRevision(for: purpose)
+                        == sourceStateRevision
                 else {
                     throw SyntheticInterviewError.referencesChanged
                 }
@@ -2789,7 +2969,7 @@ final class MeetingController: ObservableObject {
             && assistantAnswerMode == .plausibleRehearsal
             && assistantEarlyBridgeEnabled
         activePreparedReferencePack = purpose == .interview
-            && isInterviewEvidenceCurrent
+            && isInterviewEvidenceResolved
             ? referencePreparationState.pack
             : nil
     }
@@ -3278,6 +3458,10 @@ final class MeetingController: ObservableObject {
             purpose: purpose,
             question: normalizedText
         )
+        let referenceStateRevision = assistantReferenceStateRevision(
+            usesSyntheticReferences: usesSyntheticReferences,
+            purpose: purpose
+        )
         let recentTranscript = transcript
             .filter { $0.purpose == purpose }
             .suffix(16)
@@ -3346,13 +3530,12 @@ final class MeetingController: ObservableObject {
                 }
 
                 let currentRevision = await MainActor.run {
-                    controller.value?.assistantReferenceRevision(
+                    controller.value?.assistantReferenceStateRevision(
                         usesSyntheticReferences: usesSyntheticReferences,
-                        purpose: purpose,
-                        question: normalizedText
+                        purpose: purpose
                     )
                 }
-                guard currentRevision == references?.revision else {
+                guard currentRevision == referenceStateRevision else {
                     Self.liveAssistantLogger.notice(
                         "assistant_check_skipped reason=reference_revision_changed"
                     )
@@ -3418,11 +3601,10 @@ final class MeetingController: ObservableObject {
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
-                    controller.value?.assistantReferenceRevision(
+                    controller.value?.assistantReferenceStateRevision(
                         usesSyntheticReferences: usesSyntheticReferences,
-                        purpose: purpose,
-                        question: normalizedText
-                    ) == references?.revision
+                        purpose: purpose
+                    ) == referenceStateRevision
                 }
                 guard isCurrentRevision else {
                     await hub.assistantFinishedWithoutSuggestion(
@@ -3494,16 +3676,31 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func assistantReferenceRevision(
+    private func assistantReferenceStateRevision(
         usesSyntheticReferences: Bool,
-        purpose: CapturePurpose,
-        question: String
+        purpose: CapturePurpose
     ) -> String? {
-        assistantReferences(
-            usesSyntheticReferences: usesSyntheticReferences,
-            purpose: purpose,
-            question: question
-        )?.revision
+        if usesSyntheticReferences {
+            return syntheticInterviewReferences?.revision
+        }
+        guard purpose == .interview else {
+            return referenceLibraryState.snapshot?.revision
+        }
+        if let activePreparedReferencePack {
+            return "prepared:\(activePreparedReferencePack.revision)"
+        }
+        if let pack = referencePreparationState.pack,
+           isInterviewEvidenceResolved
+        {
+            return "prepared:\(pack.revision)"
+        }
+        if referencePreparationState.pack != nil
+            || referencePreparationState.resumeSource != nil
+            || !referencePreparationState.webSources.isEmpty
+        {
+            return nil
+        }
+        return referenceLibraryState.snapshot?.revision
     }
 
     private func assistantReferences(
@@ -3525,9 +3722,10 @@ final class MeetingController: ObservableObject {
         }
         if
             let pack = referencePreparationState.pack,
+            pack.sourceManifest?.requiresReview != true,
             pack.isCurrent(
                 purpose: .interview,
-                localReferenceRevision: referenceLibraryState.snapshot?.revision,
+                localReferenceRevision: currentLocalReferenceRevision,
                 webSources: referencePreparationState.webSources,
                 sessionContext: interviewContextPrompt
             )
@@ -3536,6 +3734,12 @@ final class MeetingController: ObservableObject {
                 for: question,
                 folderURL: referenceLibraryState.snapshot?.folderURL
             )
+        }
+        if referencePreparationState.pack != nil
+            || referencePreparationState.resumeSource != nil
+            || !referencePreparationState.webSources.isEmpty
+        {
+            return nil
         }
         return referenceLibraryState.snapshot
     }
@@ -3621,6 +3825,21 @@ final class MeetingController: ObservableObject {
                     )
                 }
             }
+        }
+    }
+
+    private func startReferenceEmbeddingWarmupIfNeeded() {
+        guard
+            referenceEmbeddingWarmupTask == nil,
+            referencePreparationState.pack?.preparationVersion
+                == PreparedReferencePack.currentPreparationVersion
+        else {
+            return
+        }
+        referenceEmbeddingWarmupTask = Task.detached(priority: .utility) {
+            _ = PreparedReferenceEmbedding.vector(
+                for: "technical interview evidence"
+            )
         }
     }
 
@@ -4123,6 +4342,7 @@ final class MeetingController: ObservableObject {
         assistantGenerationTask?.cancel()
         assistantBridgeTask?.cancel()
         referencePreparationTask?.cancel()
+        referenceEmbeddingWarmupTask?.cancel()
         whisperWarmupTask?.cancel()
         parakeetWarmupTask?.cancel()
         referenceLibraryService?.stop()

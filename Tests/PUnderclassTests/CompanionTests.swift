@@ -670,6 +670,9 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertTrue(developerPrompt.contains("deeply technical CUDA questions"))
         XCTAssertTrue(developerPrompt.contains("Avoid corporate language"))
+        XCTAssertTrue(
+            developerPrompt.contains("newest comparably relevant work")
+        )
         let userContent = try XCTUnwrap(
             input[1]["content"] as? [[String: Any]]
         )
