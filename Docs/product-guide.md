@@ -221,9 +221,16 @@ bottom of the capture tab.
 The window keeps related setup in one place while making the distinction
 explicit:
 
+- **Interview preparation** follows **Resume → Prepare → Ready**. The selected
+  resume is explicit and authoritative. The interview description starts as
+  the visible text `A job interview.`; when OpenAI is available, selecting the
+  resume also requests a more specific editable draft grounded in its recent
+  work. No unseen generic interview description is substituted, and an empty
+  field blocks evidence preparation.
 - **Session Guidance** is a short, mode-specific brief. Meeting and Interview
   retain separate text, and the selected brief guides transcription plus the
-  corresponding live assistant.
+  corresponding live assistant. Interview spoken language remains a separate
+  speech-recognition setting and is not inferred from the resume.
 - **Reference Library** is the durable, shared document folder used for
   grounding Meeting Assistant, Answer Mirror, and both generated replays.
 - **Speech Recognition Hints** contains exact terminology, expected languages,
@@ -243,6 +250,9 @@ display. The prompt builder places stable behavior and reference material
 before volatile transcript content and sends that exact prefix to OpenAI with
 an explicit cache breakpoint. Recent transcript is appended afterward. The
 browser never receives the reference corpus, assembled prompt, or API key.
+When OpenAI features are available, the resume picker discloses that resume
+text is sent once to draft the editable interview description; evidence
+preparation later sends the configured source text.
 
 ## Quick Dictation
 

@@ -931,6 +931,13 @@ struct ContentView: View {
                 "doc.badge.plus",
                 .orange
             )
+        case .needsInterviewDescription:
+            return (
+                "Interview description needed",
+                "Open setup and add the exact context to use",
+                "pencil",
+                .orange
+            )
         case .needsEvidence:
             return (
                 "Preparation needed",

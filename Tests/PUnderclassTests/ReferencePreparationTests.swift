@@ -973,6 +973,11 @@ final class ReferencePreparationTests: XCTestCase {
             sourceByteCount: 1_024
         )
         state.webSources = [source]
+        state.interviewContext = InterviewContextDraft(
+            text: "A graphics engineering interview focused on recent renderer work.",
+            origin: .resumeSuggestion,
+            sourceResumeDigest: "resume-digest"
+        )
         state.pack = PreparedReferencePack(
             purpose: .interview,
             localReferenceRevision: "local",
@@ -988,8 +993,30 @@ final class ReferencePreparationTests: XCTestCase {
 
         XCTAssertEqual(restored.resumeSource, state.resumeSource)
         XCTAssertEqual(restored.webSources, state.webSources)
+        XCTAssertEqual(restored.interviewContext, state.interviewContext)
         XCTAssertEqual(restored.pack, state.pack)
         XCTAssertEqual(restored.phase, .ready)
+    }
+
+    func testLegacyPreparationArchiveUsesVisibleBasicInterviewDescription()
+        throws
+    {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "webSources": []
+        ])
+        let archive = try JSONDecoder().decode(
+            ReferencePreparationArchive.self,
+            from: data
+        )
+        let restored = ReferencePreparationState(archive: archive)
+
+        XCTAssertEqual(
+            restored.interviewContext,
+            InterviewContextDraft(
+                text: "A job interview.",
+                origin: .basic
+            )
+        )
     }
 
     private func referenceSnapshot() -> ReferenceLibrarySnapshot {

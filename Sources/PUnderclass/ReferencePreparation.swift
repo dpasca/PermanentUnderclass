@@ -407,6 +407,41 @@ enum ReferencePreparationPhase: Equatable, Sendable {
     }
 }
 
+enum InterviewContextOrigin: String, Codable, Equatable, Sendable {
+    case basic
+    case resumeSuggestion
+    case userEdited
+}
+
+struct InterviewContextDraft: Codable, Equatable, Sendable {
+    static let basicDescription = "A job interview."
+
+    var text: String
+    var origin: InterviewContextOrigin
+    var sourceResumeDigest: String?
+
+    init(
+        text: String = Self.basicDescription,
+        origin: InterviewContextOrigin = .basic,
+        sourceResumeDigest: String? = nil
+    ) {
+        self.text = text
+        self.origin = origin
+        self.sourceResumeDigest = sourceResumeDigest
+    }
+}
+
+enum InterviewContextSuggestionPhase: Equatable, Sendable {
+    case idle
+    case generating
+    case insufficient
+    case failed(String)
+
+    var isWorking: Bool {
+        self == .generating
+    }
+}
+
 /// The small set of states the guided interview setup can present. Keeping
 /// this separate from the extraction phase lets every surface agree on what
 /// the user actually needs to do next.
@@ -415,6 +450,7 @@ enum InterviewPreparationReadiness: Equatable, Sendable {
     case activeSession
     case preparing
     case needsResume
+    case needsInterviewDescription
     case needsEvidence
     case needsSourceReview
     case needsUsableEvidence
@@ -425,6 +461,7 @@ enum InterviewPreparationReadiness: Equatable, Sendable {
         hasActiveSession: Bool,
         isPreparing: Bool,
         hasExplicitResume: Bool,
+        hasInterviewDescription: Bool,
         hasPack: Bool,
         isPackCurrent: Bool,
         requiresSourceReview: Bool,
@@ -434,6 +471,9 @@ enum InterviewPreparationReadiness: Equatable, Sendable {
         if isPreparing { return .preparing }
         if hasActiveSession { return .activeSession }
         guard hasExplicitResume else { return .needsResume }
+        guard hasInterviewDescription else {
+            return .needsInterviewDescription
+        }
         guard hasPack, isPackCurrent else { return .needsEvidence }
         if requiresSourceReview { return .needsSourceReview }
         guard enabledCardCount > 0 else { return .needsUsableEvidence }
@@ -450,6 +490,7 @@ struct ReferencePreparationState: Equatable, Sendable {
     var resumeSource: ReferenceResumeSource?
     var webSources: [ReferenceWebSource] = []
     var pack: PreparedReferencePack?
+    var interviewContext = InterviewContextDraft()
     var phase: ReferencePreparationPhase = .idle
 
     init() {}
@@ -469,6 +510,7 @@ struct ReferencePreparationState: Equatable, Sendable {
             return restored
         }
         pack = archive.pack
+        interviewContext = archive.interviewContext ?? InterviewContextDraft()
         phase = pack == nil ? .idle : .ready
     }
 }
@@ -477,11 +519,16 @@ struct ReferencePreparationArchive: Codable, Equatable, Sendable {
     var resumeSource: ReferenceResumeSource?
     var webSources: [ReferenceWebSource]
     var pack: PreparedReferencePack?
+    /// Optional so archives written before interview descriptions were
+    /// persisted continue to load. Missing data deliberately becomes the
+    /// visible basic description, never an inferred hidden prompt.
+    var interviewContext: InterviewContextDraft?
 
     init(state: ReferencePreparationState) {
         resumeSource = state.resumeSource
         webSources = state.webSources
         pack = state.pack
+        interviewContext = state.interviewContext
     }
 }
 

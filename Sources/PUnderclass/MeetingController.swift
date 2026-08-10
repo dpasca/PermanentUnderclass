@@ -10,8 +10,10 @@ final class MeetingController: ObservableObject {
     @Published var webReferenceURLDraft = ""
     @Published var meetingContextPrompt =
         "An English-language one-on-one technical company meeting. Speakers may have different regional or non-native English accents. Discussion may include software, hardware, APIs, product names, acronyms, numbers, and action items."
-    @Published var interviewContextPrompt =
-        "An English-language technical job interview. The other speaker is the interviewer and may ask about the candidate's experience, system design, debugging, performance, collaboration, and role-specific technical topics."
+    @Published private(set) var interviewContextPrompt =
+        InterviewContextDraft.basicDescription
+    @Published private(set) var interviewContextSuggestionPhase:
+        InterviewContextSuggestionPhase = .idle
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published var delay: TranscriptionDelay = .medium
@@ -100,6 +102,9 @@ final class MeetingController: ObservableObject {
     private var referenceLibraryService: ReferenceLibraryService?
     private var referencePreparationTask: Task<Void, Never>?
     private var referencePreparationRunID: UUID?
+    private var interviewContextSuggestionTask: Task<Void, Never>?
+    private var interviewContextSuggestionRunID: UUID?
+    private var referencePreparationPersistenceTask: Task<Void, Never>?
     private let companionGateway = CompanionGateway()
     private var companionGatewayAttemptID: UUID?
     private let liveAssistantClient = LiveAssistantClient()
@@ -108,6 +113,8 @@ final class MeetingController: ObservableObject {
         SyntheticInterviewGeneratorClient()
     private let referenceWebContentClient = ReferenceWebContentClient()
     private let referencePreparationClient = ReferencePreparationClient()
+    private let interviewContextSuggestionClient =
+        InterviewContextSuggestionClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTask: Task<Void, Never>?
     private var assistantGenerationRequestID: UUID?
@@ -202,6 +209,7 @@ final class MeetingController: ObservableObject {
             errorMessage =
                 "Prepared interview evidence could not be loaded: \(error.localizedDescription)"
         }
+        interviewContextPrompt = referencePreparationState.interviewContext.text
         dictationPreviewEnabled = UserDefaults.standard.object(
             forKey: Self.dictationPreviewEnabledDefaultsKey
         ) as? Bool ?? true
@@ -917,6 +925,7 @@ final class MeetingController: ObservableObject {
         if isListening {
             stopCapture()
         }
+        cancelInterviewContextSuggestion()
         if referencePreparationState.phase.isWorking {
             referencePreparationTask?.cancel()
             referencePreparationTask = nil
@@ -1225,8 +1234,9 @@ final class MeetingController: ObservableObject {
     func chooseResumeFile() {
         let panel = NSOpenPanel()
         panel.title = "Choose the Resume Used for Interview Evidence"
-        panel.message =
-            "Choose the current resume or CV. It will be checked against the other preparation sources and treated as authoritative when it is a resume."
+        panel.message = capability.isAvailable(.answerMirror)
+            ? "Choose the current resume or CV. Its text will be sent to OpenAI once to draft an editable interview description, then it will be treated as the authoritative resume during evidence preparation."
+            : "Choose the current resume or CV. It stays on this Mac while OpenAI features are unavailable and will be treated as the authoritative resume during evidence preparation."
         panel.prompt = "Use Resume"
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -1243,7 +1253,7 @@ final class MeetingController: ObservableObject {
                 fileURL: fileURL,
                 relativePath: citationPath
             )
-            referencePreparationState.resumeSource = ReferenceResumeSource(
+            let selectedSource = ReferenceResumeSource(
                 filePath: fileURL.standardizedFileURL.path,
                 citationPath: citationPath,
                 contentDigest: ReferencePreparationDigest.hash([
@@ -1251,9 +1261,22 @@ final class MeetingController: ObservableObject {
                 ]),
                 sourceByteCount: document.sourceByteCount
             )
+            let resumeChanged = referencePreparationState.resumeSource
+                != selectedSource
+            referencePreparationState.resumeSource = selectedSource
+            if resumeChanged {
+                resetInterviewContextToBasicDescription()
+            }
             referencePreparationState.phase = .idle
             persistReferencePreparation()
             statusMessage = "Selected \(fileURL.lastPathComponent) as the interview resume"
+            if capability.isAvailable(.answerMirror),
+               resumeChanged
+                    || referencePreparationState.interviewContext.origin
+                        == .basic
+            {
+                suggestInterviewContextFromResume()
+            }
         } catch {
             present(error)
         }
@@ -1267,8 +1290,132 @@ final class MeetingController: ObservableObject {
     func clearResumeFile() {
         guard !referencePreparationState.phase.isWorking else { return }
         referencePreparationState.resumeSource = nil
+        resetInterviewContextToBasicDescription()
         referencePreparationState.phase = .idle
         persistReferencePreparation()
+    }
+
+    var canSuggestInterviewContext: Bool {
+        referencePreparationState.resumeSource != nil
+            && capability.isAvailable(.answerMirror)
+            && !isListening
+            && !syntheticInterviewState.isActive
+            && !referencePreparationState.phase.isWorking
+            && !interviewContextSuggestionPhase.isWorking
+    }
+
+    func updateInterviewContextPrompt(_ value: String) {
+        cancelInterviewContextSuggestion()
+        interviewContextPrompt = value
+        referencePreparationState.interviewContext = InterviewContextDraft(
+            text: value,
+            origin: .userEdited
+        )
+        if !referencePreparationState.phase.isWorking {
+            referencePreparationState.phase = .idle
+        }
+        scheduleReferencePreparationPersistence()
+    }
+
+    func suggestInterviewContextFromResume() {
+        guard
+            canSuggestInterviewContext,
+            let source = referencePreparationState.resumeSource
+        else {
+            return
+        }
+        let document: ReferenceDocument
+        do {
+            document = try ReferenceLibraryScanner().loadDocument(
+                fileURL: source.fileURL,
+                relativePath: source.citationPath
+            )
+        } catch {
+            interviewContextSuggestionPhase = .failed(
+                error.localizedDescription
+            )
+            return
+        }
+        let resumeDigest = ReferencePreparationDigest.hash([
+            document.content
+        ])
+        referencePreparationState.resumeSource = ReferenceResumeSource(
+            filePath: source.filePath,
+            citationPath: source.citationPath,
+            contentDigest: resumeDigest,
+            sourceByteCount: document.sourceByteCount
+        )
+        persistReferencePreparation()
+
+        cancelInterviewContextSuggestion()
+        let runID = UUID()
+        interviewContextSuggestionRunID = runID
+        interviewContextSuggestionPhase = .generating
+        statusMessage = "Drafting an interview description from the resume…"
+        let apiKey = apiKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let client = interviewContextSuggestionClient
+        interviewContextSuggestionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let generation = try await client.suggest(
+                    apiKey: apiKey,
+                    resumeText: document.content
+                )
+                try Task.checkCancellation()
+                guard self.interviewContextSuggestionRunID == runID else {
+                    return
+                }
+                self.interviewContextSuggestionTask = nil
+                self.interviewContextSuggestionRunID = nil
+                self.recordAssistantUsage(generation.usage)
+                guard let suggestion = generation.suggestion else {
+                    self.interviewContextSuggestionPhase = .insufficient
+                    self.statusMessage =
+                        "The basic interview description is still in use"
+                    return
+                }
+                self.interviewContextPrompt = suggestion
+                self.referencePreparationState.interviewContext =
+                    InterviewContextDraft(
+                        text: suggestion,
+                        origin: .resumeSuggestion,
+                        sourceResumeDigest: resumeDigest
+                    )
+                self.referencePreparationState.phase = .idle
+                self.interviewContextSuggestionPhase = .idle
+                self.persistReferencePreparation()
+                self.statusMessage =
+                    "Drafted an editable interview description from the resume"
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.interviewContextSuggestionRunID == runID else {
+                    return
+                }
+                self.interviewContextSuggestionTask = nil
+                self.interviewContextSuggestionRunID = nil
+                self.interviewContextSuggestionPhase = .failed(
+                    error.localizedDescription
+                )
+                self.statusMessage =
+                    "The basic interview description is still in use"
+            }
+        }
+    }
+
+    private func resetInterviewContextToBasicDescription() {
+        cancelInterviewContextSuggestion()
+        interviewContextPrompt = InterviewContextDraft.basicDescription
+        referencePreparationState.interviewContext = InterviewContextDraft()
+    }
+
+    private func cancelInterviewContextSuggestion() {
+        interviewContextSuggestionTask?.cancel()
+        interviewContextSuggestionTask = nil
+        interviewContextSuggestionRunID = nil
+        interviewContextSuggestionPhase = .idle
     }
 
     func rescanReferenceFolder() {
@@ -1352,6 +1499,9 @@ final class MeetingController: ObservableObject {
                 || syntheticInterviewState.isActive,
             isPreparing: referencePreparationState.phase.isWorking,
             hasExplicitResume: referencePreparationState.resumeSource != nil,
+            hasInterviewDescription: !interviewContextPrompt
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty,
             hasPack: pack != nil,
             isPackCurrent: isInterviewEvidenceCurrent,
             requiresSourceReview: pack?.sourceManifest?.requiresReview == true,
@@ -1367,6 +1517,9 @@ final class MeetingController: ObservableObject {
     /// session so the pack selected at start can continue to be used.
     private var hasReadyInterviewEvidence: Bool {
         referencePreparationState.resumeSource != nil
+            && !interviewContextPrompt
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
             && isInterviewEvidenceResolved
             && (referencePreparationState.pack?.enabledCardCount ?? 0) > 0
     }
@@ -1381,15 +1534,18 @@ final class MeetingController: ObservableObject {
     var canPrepareInterviewEvidence: Bool {
         guard
             !referencePreparationState.phase.isWorking,
+            !interviewContextSuggestionPhase.isWorking,
             !isListening,
             !syntheticInterviewState.isActive,
-            capability.isAvailable(.answerMirror)
+            capability.isAvailable(.answerMirror),
+            referencePreparationState.resumeSource != nil,
+            !interviewContextPrompt
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
         else {
             return false
         }
-        return referencePreparationState.resumeSource != nil
-            || referenceLibraryState.snapshot?.documents.isEmpty == false
-            || !referencePreparationState.webSources.isEmpty
+        return true
     }
 
     func interviewEvidenceReadinessDetail() -> String {
@@ -1403,14 +1559,16 @@ final class MeetingController: ObservableObject {
             return referencePreparationState.phase.title
         case .needsResume:
             return "Choose the current resume you want Answer Mirror to use."
+        case .needsInterviewDescription:
+            return "Add the visible interview description Answer Mirror should use."
         case .needsEvidence:
             if case let .failed(message) = referencePreparationState.phase {
                 return "Preparation failed: \(message)"
             }
             if referencePreparationState.pack == nil {
-                return "Build a compact, role-specific evidence pack from the selected resume."
+                return "Build a compact, interview-relevant evidence pack from the selected resume."
             }
-            return "Sources or role guidance changed. Rebuild before the next interview."
+            return "Sources or the interview description changed. Rebuild before the next interview."
         case .needsSourceReview:
             return "The selected resume conflicts with another source. Review the source choices before continuing."
         case .needsUsableEvidence:
@@ -1432,6 +1590,7 @@ final class MeetingController: ObservableObject {
         }
 
         let explicitResume: ReferenceDocument?
+        var resumeSuggestionBecameStale = false
         do {
             if let source = referencePreparationState.resumeSource {
                 let document = try ReferenceLibraryScanner().loadDocument(
@@ -1447,6 +1606,11 @@ final class MeetingController: ObservableObject {
                     sourceByteCount: document.sourceByteCount
                 )
                 referencePreparationState.resumeSource = refreshedSource
+                resumeSuggestionBecameStale =
+                    referencePreparationState.interviewContext.origin
+                        == .resumeSuggestion
+                    && referencePreparationState.interviewContext
+                        .sourceResumeDigest != refreshedSource.contentDigest
                 explicitResume = document
             } else {
                 explicitResume = nil
@@ -1455,6 +1619,14 @@ final class MeetingController: ObservableObject {
             referencePreparationState.phase = .failed(error.localizedDescription)
             persistReferencePreparation()
             present(error)
+            return
+        }
+        if resumeSuggestionBecameStale {
+            resetInterviewContextToBasicDescription()
+            referencePreparationState.phase = .idle
+            persistReferencePreparation()
+            statusMessage =
+                "The resume changed. Review or regenerate its interview description before preparing."
             return
         }
 
@@ -1599,6 +1771,8 @@ final class MeetingController: ObservableObject {
     }
 
     private func persistReferencePreparation() {
+        referencePreparationPersistenceTask?.cancel()
+        referencePreparationPersistenceTask = nil
         do {
             try referencePreparationStore.save(
                 ReferencePreparationArchive(state: referencePreparationState)
@@ -1606,6 +1780,19 @@ final class MeetingController: ObservableObject {
         } catch {
             errorMessage =
                 "Prepared interview evidence could not be saved: \(error.localizedDescription)"
+        }
+    }
+
+    private func scheduleReferencePreparationPersistence() {
+        referencePreparationPersistenceTask?.cancel()
+        referencePreparationPersistenceTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.persistReferencePreparation()
         }
     }
 
@@ -1713,10 +1900,17 @@ final class MeetingController: ObservableObject {
             return "Choose the current resume in Prepare Interview before generating an interview."
         }
         if purpose == .interview,
+           interviewContextPrompt.trimmingCharacters(
+               in: .whitespacesAndNewlines
+           ).isEmpty
+        {
+            return "Add an interview description in Prepare Interview before generating an interview."
+        }
+        if purpose == .interview,
            referencePreparationState.pack != nil,
            !isInterviewEvidenceCurrent
         {
-            return "Rebuild the prepared interview evidence after the source or role-context change."
+            return "Rebuild the prepared interview evidence after the source or interview-description change."
         }
         if purpose == .interview,
            referencePreparationState.pack?.sourceManifest?.requiresReview == true

@@ -358,7 +358,7 @@ struct ReferenceMaterialView: View {
                 .controlSize(.large)
             }
 
-        case .needsEvidence:
+        case .needsInterviewDescription, .needsEvidence:
             selectedResumeRow
             interviewContextEditor
             if case let .failed(message) =
@@ -437,7 +437,7 @@ struct ReferenceMaterialView: View {
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.green)
                 Spacer()
-                Button("Edit Role…") {
+                Button("Edit Description…") {
                     withAnimation {
                         showsReadyRoleEditor.toggle()
                     }
@@ -498,15 +498,15 @@ struct ReferenceMaterialView: View {
 
     private var interviewContextEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Role and interview context")
+            Text("Interview description")
                 .font(.body.weight(.semibold))
             Text(
-                "Recommended: add the company, role, interview stage, and likely topics. You can also leave the general technical-interview context as-is."
+                "This is exactly what Answer Mirror uses. It starts with a simple description; AI can suggest a more specific version from the selected resume. Review or edit anything that does not fit. Spoken language is controlled separately under speech settings."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            TextEditor(text: $controller.interviewContextPrompt)
+            TextEditor(text: interviewContextBinding)
                 .font(.body)
                 .frame(minHeight: 90)
                 .padding(7)
@@ -518,6 +518,84 @@ struct ReferenceMaterialView: View {
                     RoundedRectangle(cornerRadius: 9)
                         .stroke(.separator.opacity(0.75), lineWidth: 1)
                 }
+
+            HStack(alignment: .center, spacing: 10) {
+                interviewContextStatus
+                Spacer()
+                if controller.referencePreparationState.resumeSource != nil {
+                    Button(
+                        controller.referencePreparationState.interviewContext
+                            .origin == .resumeSuggestion
+                            ? "Suggest Again from Resume"
+                            : "Suggest from Resume",
+                        action: controller.suggestInterviewContextFromResume
+                    )
+                    .disabled(!controller.canSuggestInterviewContext)
+                }
+            }
+
+            if controller.interviewContextPrompt.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty {
+                Label(
+                    "Add an interview description before preparing evidence.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var interviewContextStatus: some View {
+        switch controller.interviewContextSuggestionPhase {
+        case .generating:
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Drafting from the selected resume…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        case .insufficient:
+            Label(
+                "The resume did not support a useful specific draft; the visible basic description remains in use.",
+                systemImage: "info.circle"
+            )
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        case let .failed(message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        case .idle:
+            switch controller.referencePreparationState.interviewContext.origin {
+            case .basic:
+                Label(
+                    "Basic visible description — no extra interview prompt is added behind the scenes.",
+                    systemImage: "eye"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            case .resumeSuggestion:
+                Label(
+                    "Suggested from the selected resume. Review it before preparing.",
+                    systemImage: "sparkles"
+                )
+                .font(.callout)
+                .foregroundStyle(.green)
+            case .userEdited:
+                Label(
+                    "Edited by you. This exact version is saved.",
+                    systemImage: "pencil"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -576,9 +654,11 @@ struct ReferenceMaterialView: View {
             "Preparing your interview evidence"
         case .needsResume:
             "Choose the resume for this interview"
+        case .needsInterviewDescription:
+            "Describe the interview before preparing"
         case .needsEvidence:
             controller.referencePreparationState.pack == nil
-                ? "Confirm the target role, then prepare"
+                ? "Review the interview description, then prepare"
                 : "Update the prepared evidence"
         case .needsSourceReview:
             "One source conflict still needs your choice"
@@ -599,10 +679,12 @@ struct ReferenceMaterialView: View {
             "The app is reading your sources, separating factual career material from preparation notes, and building concise evidence cards."
         case .needsResume:
             "Choose the current resume you want to use. This keeps old drafts and interview notes from being treated as your work history."
+        case .needsInterviewDescription:
+            "The description field is empty. Add the exact interview context Answer Mirror should use; nothing else will be substituted for it."
         case .needsEvidence:
             controller.referencePreparationState.pack == nil
-                ? "Check the role context below, then let the app organize the resume into useful interview evidence."
-                : "The resume, supporting sources, or role context changed. Refresh the evidence before you start."
+                ? "Review the editable description below, then let the app organize the resume into useful interview evidence."
+                : "The resume, supporting sources, or interview description changed. Refresh the evidence before you start."
         case .needsSourceReview:
             "The app could not safely decide which source should establish a candidate fact."
         case .needsUsableEvidence:
@@ -619,7 +701,8 @@ struct ReferenceMaterialView: View {
         case .preparing:
             "Working"
         case .unavailable, .activeSession, .needsResume, .needsEvidence,
-             .needsSourceReview, .needsUsableEvidence:
+             .needsInterviewDescription, .needsSourceReview,
+             .needsUsableEvidence:
             "Next step"
         }
     }
@@ -634,7 +717,7 @@ struct ReferenceMaterialView: View {
             "sparkles"
         case .needsResume:
             "doc.badge.plus"
-        case .needsEvidence:
+        case .needsInterviewDescription, .needsEvidence:
             "wand.and.stars"
         case .needsSourceReview, .needsUsableEvidence:
             "exclamationmark.triangle.fill"
@@ -651,7 +734,8 @@ struct ReferenceMaterialView: View {
             .orange
         case .unavailable, .activeSession:
             .secondary
-        case .preparing, .needsResume, .needsEvidence:
+        case .preparing, .needsResume, .needsInterviewDescription,
+             .needsEvidence:
             .accentColor
         }
     }
@@ -695,7 +779,7 @@ struct ReferenceMaterialView: View {
         case .needsUsableEvidence:
             showsSupportingSources = true
         case .unavailable, .activeSession, .preparing, .needsResume,
-             .needsEvidence, .ready:
+             .needsInterviewDescription, .needsEvidence, .ready:
             break
         }
     }
@@ -707,13 +791,13 @@ struct ReferenceMaterialView: View {
                     Text(
                         purpose == .meeting
                             ? "What is this meeting about?"
-                            : "What role and interview should the assistant expect?"
+                            : "What interview should the assistant expect?"
                     )
                     .font(.title3.weight(.semibold))
                     Text(
                         purpose == .meeting
                             ? "Include the participants, purpose, likely topics, and any important constraints. This guides both transcription and Meeting Assistant."
-                            : "Include the company, role, interview stage, and likely topics. This guides both transcription and Answer Mirror."
+                            : "This exact editable description guides transcription and Answer Mirror. Spoken language is configured separately."
                     )
                     .font(.body)
                     .foregroundStyle(.secondary)
@@ -1033,7 +1117,7 @@ struct ReferenceMaterialView: View {
                     color: .purple,
                     detail: controller.assistantAnswerMode == .plausibleRehearsal
                         ? "Drafts visibly labeled, project-specific rehearsal answers and exposes assumptions to verify."
-                        : "Uses supported experience and role context without inventing personal claims."
+                        : "Uses supported experience and the visible interview description without inventing personal claims."
                 )
                 assistantUse(
                     title: "Generated Replays",
@@ -1472,7 +1556,7 @@ struct ReferenceMaterialView: View {
 
     private var privacyNote: some View {
         Label(
-            "Local documents and fetched page text are stored on this Mac. Preparing evidence sends source text to OpenAI; reading a public URL sends that URL to Jina Reader, then optionally to Exa if the other paths fail. The browser companion receives citations, not the source files or setup text.",
+            "Local documents and fetched page text are stored on this Mac. When OpenAI features are available, selecting a resume sends its text to OpenAI once to draft the visible editable interview description; preparing evidence sends the configured source text. Reading a public URL sends that URL to Jina Reader, then optionally to Exa if the other paths fail. The browser companion receives citations, not the source files or setup text.",
             systemImage: "lock.shield.fill"
         )
         .font(.body)
@@ -1566,8 +1650,15 @@ struct ReferenceMaterialView: View {
         case .meeting:
             $controller.meetingContextPrompt
         case .interview:
-            $controller.interviewContextPrompt
+            interviewContextBinding
         }
+    }
+
+    private var interviewContextBinding: Binding<String> {
+        Binding(
+            get: { controller.interviewContextPrompt },
+            set: controller.updateInterviewContextPrompt
+        )
     }
 
     private var answerModeBinding: Binding<AssistantAnswerMode> {

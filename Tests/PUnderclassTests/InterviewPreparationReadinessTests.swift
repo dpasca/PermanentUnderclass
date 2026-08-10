@@ -16,6 +16,16 @@ final class InterviewPreparationReadinessTests: XCTestCase {
         )
     }
 
+    func testEmptyVisibleInterviewDescriptionBlocksPreparation() {
+        XCTAssertEqual(
+            resolve(
+                hasExplicitResume: true,
+                hasInterviewDescription: false
+            ),
+            .needsInterviewDescription
+        )
+    }
+
     func testCurrentPackWithConflictNeedsReview() {
         XCTAssertEqual(
             resolve(
@@ -76,6 +86,7 @@ final class InterviewPreparationReadinessTests: XCTestCase {
         hasActiveSession: Bool = false,
         isPreparing: Bool = false,
         hasExplicitResume: Bool = false,
+        hasInterviewDescription: Bool = true,
         hasPack: Bool = false,
         isPackCurrent: Bool = false,
         requiresSourceReview: Bool = false,
@@ -86,6 +97,7 @@ final class InterviewPreparationReadinessTests: XCTestCase {
             hasActiveSession: hasActiveSession,
             isPreparing: isPreparing,
             hasExplicitResume: hasExplicitResume,
+            hasInterviewDescription: hasInterviewDescription,
             hasPack: hasPack,
             isPackCurrent: isPackCurrent,
             requiresSourceReview: requiresSourceReview,

@@ -123,6 +123,14 @@ answer-mode usefulness, and concise usability. Set
 eval makes hosted API requests and may incur usage charges. To iterate on one
 fixture, also set `ANSWER_MIRROR_EVAL_CASE` to its printed case name.
 
+The resume-derived interview-description draft has a smaller hosted timing and
+grounding check that uses synthetic career data only:
+
+```sh
+OPENAI_API_KEY="..." RUN_INTERVIEW_CONTEXT_SUGGESTION_EVAL=1 \
+  swift test --filter InterviewContextSuggestionClientTests/testHostedSuggestionFavorsRecentWorkWithoutInventingLanguage
+```
+
 The early bridge has a smaller non-personal hosted eval that checks an
 unfinished partial, two clear requests, and the measured Priority Luna latency:
 

@@ -46,7 +46,7 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             let generation = try await client.generate(
                 apiKey: apiKey,
                 currentPartial: evalCase.partial,
-                sessionContext: "An English-language technical job interview.",
+                sessionContext: InterviewContextDraft.basicDescription,
                 opportunity: evalCase.opportunity
             )
             latencies.append(generation.generationMilliseconds)
@@ -119,7 +119,7 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                 recentTranscript: evalCase.recentTranscript,
                 currentPartial: evalCase.currentPartial,
                 otherSpeakerText: evalCase.question,
-                sessionContext: "An English-language technical job interview.",
+                sessionContext: InterviewContextDraft.basicDescription,
                 purpose: .interview,
                 basedOnSequence: index + 1,
                 trigger: evalCase.trigger,
