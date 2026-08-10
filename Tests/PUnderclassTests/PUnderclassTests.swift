@@ -1000,6 +1000,31 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertFalse(state.isHeld)
     }
 
+    func testBriefModifierReleaseAndRepressStaysOneDictation() {
+        var coalescer = ModifierHoldSignalCoalescer()
+
+        XCTAssertEqual(coalescer.receive(.pressed), .emit(.pressed))
+        XCTAssertEqual(coalescer.receive(.released), .deferRelease)
+        XCTAssertEqual(
+            coalescer.receive(.pressed),
+            .cancelDeferredRelease
+        )
+        XCTAssertNil(coalescer.releaseDelayElapsed())
+
+        XCTAssertEqual(coalescer.receive(.released), .deferRelease)
+        XCTAssertEqual(coalescer.releaseDelayElapsed(), .released)
+    }
+
+    func testModifierReleaseFinishesAfterBounceGracePeriod() {
+        var coalescer = ModifierHoldSignalCoalescer()
+
+        XCTAssertEqual(coalescer.receive(.pressed), .emit(.pressed))
+        XCTAssertEqual(coalescer.receive(.released), .deferRelease)
+        XCTAssertTrue(coalescer.hasDeferredRelease)
+        XCTAssertEqual(coalescer.releaseDelayElapsed(), .released)
+        XCTAssertFalse(coalescer.hasDeferredRelease)
+    }
+
     func testModifierChordRejectsAdditionalModifiers() {
         var state = ModifierHoldState()
 
@@ -1752,6 +1777,37 @@ final class PUnderclassTests: XCTestCase {
             "mail compose field"
         )
         XCTAssertFalse(state.hasPendingTranscriptions)
+    }
+
+    func testEarlierStreamCanCompleteWhileNextRecordingIsActive() {
+        let pendingTranscriptionIDs: Set<String> = ["first-stream"]
+
+        XCTAssertTrue(
+            QuickDictationStreamEventRouting.acceptsCompletion(
+                streamID: "first-stream",
+                pendingTranscriptionIDs: pendingTranscriptionIDs
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationStreamEventRouting.acceptsCompletion(
+                streamID: "second-stream",
+                pendingTranscriptionIDs: pendingTranscriptionIDs
+            )
+        )
+        XCTAssertTrue(
+            QuickDictationStreamEventRouting.acceptsFailure(
+                streamID: "first-stream",
+                activeStreamID: "second-stream",
+                pendingTranscriptionIDs: pendingTranscriptionIDs
+            )
+        )
+        XCTAssertTrue(
+            QuickDictationStreamEventRouting.acceptsFailure(
+                streamID: "second-stream",
+                activeStreamID: "second-stream",
+                pendingTranscriptionIDs: pendingTranscriptionIDs
+            )
+        )
     }
 
     func testGPTTranscribeConnectionAttemptHasABoundedTimeout() {

@@ -11,6 +11,49 @@ enum ModifierHoldSignal: Equatable {
     case interrupted
 }
 
+enum ModifierHoldSignalDisposition: Equatable {
+    case emit(ModifierHoldSignal)
+    case deferRelease
+    case cancelDeferredRelease
+}
+
+/// Keeps a momentary modifier-key bounce from splitting one spoken thought
+/// into two recordings. A real release is still delivered after the short
+/// grace period; pressing the chord again before then cancels both boundary
+/// signals and leaves the existing capture running.
+struct ModifierHoldSignalCoalescer {
+    private(set) var hasDeferredRelease = false
+
+    mutating func receive(
+        _ signal: ModifierHoldSignal
+    ) -> ModifierHoldSignalDisposition {
+        switch signal {
+        case .pressed:
+            guard hasDeferredRelease else { return .emit(.pressed) }
+            hasDeferredRelease = false
+            return .cancelDeferredRelease
+
+        case .released:
+            hasDeferredRelease = true
+            return .deferRelease
+
+        case .interrupted:
+            hasDeferredRelease = false
+            return .emit(.interrupted)
+        }
+    }
+
+    mutating func releaseDelayElapsed() -> ModifierHoldSignal? {
+        guard hasDeferredRelease else { return nil }
+        hasDeferredRelease = false
+        return .released
+    }
+
+    mutating func reset() {
+        hasDeferredRelease = false
+    }
+}
+
 struct ModifierHoldState {
     private(set) var isHeld = false
 
@@ -72,6 +115,7 @@ final class ModifierHoldMonitor {
     static let diagnosticEventTag: Int64 = 0x4D_43_44_54
     static let pasteEventTag: Int64 = 0x4D_43_50_53
     static let escapeKeyCode: Int64 = 53
+    static let releaseBounceGraceSeconds: TimeInterval = 0.12
     private static let logger = Logger(
         subsystem: "com.newtypekk.punderclass",
         category: "QuickDictationHotkey"
@@ -82,6 +126,8 @@ final class ModifierHoldMonitor {
     private var installedRunLoop: CFRunLoop?
     private var retainedSelf: Unmanaged<ModifierHoldMonitor>?
     private var state = ModifierHoldState()
+    private var signalCoalescer = ModifierHoldSignalCoalescer()
+    private var deferredReleaseWorkItem: DispatchWorkItem?
     private var isDiagnosticHold = false
     private var isConsumingEscapeUntilChordRelease = false
 
@@ -157,6 +203,9 @@ final class ModifierHoldMonitor {
         runLoopSource = nil
         installedRunLoop = nil
         state.reset()
+        deferredReleaseWorkItem?.cancel()
+        deferredReleaseWorkItem = nil
+        signalCoalescer.reset()
         isDiagnosticHold = false
         isConsumingEscapeUntilChordRelease = false
     }
@@ -211,20 +260,66 @@ final class ModifierHoldMonitor {
             signal = nil
         }
         if let signal {
-            // Capture the receiving app in the event-tap turn itself. The
-            // handler runs on the next main-queue turn, by which time another
-            // process may already have taken focus.
-            let focusedApplication = signal == .pressed
-                ? NSWorkspace.shared.frontmostApplication
-                : nil
-            Self.logger.notice(
-                "shortcut_signal=\(String(describing: signal), privacy: .public) flags=\(event.flags.rawValue, privacy: .public)"
+            route(
+                signal,
+                flags: event.flags,
+                focusedApplication: signal == .pressed
+                    ? NSWorkspace.shared.frontmostApplication
+                    : nil
             )
-            DispatchQueue.main.async { [signalHandler, focusedApplication] in
-                signalHandler(signal, focusedApplication)
-            }
         }
         return shouldConsumeEvent ? nil : Unmanaged.passUnretained(event)
+    }
+
+    private func route(
+        _ signal: ModifierHoldSignal,
+        flags: CGEventFlags,
+        focusedApplication: NSRunningApplication?
+    ) {
+        switch signalCoalescer.receive(signal) {
+        case let .emit(signal):
+            deferredReleaseWorkItem?.cancel()
+            deferredReleaseWorkItem = nil
+            publish(
+                signal,
+                flags: flags,
+                focusedApplication: focusedApplication
+            )
+
+        case .deferRelease:
+            deferredReleaseWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.deferredReleaseWorkItem = nil
+                guard let signal = self.signalCoalescer.releaseDelayElapsed() else {
+                    return
+                }
+                self.publish(signal, flags: flags, focusedApplication: nil)
+            }
+            deferredReleaseWorkItem = workItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.releaseBounceGraceSeconds,
+                execute: workItem
+            )
+
+        case .cancelDeferredRelease:
+            deferredReleaseWorkItem?.cancel()
+            deferredReleaseWorkItem = nil
+            Self.logger.notice("shortcut_release_bounce_coalesced")
+        }
+    }
+
+    private func publish(
+        _ signal: ModifierHoldSignal,
+        flags: CGEventFlags,
+        focusedApplication: NSRunningApplication?
+    ) {
+        Self.logger.notice(
+            "shortcut_signal=\(String(describing: signal), privacy: .public) flags=\(flags.rawValue, privacy: .public)"
+        )
+        DispatchQueue.main.async { [signalHandler, focusedApplication] in
+            signalHandler(signal, focusedApplication)
+        }
     }
 
     deinit {
@@ -450,6 +545,24 @@ struct QuickDictationWorkState<Target> {
             return .preparing(engine)
         }
         return .ready
+    }
+}
+
+enum QuickDictationStreamEventRouting {
+    static func acceptsCompletion(
+        streamID: String,
+        pendingTranscriptionIDs: Set<String>
+    ) -> Bool {
+        pendingTranscriptionIDs.contains(streamID)
+    }
+
+    static func acceptsFailure(
+        streamID: String,
+        activeStreamID: String?,
+        pendingTranscriptionIDs: Set<String>
+    ) -> Bool {
+        activeStreamID == streamID
+            || pendingTranscriptionIDs.contains(streamID)
     }
 }
 
@@ -1512,13 +1625,18 @@ final class HoldToDictateService {
         guard
             self.generation == generation,
             isRunning,
-            activeStreamID == streamID
+            QuickDictationStreamEventRouting.acceptsCompletion(
+                streamID: streamID,
+                pendingTranscriptionIDs: workState.pendingTranscriptionIDs
+            )
         else {
             return
         }
-        activeStreamID = nil
-        streamCommittedByteCount = 0
-        progressHandler(nil)
+        if activeStreamID == streamID {
+            activeStreamID = nil
+            streamCommittedByteCount = 0
+            progressHandler(nil)
+        }
         completeFinalTranscription(transcriptID: streamID, text: text)
     }
 
@@ -1530,20 +1648,29 @@ final class HoldToDictateService {
         guard
             self.generation == generation,
             isRunning,
-            activeStreamID == streamID
+            QuickDictationStreamEventRouting.acceptsFailure(
+                streamID: streamID,
+                activeStreamID: activeStreamID,
+                pendingTranscriptionIDs: workState.pendingTranscriptionIDs
+            )
         else {
             return
         }
         Self.logger.error(
             "stream_unavailable error=\(message, privacy: .public)"
         )
-        streamDidFail = true
-        activeStreamID = nil
-        stopStreamSegmentScheduling()
+        let isActiveRecordingStream = activeStreamID == streamID
+        if isActiveRecordingStream {
+            streamDidFail = true
+            activeStreamID = nil
+            stopStreamSegmentScheduling()
+        }
 
         // Still recording: the buffer keeps filling and the batch upload at
         // release covers the whole take, so nothing is lost.
-        guard recordingID == nil else { return }
+        if isActiveRecordingStream, recordingID != nil {
+            return
+        }
 
         // Already released: the recording is retained, so resubmit it through
         // the batch path rather than dropping the dictation.
