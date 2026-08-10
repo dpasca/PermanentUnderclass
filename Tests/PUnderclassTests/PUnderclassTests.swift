@@ -2091,11 +2091,17 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
-    func testOnlyDictationAccuracyIsAnOptionalUpgrade() {
+    func testLocalCaptureAndDictationRemainAvailableWithoutCloudUpgrades() {
         XCTAssertTrue(CloudFeature.bestAccuracyDictation.isOptionalUpgrade)
-        XCTAssertFalse(CloudFeature.meetingCapture.isOptionalUpgrade)
-        XCTAssertFalse(CloudFeature.answerMirror.isOptionalUpgrade)
+        XCTAssertTrue(CloudFeature.meetingCapture.isOptionalUpgrade)
+        XCTAssertTrue(CloudFeature.answerMirror.isOptionalUpgrade)
         XCTAssertFalse(CloudFeature.mockInterview.isOptionalUpgrade)
+        XCTAssertNotNil(
+            CloudFeature.meetingCapture.availableWithoutKeyDescription
+        )
+        XCTAssertNotNil(
+            CloudFeature.answerMirror.availableWithoutKeyDescription
+        )
     }
 
     // MARK: - Settings migration

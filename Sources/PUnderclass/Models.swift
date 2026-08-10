@@ -59,6 +59,7 @@ enum TranscriptRefinementState: Equatable {
     case refining
     case refined
     case liveOnly(String?)
+    case failed(String)
 }
 
 enum TranscriptRefinementEngine: String, CaseIterable, Identifiable {

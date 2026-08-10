@@ -105,7 +105,8 @@ Initial event set:
 
 - `GET /v1/snapshot`: full replaceable state and its `watermark`.
 - `session.status`: listening/stopped, capture health, the explicit `meeting`
-  or `interview` purpose, and active host behavior.
+  or `interview` purpose, active host behavior, and whether the display should
+  render AI cues or the local transcript-only surface.
 - `transcript.partial`: replace the partial for one `turnId`; safe to coalesce.
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
@@ -411,12 +412,13 @@ and therefore disables hosted search as well.
 ## Assistant behavior boundary
 
 Behaviors are model-backed structured configurations, not keyword triggers.
-The user selects the behavior boundary explicitly: Meeting capture enables
-Meeting Assistant, while Interview capture enables Answer Mirror. Meeting
-Assistant handles clear questions, requests, and decisions from the other
-participant using project-safe grounding rules; Answer Mirror handles
-interviewer questions using interview-safe grounding rules. The host never
-tries to infer one behavior from the transcript's words.
+When cloud enhancements are available, the user selects the behavior boundary
+explicitly: Meeting capture enables Meeting Assistant, while Interview capture
+enables Answer Mirror. Without a key, the same selections produce only the
+local transcript. Meeting Assistant handles clear questions, requests, and
+decisions from the other participant using project-safe grounding rules;
+Answer Mirror handles interviewer questions using interview-safe grounding
+rules. The host never tries to infer one behavior from the transcript's words.
 Each behavior defines:
 
 - goal and audience;
@@ -486,7 +488,8 @@ totals to the client.
 
 The initial meter covers:
 
-- `gpt-live-transcribe` for each live audio track;
+- `gpt-live-transcribe` for each live audio track when cloud enhancements are
+  enabled; local-only capture uses on-device turn buffering instead;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
 - `gpt-5.6-luna` scenario generation and experimental Priority early-bridge
@@ -538,8 +541,9 @@ the source of truth.
   without mixing old and new stream IDs.
 - Repeat a pin/dismiss command after timing out; it is applied once.
 - Stop all clients; capture and transcript finalization continue unaffected.
-- Switch finalization to Parakeet; the cloud-finalization cost stops increasing
-  while live-transcription cost continues.
+- Switch finalization to Parakeet with cloud enhancements active; the
+  cloud-finalization cost stops increasing while live-transcription cost
+  continues. Repeat without a key and verify both costs remain unchanged.
 - Run each document-grounded generated replay; every question partial can start
   its purpose-specific assistant before the simulated final boundary, generated
   response turns leave the outline stack intact, the unchanged final does not

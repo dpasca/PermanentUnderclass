@@ -88,7 +88,7 @@ enum RealtimeServerEvent: Equatable {
     }
 }
 
-final class RealtimeTranscriptionClient: NSObject {
+final class RealtimeTranscriptionClient: NSObject, MeetingAudioTranscribing {
     typealias StateHandler = (SocketState) -> Void
     typealias PartialHandler = (_ itemID: String, _ text: String) -> Void
     typealias FinalHandler = (
@@ -128,26 +128,13 @@ final class RealtimeTranscriptionClient: NSObject {
     private var isSending = false
     private var outbound: [OutboundMessage] = []
     private var partials: [String: String] = [:]
-    private var preRoll: [Data] = []
-    private var consecutiveVoicedChunks = 0
-    private var silentChunks = 0
-    private var hasPublishedSpeechPause = false
-    private var noiseFloor: Float = 0.001
-    private var activeTurnStartedAt: Date?
-    private var lastVoicedAt: Date?
-    private var activeTurnAudio = Data()
-    private var activeTurnLastVoicedByteCount = 0
+    private var turnSegmenter = AudioTurnSegmenter()
     private var pendingTurns: [CommittedTurn] = []
     private var committedTurns: [String: CommittedTurn] = [:]
     private let maximumQueuedAudioChunks = 250
-    private let preRollChunkCount = 15
-    private let speechOnsetChunkCount = 2
-    static let assistantPauseSilenceChunkCount = 40
-    // Keep thoughtful or accented speech together across ordinary pauses.
-    // Partial text still streams while this 3 s finalization window is open.
-    private let speechEndSilenceChunkCount = 150
-    private let retainedPostRollChunkCount = 10
     private static let pcm16BytesPerSecond = 24_000 * MemoryLayout<Int16>.size
+    static let assistantPauseSilenceChunkCount =
+        AudioTurnSegmenter.assistantPauseSilenceChunkCount
     static let model = "gpt-live-transcribe"
     static let webSocketURL = URL(
         string: "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -250,62 +237,14 @@ final class RealtimeTranscriptionClient: NSObject {
     }
 
     private func processAudioChunk(_ data: Data, receivedAt: Date) {
-        let rms = Self.rms(of: data)
-        let threshold = max(0.004, noiseFloor * 3.5)
-        let isVoiced = rms >= threshold
-
-        if activeTurnStartedAt != nil {
-            enqueueAudio(data)
-            activeTurnAudio.append(data)
-            if isVoiced {
-                silentChunks = 0
-                hasPublishedSpeechPause = false
-                lastVoicedAt = receivedAt
-                activeTurnLastVoicedByteCount = activeTurnAudio.count
-            } else {
-                silentChunks += 1
-                if
-                    silentChunks == Self.assistantPauseSilenceChunkCount,
-                    !hasPublishedSpeechPause
-                {
-                    hasPublishedSpeechPause = true
-                    publishSpeechPause(lastVoicedAt ?? receivedAt)
-                }
-                if silentChunks >= speechEndSilenceChunkCount {
-                    commitActiveTurn(at: lastVoicedAt ?? receivedAt)
-                }
-            }
-            return
+        let result = turnSegmenter.append(data, receivedAt: receivedAt)
+        result.streamingChunks.forEach(enqueueAudio)
+        if let speechPauseAt = result.speechPauseAt {
+            publishSpeechPause(speechPauseAt)
         }
-
-        if !isVoiced {
-            noiseFloor = noiseFloor * 0.98 + rms * 0.02
+        if let turn = result.completedTurn {
+            commit(turn)
         }
-        preRoll.append(data)
-        if preRoll.count > preRollChunkCount {
-            preRoll.removeFirst(preRoll.count - preRollChunkCount)
-        }
-
-        if isVoiced {
-            consecutiveVoicedChunks += 1
-        } else {
-            consecutiveVoicedChunks = 0
-        }
-
-        guard consecutiveVoicedChunks >= speechOnsetChunkCount else { return }
-        activeTurnStartedAt = receivedAt.addingTimeInterval(
-            -Double(preRoll.count) * 0.02
-        )
-        lastVoicedAt = receivedAt
-        silentChunks = 0
-        hasPublishedSpeechPause = false
-        activeTurnAudio.removeAll(keepingCapacity: true)
-        for bufferedChunk in preRoll {
-            enqueueAudio(bufferedChunk)
-            activeTurnAudio.append(bufferedChunk)
-        }
-        activeTurnLastVoicedByteCount = activeTurnAudio.count
-        preRoll.removeAll(keepingCapacity: true)
     }
 
     private func enqueueAudio(_ data: Data) {
@@ -321,33 +260,25 @@ final class RealtimeTranscriptionClient: NSObject {
     }
 
     private func commitActiveTurn(at endedAt: Date) {
-        guard let startedAt = activeTurnStartedAt else { return }
+        guard let turn = turnSegmenter.finish(at: endedAt) else { return }
+        commit(turn)
+    }
+
+    private func commit(_ turn: SegmentedAudioTurn) {
         enqueue(
             #"{"type":"input_audio_buffer.commit"}"#,
             isAudio: false,
             priority: false
         )
-        let retainedByteCount = min(
-            activeTurnAudio.count,
-            activeTurnLastVoicedByteCount + retainedPostRollChunkCount * 960
-        )
         pendingTurns.append(
             CommittedTurn(
-                startedAt: startedAt,
-                endedAt: endedAt,
-                pcm16Audio: Data(activeTurnAudio.prefix(retainedByteCount)),
-                submittedAudioSeconds: Double(activeTurnAudio.count)
+                startedAt: turn.startedAt,
+                endedAt: turn.endedAt,
+                pcm16Audio: turn.pcm16Audio,
+                submittedAudioSeconds: Double(turn.capturedByteCount)
                     / Double(Self.pcm16BytesPerSecond)
             )
         )
-        activeTurnStartedAt = nil
-        lastVoicedAt = nil
-        consecutiveVoicedChunks = 0
-        silentChunks = 0
-        hasPublishedSpeechPause = false
-        activeTurnAudio.removeAll(keepingCapacity: true)
-        activeTurnLastVoicedByteCount = 0
-        preRoll.removeAll(keepingCapacity: true)
     }
 
     private func pumpSendQueue() {
@@ -453,19 +384,6 @@ final class RealtimeTranscriptionClient: NSObject {
 
         case .ignored:
             break
-        }
-    }
-
-    private static func rms(of data: Data) -> Float {
-        data.withUnsafeBytes { rawBuffer in
-            let samples = rawBuffer.bindMemory(to: Int16.self)
-            guard !samples.isEmpty else { return 0 }
-            var sum: Double = 0
-            for sample in samples {
-                let value = Double(sample) / Double(Int16.max)
-                sum += value * value
-            }
-            return Float(sqrt(sum / Double(samples.count)))
         }
     }
 

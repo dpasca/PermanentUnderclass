@@ -125,17 +125,16 @@ struct ContentView: View {
 
     private func captureWidgets(for purpose: CapturePurpose) -> some View {
         VStack(spacing: 12) {
+            if !controller.usesHostedLiveTranscription(for: purpose) {
+                localCaptureNotice(for: purpose)
+            }
+
             companionConnectionPanel
 
             VStack(spacing: 12) {
                 captureControlPanel(for: purpose)
                 audioRoutePanel(for: purpose)
             }
-            .locked(
-                liveFeature(for: purpose),
-                access: controller.access(to: liveFeature(for: purpose)),
-                onResolve: showSettings
-            )
 
             preparationAccessPanel(for: purpose)
 
@@ -189,6 +188,86 @@ struct ContentView: View {
 
     private func replayFeature(for purpose: CapturePurpose) -> CloudFeature {
         purpose == .meeting ? .mockMeeting : .mockInterview
+    }
+
+    private func localCaptureNotice(for purpose: CapturePurpose) -> some View {
+        let access = controller.access(to: liveFeature(for: purpose))
+        let privacyLocked = access == .blockedByPrivacyLock
+        let keyBecameAvailable = access == .available
+        let model = controller.resolvedDictationEngine.shortLabel
+
+        return HStack(alignment: .top, spacing: 14) {
+            Image(systemName: privacyLocked
+                ? "lock.laptopcomputer"
+                : "exclamationmark.cloud.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 42, height: 42)
+                .background(.orange.opacity(0.14), in: Circle())
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(privacyLocked
+                        ? "Local-only mode is on"
+                        : keyBecameAvailable
+                            ? "This capture is running locally"
+                            : "OpenAI API key not set")
+                        .font(.headline)
+                    Text("LOCAL TRANSCRIPT")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            .orange.opacity(0.12),
+                            in: Capsule()
+                        )
+                }
+                Text(
+                    "Capture still works. Both speakers are transcribed on this Mac with \(model) after each completed turn."
+                )
+                .font(.callout.weight(.medium))
+                Text(localCaptureLimitations(for: purpose))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            if keyBecameAvailable {
+                Text("OpenAI will be used for the next capture")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            } else {
+                Button(
+                    privacyLocked
+                        ? "Open Privacy Settings…"
+                        : "Add OpenAI API Key…"
+                ) {
+                    showSettings(privacyLocked ? .privacy : .openAI)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.orange)
+            }
+        }
+        .padding(14)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.orange.opacity(0.45), lineWidth: 1.5)
+        }
+    }
+
+    private func localCaptureLimitations(for purpose: CapturePurpose) -> String {
+        return switch purpose {
+        case .meeting:
+            "Unavailable without OpenAI: word-by-word live text, Meeting Assistant cues, hosted web search, and generated meeting replays."
+        case .interview:
+            "Unavailable without OpenAI: word-by-word live text, Answer Mirror suggestions, hosted web search, and generated interview replays."
+        }
     }
 
     private var sharedHeader: some View {
@@ -262,9 +341,9 @@ struct ContentView: View {
                 }
                 Spacer()
                 Button(
-                    purpose == .meeting
-                        ? "Open Meeting Assistant"
-                        : "Open Answer Mirror",
+                    controller.usesHostedLiveTranscription(for: purpose)
+                        ? "Open \(purpose.assistantTitle)"
+                        : "Open Transcript Display",
                     action: controller.openCompanionDisplay
                 )
                 .disabled(controller.companionGatewayEndpoint == nil)
@@ -298,7 +377,11 @@ struct ContentView: View {
                 Spacer(minLength: 12)
                 // Kept from the removed pipeline panel: when turns stop being
                 // refined, this is the only place that says why.
-                Text("Final pass")
+                Text(
+                    controller.usesHostedLiveTranscription(for: purpose)
+                        ? "Final pass"
+                        : "Local transcriber"
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 SocketBadge(
@@ -338,9 +421,9 @@ struct ContentView: View {
                 ? "Listening"
                 : "\(controller.capturePurpose?.title ?? "Live capture") running"
         }
-        return controller.access(to: liveFeature(for: purpose)).isAvailable
+        return controller.usesHostedLiveTranscription(for: purpose)
             ? "Ready"
-            : "Needs setup"
+            : "Local transcript ready"
     }
 
     private var companionConnectionPanel: some View {
@@ -435,13 +518,16 @@ struct ContentView: View {
             return .orange
         }
         if controller.isListening { return .red }
-        return controller.access(to: liveFeature(for: purpose)).isAvailable
+        return controller.usesHostedLiveTranscription(for: purpose)
             ? .green
-            : .secondary
+            : .blue
     }
 
     private func captureDescription(for purpose: CapturePurpose) -> String {
-        switch purpose {
+        if !controller.usesHostedLiveTranscription(for: purpose) {
+            return "Captures both sides locally. Text appears after each completed turn; AI suggestions are off."
+        }
+        return switch purpose {
         case .meeting:
             "Captures both sides and grounds Meeting Assistant response cues in your reference material."
         case .interview:
@@ -462,7 +548,9 @@ struct ContentView: View {
                 ? "Stop"
                 : "Open \(controller.capturePurpose?.title ?? "Capture")"
         }
-        return "Start \(purpose.title)"
+        return controller.usesHostedLiveTranscription(for: purpose)
+            ? "Start \(purpose.title)"
+            : "Start Local \(purpose.title)"
     }
 
     private func handlePrimaryCaptureAction(for purpose: CapturePurpose) {
@@ -611,11 +699,44 @@ struct ContentView: View {
         return "\(base) (needs OpenAI key)"
     }
 
-    /// A running cost is meaningless to someone with no key, so it only
-    /// appears once there is spending to report.
     @ViewBuilder
     private var apiEstimateButton: some View {
-        if controller.capability.hasAPIKey {
+        if !controller.capability.isCloudEnabled {
+            Button {
+                showSettings(
+                    controller.privacyLockEnabled ? .privacy : .openAI
+                )
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: controller.privacyLockEnabled
+                        ? "lock.laptopcomputer"
+                        : "key.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("OPENAI")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                        Text(controller.privacyLockEnabled
+                            ? "Local-only mode"
+                            : "API key not set")
+                            .font(.callout.weight(.semibold))
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(.orange.opacity(0.40), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help(
+                controller.privacyLockEnabled
+                    ? "OpenAI features are disabled by local-only mode"
+                    : "Add an OpenAI API key to enable live text and AI features"
+            )
+        } else {
             Button {
                 showSettings(.openAI)
             } label: {
@@ -1445,7 +1566,9 @@ private struct TranscriptRow: View {
                 .frame(width: 72, alignment: .leading)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(turn.text)
+                    Text(displayText)
+                        .foregroundStyle(turn.text.isEmpty ? .secondary : .primary)
+                        .italic(turn.text.isEmpty)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     TranscriptRefinementBadge(state: turn.refinement)
@@ -1458,6 +1581,18 @@ private struct TranscriptRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var displayText: String {
+        guard turn.text.isEmpty else { return turn.text }
+        switch turn.refinement {
+        case .refining:
+            return "Transcribing this turn on your Mac…"
+        case .failed:
+            return "No transcript was produced for this turn."
+        case .refined, .liveOnly:
+            return "No transcript was produced."
         }
     }
 }
@@ -1480,6 +1615,9 @@ private struct TranscriptRefinementBadge: View {
             case .liveOnly:
                 Label("Live only", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.orange)
+            case .failed:
+                Label("Failed", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
             }
         }
         .font(.callout)
@@ -1495,6 +1633,8 @@ private struct TranscriptRefinementBadge: View {
             "This text is the result of the audio-native second pass."
         case let .liveOnly(message):
             message ?? "Only the live transcription result is available."
+        case let .failed(message):
+            message
         }
     }
 }

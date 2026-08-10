@@ -172,9 +172,17 @@ private struct OpenAISettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "OpenAI API key",
-                detail: "Optional. Dictation already works without it. A key adds meetings, live interviews, generated replays, and suggested answers."
+                detail: "Optional. Dictation and two-speaker meeting/interview transcripts already work locally. A key adds live partial text, AI suggestions, hosted web search, generated replays, and the best-accuracy transcription option."
             ) {
                 VStack(alignment: .leading, spacing: 8) {
+                    if !controller.capability.hasAPIKey {
+                        Label(
+                            "No OpenAI API key is currently configured",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    }
                     HStack {
                         SecureField("sk-…", text: $controller.apiKeyDraft)
                             .textFieldStyle(.roundedBorder)
@@ -253,8 +261,8 @@ private struct PrivacySettings: View {
                     .toggleStyle(.switch)
                     Text(
                         controller.privacyLockEnabled
-                            ? "Dictation runs on this Mac. Meetings, live interviews, generated replays, and suggested answers are turned off."
-                            : "Dictation can run on this Mac either way — this also turns off meetings and every interview tool."
+                            ? "Dictation, meeting transcripts, and interview transcripts stay available on this Mac. Live partials, AI suggestions, web search, and generated replays are turned off."
+                            : "Turning this on keeps local dictation and two-speaker transcripts available, while disabling every OpenAI enhancement."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -266,6 +274,7 @@ private struct PrivacySettings: View {
                 VStack(alignment: .leading, spacing: 5) {
                     bullet("Recordings are never written anywhere except this Mac, and are deleted once the text is saved.")
                     bullet("Dictation history lives in this Mac's Application Support folder.")
+                    bullet("Meeting and interview audio can be split by speaker and transcribed with Whisper or Parakeet without leaving this Mac.")
                     bullet("Your reference documents are read locally; only excerpts are sent, and only when a key is in use.")
                 }
             }
@@ -408,8 +417,11 @@ struct FeatureStatusRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(feature.title)
                     .font(.callout)
-                if !access.isAvailable, feature.isOptionalUpgrade {
-                    Text("Optional — dictation already works without it")
+                if
+                    !access.isAvailable,
+                    let localDescription = feature.availableWithoutKeyDescription
+                {
+                    Text(localDescription)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

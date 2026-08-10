@@ -28,6 +28,7 @@ final class MeetingController: ObservableObject {
     @Published var transcript: [TranscriptTurn] = []
     @Published var isListening = false
     @Published private(set) var capturePurpose: CapturePurpose?
+    @Published private(set) var activeCaptureUsesHostedTranscription = false
     @Published var statusMessage = "Ready"
     @Published var errorMessage: String?
     @Published var keyStatus = ""
@@ -60,7 +61,8 @@ final class MeetingController: ObservableObject {
     @Published var pendingSettingsSection: SettingsSection?
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
-    @Published private(set) var companionGatewayStatus = "Starting assistant server…"
+    @Published private(set) var companionGatewayStatus =
+        "Starting companion display server…"
     @Published private(set) var companionGatewayEndpoint: CompanionGatewayEndpoint?
     @Published private(set) var companionGatewayError: String?
     @Published private(set) var syntheticInterviewState =
@@ -70,8 +72,8 @@ final class MeetingController: ObservableObject {
     private var processCapture: ProcessTapCapture?
     private var localPipeline: AudioTrackPipeline?
     private var remotePipeline: AudioTrackPipeline?
-    private var localClient: RealtimeTranscriptionClient?
-    private var remoteClient: RealtimeTranscriptionClient?
+    private var localClient: (any MeetingAudioTranscribing)?
+    private var remoteClient: (any MeetingAudioTranscribing)?
     private var refinementClients: [SpeakerTag: TranscriptRefining] = [:]
     private var refinementStates: [SpeakerTag: SocketState] = [:]
     private var activeContext: TranscriptionContext?
@@ -314,7 +316,7 @@ final class MeetingController: ObservableObject {
         ]
         lastDictation = quickDictationHistory.first?.text ?? ""
         transcript = Self.documentationTranscript(now: now)
-        companionGatewayStatus = "Assistant server running"
+        companionGatewayStatus = "Companion display server running"
         companionGatewayEndpoint = CompanionGatewayEndpoint(
             port: CompanionGateway.preferredPort,
             lanAddresses: ["192.168.1.42"]
@@ -442,6 +444,7 @@ final class MeetingController: ObservableObject {
             try KeychainStore.saveAPIKey(key)
             apiKeyDraft = key
             keyStatus = "Saved in Keychain"
+            publishCompanionSession()
             if
                 dictationEnabled,
                 !isDictationBusy,
@@ -476,16 +479,11 @@ final class MeetingController: ObservableObject {
                     "Release the Quick Dictation shortcut before starting live capture."
                 )
             }
-            // The live pass is a hosted model with no on-device equivalent, so
-            // it is refused rather than quietly sending audio.
-            let requiredFeature: CloudFeature = purpose == .meeting
-                ? .meetingCapture
-                : .answerMirror
-            if let message = capability.lockMessage(for: requiredFeature) {
-                throw PUnderclassError.audio(message)
-            }
             let key = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw PUnderclassError.noAPIKey }
+            let usesHostedLiveTranscription = capability.isCloudEnabled
+            if usesHostedLiveTranscription, key.isEmpty {
+                throw PUnderclassError.noAPIKey
+            }
             let selectedProcess: AudioProcessInfo?
             if let selectedProcessID {
                 guard let previousSelection = processes.first(where: {
@@ -515,6 +513,7 @@ final class MeetingController: ObservableObject {
             let sessionID = UUID()
             activeSessionID = sessionID
             activeContext = context
+            activeCaptureUsesHostedTranscription = usesHostedLiveTranscription
             microphoneRecoveryAttempts = 0
             clearMicrophoneRecoveryError()
             clearMicrophoneSignalError()
@@ -535,14 +534,14 @@ final class MeetingController: ObservableObject {
             let localClient = makeClient(
                 speaker: .you,
                 purpose: purpose,
-                apiKey: key,
+                apiKey: usesHostedLiveTranscription ? key : nil,
                 context: context,
                 sessionID: sessionID
             )
             let remoteClient = makeClient(
                 speaker: .other,
                 purpose: purpose,
-                apiKey: key,
+                apiKey: usesHostedLiveTranscription ? key : nil,
                 context: context,
                 sessionID: sessionID
             )
@@ -573,7 +572,7 @@ final class MeetingController: ObservableObject {
                 self.recordOpenAIUsage(usage)
             }
             refinementStates = [.you: .connecting, .other: .connecting]
-            switch refinementEngine {
+            switch capability.resolvedEngine(preferring: refinementEngine) {
             case .localWhisper:
                 let client = WhisperRefinementClient(
                     onState: { [weak self] state in
@@ -671,6 +670,12 @@ final class MeetingController: ObservableObject {
             self.processCapture = processCapture
 
             startMicrophoneCapture(sessionID: sessionID, isSwitch: false)
+
+            if !usesHostedLiveTranscription {
+                statusMessage =
+                    "Listening locally with \(capability.resolvedEngine(preferring: refinementEngine).shortLabel) — AI features are off"
+                publishCompanionSession()
+            }
         } catch {
             stopImmediately()
             present(error)
@@ -711,7 +716,9 @@ final class MeetingController: ObservableObject {
                 if case .refining = $0.refinement { return true }
                 return false
             }) == true {
-                self?.statusMessage = "Stopped — finishing second pass…"
+                self?.statusMessage = self?.activeCaptureUsesHostedTranscription == true
+                    ? "Stopped — finishing second pass…"
+                    : "Stopped — finishing local transcription…"
             } else {
                 self?.statusMessage = "Stopped"
             }
@@ -853,6 +860,7 @@ final class MeetingController: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: Self.privacyLockDefaultsKey)
         guard enabled else {
             statusMessage = "OpenAI features are available again"
+            publishCompanionSession()
             return
         }
         if isListening {
@@ -862,6 +870,7 @@ final class MeetingController: ObservableObject {
             selectRefinementEngine(.localWhisper)
         }
         statusMessage = "Everything stays on this Mac"
+        publishCompanionSession()
     }
 
     /// Records which section the settings window should open at. Opening it is
@@ -957,6 +966,13 @@ final class MeetingController: ObservableObject {
 
     func localTrack(for purpose: CapturePurpose) -> TrackViewState {
         capturePurpose == purpose ? localTrack : TrackViewState()
+    }
+
+    func usesHostedLiveTranscription(for purpose: CapturePurpose) -> Bool {
+        if isListening, capturePurpose == purpose {
+            return activeCaptureUsesHostedTranscription
+        }
+        return capability.isCloudEnabled
     }
 
     func remoteTrack(for purpose: CapturePurpose) -> TrackViewState {
@@ -1771,25 +1787,47 @@ final class MeetingController: ObservableObject {
     private func makeClient(
         speaker: SpeakerTag,
         purpose: CapturePurpose,
-        apiKey: String,
+        apiKey: String?,
         context: TranscriptionContext,
         sessionID: UUID
-    ) -> RealtimeTranscriptionClient {
-        RealtimeTranscriptionClient(
+    ) -> any MeetingAudioTranscribing {
+        let stateHandler: (SocketState) -> Void = { [weak self] state in
+            guard let self, self.activeSessionID == sessionID else { return }
+            if speaker == .you {
+                self.localTrack.socket = state
+            } else {
+                self.remoteTrack.socket = state
+            }
+            if case let .failed(message) = state {
+                self.errorMessage = "\(speaker.rawValue) transcription: \(message)"
+            }
+        }
+
+        guard let apiKey else {
+            return LocalTurnTranscriptionClient(
+                label: speaker.rawValue,
+                onState: stateHandler,
+                onTurn: {
+                    [weak self] itemID, startedAt, endedAt, pcm16Audio in
+                    self?.receiveCapturedTurn(
+                        itemID: itemID,
+                        liveText: "",
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        pcm16Audio: pcm16Audio,
+                        speaker: speaker,
+                        purpose: purpose,
+                        sessionID: sessionID
+                    )
+                }
+            )
+        }
+
+        return RealtimeTranscriptionClient(
             apiKey: apiKey,
             context: context,
             label: speaker.rawValue,
-            onState: { [weak self] state in
-                guard let self, self.activeSessionID == sessionID else { return }
-                if speaker == .you {
-                    self.localTrack.socket = state
-                } else {
-                    self.remoteTrack.socket = state
-                }
-                if case let .failed(message) = state {
-                    self.errorMessage = "\(speaker.rawValue) transcription: \(message)"
-                }
-            },
+            onState: stateHandler,
             onPartial: { [weak self] itemID, text in
                 guard let self, self.activeSessionID == sessionID else { return }
                 if speaker == .you {
@@ -1812,69 +1850,15 @@ final class MeetingController: ObservableObject {
                 )
             },
             onFinal: { [weak self] itemID, text, startedAt, endedAt, pcm16Audio in
-                guard
-                    let self,
-                    self.activeSessionID == sessionID,
-                    !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                else {
-                    return
-                }
-                let transcriptID = "\(speaker.rawValue)-\(itemID)"
-                let refinement: TranscriptRefinementState = pcm16Audio.isEmpty
-                    ? .liveOnly("No buffered audio was available for the second pass.")
-                    : .refining
-                let turn = TranscriptTurn(
-                    id: transcriptID,
-                    purpose: purpose,
-                    speaker: speaker,
+                self?.receiveCapturedTurn(
+                    itemID: itemID,
+                    liveText: text,
                     startedAt: startedAt,
                     endedAt: endedAt,
-                    liveText: text,
-                    text: text,
-                    refinement: refinement
-                )
-                self.transcript.append(turn)
-                self.transcript.sort {
-                    if $0.startedAt == $1.startedAt {
-                        return $0.id < $1.id
-                    }
-                    return $0.startedAt < $1.startedAt
-                }
-                self.publishCompanionFinal(turn)
-                if AssistantEvaluationPolicy.shouldEvaluate(
+                    pcm16Audio: pcm16Audio,
                     speaker: speaker,
-                    purpose: purpose
-                ) {
-                    self.scheduleLiveAssistant(
-                        trigger: .finalizedTurn,
-                        turnID: transcriptID,
-                        sourceText: text,
-                        speaker: speaker,
-                        purpose: purpose
-                    )
-                }
-                guard
-                    !pcm16Audio.isEmpty,
-                    let refinementClient = self.refinementClients[speaker],
-                    let activeContext = self.activeContext
-                else {
-                    return
-                }
-                let recentTranscript = self.transcript
-                    .filter {
-                        $0.purpose == purpose && $0.id != transcriptID
-                    }
-                    .suffix(8)
-                    .map { "\($0.speaker.rawValue): \($0.text)" }
-                    .joined(separator: "\n")
-                refinementClient.refine(
-                    RealtimeRefinementRequest(
-                        transcriptID: transcriptID,
-                        speaker: speaker,
-                        pcm16Audio: pcm16Audio,
-                        context: activeContext,
-                        recentTranscript: recentTranscript
-                    )
+                    purpose: purpose,
+                    sessionID: sessionID
                 )
             },
             onSpeechPause: { [weak self] speechEndedAt in
@@ -1914,6 +1898,88 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    private func receiveCapturedTurn(
+        itemID: String,
+        liveText: String,
+        startedAt: Date,
+        endedAt: Date?,
+        pcm16Audio: Data,
+        speaker: SpeakerTag,
+        purpose: CapturePurpose,
+        sessionID: UUID
+    ) {
+        guard activeSessionID == sessionID else { return }
+        let normalizedLiveText = liveText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !normalizedLiveText.isEmpty || !pcm16Audio.isEmpty else { return }
+
+        let transcriptID = "\(speaker.rawValue)-\(itemID)"
+        let refinement: TranscriptRefinementState = pcm16Audio.isEmpty
+            ? .liveOnly("No buffered audio was available for the final pass.")
+            : .refining
+        let turn = TranscriptTurn(
+            id: transcriptID,
+            purpose: purpose,
+            speaker: speaker,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            liveText: normalizedLiveText,
+            text: normalizedLiveText,
+            refinement: refinement
+        )
+        transcript.removeAll { $0.id == transcriptID }
+        transcript.append(turn)
+        transcript.sort {
+            if $0.startedAt == $1.startedAt { return $0.id < $1.id }
+            return $0.startedAt < $1.startedAt
+        }
+
+        // Local capture has no provisional text. Its first companion event is
+        // published when Whisper or Parakeet returns the completed transcript.
+        if !normalizedLiveText.isEmpty {
+            publishCompanionFinal(turn)
+            if AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: speaker,
+                purpose: purpose
+            ) {
+                scheduleLiveAssistant(
+                    trigger: .finalizedTurn,
+                    turnID: transcriptID,
+                    sourceText: normalizedLiveText,
+                    speaker: speaker,
+                    purpose: purpose
+                )
+            }
+        }
+
+        guard
+            !pcm16Audio.isEmpty,
+            let refinementClient = refinementClients[speaker],
+            let activeContext
+        else {
+            return
+        }
+        let recentTranscript = transcript
+            .filter {
+                $0.purpose == purpose
+                    && $0.id != transcriptID
+                    && !$0.text.isEmpty
+            }
+            .suffix(8)
+            .map { "\($0.speaker.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+        refinementClient.refine(
+            RealtimeRefinementRequest(
+                transcriptID: transcriptID,
+                speaker: speaker,
+                pcm16Audio: pcm16Audio,
+                context: activeContext,
+                recentTranscript: recentTranscript
+            )
+        )
+    }
+
     private func uniqueRefinementClients() -> [TranscriptRefining] {
         var seen: Set<ObjectIdentifier> = []
         return [SpeakerTag.you, .other].compactMap { speaker in
@@ -1939,10 +2005,16 @@ final class MeetingController: ObservableObject {
         refinementState = combinedRefinementState()
 
         if case let .failed(message) = state {
+            let lostLocalTranscript = transcript.contains { turn in
+                guard turn.liveText.isEmpty else { return false }
+                guard case .refining = turn.refinement else { return false }
+                return speaker == nil || turn.speaker == speaker
+            }
             markRefiningTurnsLiveOnly(message, speaker: speaker)
             let track = speaker.map { "\($0.rawValue) " } ?? ""
-            errorMessage =
-                "\(track)final transcription: \(message) Live transcription continues."
+            errorMessage = lostLocalTranscript
+                ? "\(track)local transcription: \(message)"
+                : "\(track)final transcription: \(message) Live transcription continues."
         }
 
         if
@@ -1950,7 +2022,9 @@ final class MeetingController: ObservableObject {
             refinementStates[.you] == .idle,
             refinementStates[.other] == .idle
         {
-            statusMessage = "Stopped — transcript refinement complete"
+            statusMessage = activeCaptureUsesHostedTranscription
+                ? "Stopped — transcript refinement complete"
+                : "Stopped — local transcript complete"
         }
     }
 
@@ -1981,9 +2055,14 @@ final class MeetingController: ObservableObject {
         }) else {
             return
         }
+        let hadLiveText = !transcript[index].liveText.isEmpty
         transcript[index].text = text
         transcript[index].refinement = .refined
-        publishCompanionRevision(transcript[index])
+        if hadLiveText {
+            publishCompanionRevision(transcript[index])
+        } else {
+            publishCompanionFinal(transcript[index])
+        }
     }
 
     private func markTurnLiveOnly(
@@ -1996,7 +2075,9 @@ final class MeetingController: ObservableObject {
         }) else {
             return
         }
-        transcript[index].refinement = .liveOnly(message)
+        transcript[index].refinement = transcript[index].liveText.isEmpty
+            ? .failed(message)
+            : .liveOnly(message)
     }
 
     private func markRefiningTurnsLiveOnly(
@@ -2006,7 +2087,9 @@ final class MeetingController: ObservableObject {
         for index in transcript.indices {
             guard case .refining = transcript[index].refinement else { continue }
             if let speaker, transcript[index].speaker != speaker { continue }
-            transcript[index].refinement = .liveOnly(message)
+            transcript[index].refinement = transcript[index].liveText.isEmpty
+                ? .failed(message)
+                : .liveOnly(message)
         }
     }
 
@@ -2237,7 +2320,7 @@ final class MeetingController: ObservableObject {
         companionGatewayAttemptID = attemptID
         companionGatewayEndpoint = nil
         companionGatewayError = nil
-        companionGatewayStatus = "Starting assistant server…"
+        companionGatewayStatus = "Starting companion display server…"
         companionGateway.start(
             onReady: { [weak self] endpoint in
                 DispatchQueue.main.async {
@@ -2246,7 +2329,8 @@ final class MeetingController: ObservableObject {
                     }
                     self?.companionGatewayEndpoint = endpoint
                     self?.companionGatewayError = nil
-                    self?.companionGatewayStatus = "Assistant server running"
+                    self?.companionGatewayStatus =
+                        "Companion display server running"
                 }
             },
             onFailure: { [weak self] message in
@@ -2256,7 +2340,8 @@ final class MeetingController: ObservableObject {
                     }
                     self?.companionGatewayEndpoint = nil
                     self?.companionGatewayError = message
-                    self?.companionGatewayStatus = "Assistant server unavailable"
+                    self?.companionGatewayStatus =
+                        "Companion display server unavailable"
                 }
             }
         )
@@ -2319,6 +2404,10 @@ final class MeetingController: ObservableObject {
             ? activeAssistantAnswerMode
             : .grounded
         let earlyBridgeEnabled = activeAssistantEarlyBridgeEnabled
+        let assistantAvailable = isSyntheticSession
+            || (isListening
+                ? activeCaptureUsesHostedTranscription
+                : capability.isCloudEnabled)
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
@@ -2328,7 +2417,8 @@ final class MeetingController: ObservableObject {
                 title: title,
                 isPreparingSyntheticInterview: isPreparingSyntheticInterview,
                 answerMode: answerMode,
-                earlyBridgeEnabled: earlyBridgeEnabled
+                earlyBridgeEnabled: earlyBridgeEnabled,
+                assistantAvailable: assistantAvailable
             )
         }
     }
@@ -3286,8 +3376,7 @@ final class MeetingController: ObservableObject {
                     }
                     self.microphoneRecoveryAttempts = 0
                     self.clearMicrophoneRecoveryError()
-                    self.statusMessage =
-                        "Listening on \(self.microphoneName) — headphones required"
+                    self.statusMessage = self.captureListeningStatusMessage()
                     self.publishCompanionSession()
                 }
             },
@@ -3337,7 +3426,7 @@ final class MeetingController: ObservableObject {
                             self.microphoneRecoveryAttempts = 0
                             self.clearMicrophoneRecoveryError()
                             self.statusMessage =
-                                "Listening on \(self.microphoneName) — headphones required"
+                                self.captureListeningStatusMessage()
                         } else {
                             self.statusMessage =
                                 "Checking \(self.microphoneName) for audio…"
@@ -3427,8 +3516,7 @@ final class MeetingController: ObservableObject {
                     errorMessage == microphoneSignalErrorMessage
                 clearMicrophoneSignalError()
                 if signalWarningWasVisible {
-                    statusMessage =
-                        "Listening on \(microphoneName) — headphones required"
+                    statusMessage = captureListeningStatusMessage()
                     publishCompanionSession()
                 }
             }
@@ -3462,6 +3550,16 @@ final class MeetingController: ObservableObject {
         microphoneSignalErrorMessage = nil
     }
 
+    private func captureListeningStatusMessage() -> String {
+        if activeCaptureUsesHostedTranscription {
+            return "Listening on \(microphoneName) — headphones required"
+        }
+        let model = capability.resolvedEngine(
+            preferring: refinementEngine
+        ).shortLabel
+        return "Listening locally with \(model) — headphones required"
+    }
+
     private func stopImmediately() {
         assistantGenerationTask?.cancel()
         assistantGenerationTask = nil
@@ -3493,6 +3591,7 @@ final class MeetingController: ObservableObject {
         refinementStates.removeAll()
         activeContext = nil
         activeSessionID = nil
+        activeCaptureUsesHostedTranscription = false
         activeAssistantAnswerMode = .grounded
         activeAssistantEarlyBridgeEnabled = false
         isListening = false

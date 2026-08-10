@@ -10,12 +10,12 @@ tracks and transcribes them in real time:
 - **You** — the Mac's default microphone.
 - **Other** — all system audio by default, or one selected call application.
 
-Each track is sent to its own OpenAI Realtime transcription session, so speaker
-labels come from the audio route rather than diarization guesses. Completed
-turns are finalized by `gpt-transcribe` by default. A compressed Whisper Large
-v3 model is the high-accuracy on-device option and cloud emergency fallback;
-Parakeet remains available as a faster, lighter evaluation baseline. Both local
-engines run directly inside PermanentUnderclass and do not use another application's
+Speaker labels come from the separate audio routes rather than diarization
+guesses. With no OpenAI key, on-device voice activity detection buffers each
+track and sends completed turns directly to local Whisper (the default) or
+Parakeet. With a key, each track also uses an OpenAI Realtime transcription
+session for word-by-word partial text and assistant timing. Both local engines
+run directly inside PermanentUnderclass and do not use another application's
 process, settings, microphone handling, or database.
 
 ## Requirements
@@ -24,8 +24,9 @@ process, settings, microphone handling, or database.
 - Apple Silicon when using either local finalizer.
 - Xcode command-line tools.
 - Wired or USB headphones during the proof of concept.
-- An OpenAI API key with access to `gpt-live-transcribe`. The optional OpenAI
-  finalizer also requires access to `gpt-transcribe`.
+- An OpenAI API key is optional. It is required for `gpt-live-transcribe`, the
+  assistant features, generated replays, hosted web search, and the optional
+  `gpt-transcribe` finalizer—not for local two-track transcripts.
 
 ## Run
 
@@ -48,12 +49,11 @@ not for retaining local privacy consent. Override the selected certificate with
 `PUNDERCLASS_SIGNING_IDENTITY`; without a Developer ID certificate the
 script falls back to ad-hoc signing and warns that consent may not persist.
 
-Open the shared transcription settings from the gear button, paste an API key,
-and press **Save to Keychain**, then start a meeting or interview. Both live
-capture modes use all system audio by default. To limit capture to one app,
-choose it from **Audio to transcribe**; it may appear under a helper-process
-name. Meeting mode runs Meeting Assistant for the other participant's questions
-and requests; Interview mode runs Answer Mirror for interviewer speech.
+Start a meeting or interview immediately for a local transcript. Both capture
+modes use all system audio by default. To limit capture to one app, choose it
+from **Audio to transcribe**; it may appear under a helper-process name. To add
+live partial words and the Meeting Assistant or Answer Mirror, open OpenAI
+settings from the prominent status card, paste an API key, and save it.
 
 ## Live Assistant companion
 
@@ -387,7 +387,8 @@ The proof of concept includes:
   delivering audio buffers. Meeting and interview capture keep remote audio
   running while microphone recovery retries with capped backoff.
 - 24 kHz mono PCM16 conversion and bounded 20 ms audio chunks.
-- Two independent `gpt-live-transcribe` WebSocket sessions.
+- Two independent local turn buffers. When an OpenAI key is active, two
+  `gpt-live-transcribe` WebSocket sessions additionally provide live partials.
 - A shared window bar that names every active model by role: the fixed Meeting
   live model and the selected final-pass/Quick Dictation model. Its pipeline
   popover explains every stage, execution location, transition, and optional
@@ -412,9 +413,10 @@ The proof of concept includes:
     plus recent
     cross-speaker transcript context.
 - Client-side audio voice-activity detection with a 300 ms pre-roll, a 3
-  second end-of-turn pause, and explicit turn commits. Partial text continues
-  streaming during the finalization pause. A **Finish My Turn** button supplies
-  a manual boundary for controlled comparisons.
+  second end-of-turn pause, and explicit turn commits. With OpenAI configured,
+  partial text continues streaming during that pause. In local mode, text
+  appears after the completed turn is transcribed. A **Finish My Turn** button
+  supplies a manual boundary for controlled comparisons.
 - Meeting Assistant and Answer Mirror check an other-speaker partial after an
   800 ms audio pause, immediately check a new finalized turn, and coalesce an
   unchanged partial/final pair. The selected capture purpose chooses the
@@ -433,11 +435,13 @@ The proof of concept includes:
   Dictation shares the literal terminology and expected-language settings;
   Local Whisper uses the expected-language setting and otherwise decodes
   verbatim so a failed cloud cleanup cannot discard spoken content.
-- Per-track waveform, levels, packet/drop counters, live partial text, and a
-  combined final transcript. Each finalized turn is labeled **Refining**,
-  **Refined**, or **Live only**; when refinement changes the wording, the
-  original live result remains visible for comparison.
-- An always-visible OpenAI API estimate with a per-model breakdown. It prefers
+- Per-track waveform, levels, packet/drop counters, optional live partial text,
+  and a combined final transcript. Local-only turns show a transcription
+  progress state until their first text is ready; failures remain explicit.
+  When a hosted live result is refined, the original remains visible for
+  comparison.
+- When OpenAI is enabled, an API estimate with a per-model breakdown. Without a
+  key, the same header location prominently says that OpenAI is not configured. It prefers
   server-reported transcription duration and falls back to the submitted PCM
   duration, separates live and final passes, includes cloud Quick Dictation,
   and shows both local engines as zero API cost. The running total is stored on
@@ -445,15 +449,16 @@ The proof of concept includes:
   how long it has been running, so a day's spend stays legible across many
   restarts. **Reset Counter** is the only thing that clears it.
 - **Local-first onboarding.** A fresh install needs no account, no API key, and
-  no configuration: Quick Dictation transcribes on this Mac with Whisper out of
-  the box, and the app opens on the Quick Dictation tab while no key is saved.
-  An OpenAI key is presented as an optional upgrade, not a prerequisite.
+  no configuration: Quick Dictation and completed-turn meeting/interview
+  transcripts run on this Mac with Whisper out of the box. The app opens on the
+  Quick Dictation tab while no key is saved. An OpenAI key is presented as an
+  optional enhancement, not a prerequisite.
 - **Capability-based gating.** What works is derived from whether a key exists,
   not from a mode the user has to find. The features that genuinely cannot run
-  on-device — meeting capture, live interviews, and both generated replays —
-  show one consistent locked card explaining why in plain language, with a
-  button that opens Settings at the API-key field. Everything else keeps
-  working.
+  on-device — live partial words, Meeting Assistant, Answer Mirror, hosted web
+  search, and both generated replays — show a prominent explanation and a
+  button that opens Settings at the API-key field. Meeting and Interview Start
+  controls remain enabled for local two-track transcripts.
 - A **Never contact OpenAI** switch in Settings › Privacy for someone who has a
   key but wants a hard guarantee. It is an override, not the primary gate.
 - Settings live in one standard ⌘, window (General, Dictation, OpenAI, Privacy,

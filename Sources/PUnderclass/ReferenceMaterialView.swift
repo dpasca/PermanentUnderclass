@@ -7,6 +7,7 @@ enum PUnderclassWindow {
 
 struct ReferenceMaterialView: View {
     @ObservedObject var controller: MeetingController
+    @Environment(\.openSettings) private var openSettings
     @State private var showsPlausibleRehearsalConfirmation = false
 
     var body: some View {
@@ -16,9 +17,20 @@ struct ReferenceMaterialView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if !controller.capability.isCloudEnabled {
+                        LockedFeatureCard(
+                            feature: liveFeature,
+                            access: controller.access(to: liveFeature),
+                            onResolve: showSettings
+                        )
+                    }
                     sessionGuidanceSection
                     if purpose == .interview {
                         answerModeSection
+                            .disabled(!controller.capability.isCloudEnabled)
+                            .opacity(
+                                controller.capability.isCloudEnabled ? 1 : 0.45
+                            )
                     }
                     folderSection
                     recognitionHintsSection
@@ -64,9 +76,7 @@ struct ReferenceMaterialView: View {
                 Text("\(purpose.title) Preparation")
                     .font(.title.weight(.semibold))
                 Text(
-                    purpose == .meeting
-                        ? "Give transcription and Meeting Assistant the context they need before the conversation starts."
-                        : "Give transcription and Answer Mirror the role context they need before the interview starts."
+                    headerDetail
                 )
                 .font(.body)
                 .foregroundStyle(.secondary)
@@ -90,6 +100,24 @@ struct ReferenceMaterialView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
+    }
+
+    private var liveFeature: CloudFeature {
+        purpose == .meeting ? .meetingCapture : .answerMirror
+    }
+
+    private func showSettings(_ section: SettingsSection) {
+        controller.requestSettings(section)
+        openSettings()
+    }
+
+    private var headerDetail: String {
+        if !controller.capability.isCloudEnabled {
+            return "Set local transcription context before capture. OpenAI assistant features are currently unavailable."
+        }
+        return purpose == .meeting
+            ? "Give transcription and Meeting Assistant the context they need before the conversation starts."
+            : "Give transcription and Answer Mirror the role context they need before the interview starts."
     }
 
     private var sessionGuidanceSection: some View {
