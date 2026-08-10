@@ -271,17 +271,14 @@ contain only digital silence are also reported rather than shown as healthy.
 
 With GPT-Transcribe selected, audio streams to the transcription session **while
 the user speaks** rather than being uploaded after the shortcut is released. The
-stream closes a normal segment only after sustained silence, so brief hesitations
-remain part of the same transcription turn instead of becoming artificial
-sentence boundaries. Long segments may close at a shorter quiet boundary, but
-never while speech is in progress. Finished text can therefore arrive during the
-dictation, and releasing the shortcut only leaves the tail to send.
-Streaming keeps the release-time upload limited to that tail, while completed
-segments have already been transcribed. That single stream also produces the
-live preview text, so no separate connection or repeated snapshot upload is
-needed. If the stream breaks at any point, the complete recording is still
-buffered locally and is uploaded through the original one-shot path at release,
-so a broken stream costs latency rather than the dictation.
+stream remains one transcription turn for the entire shortcut hold and is
+committed only when the shortcut is released. Brief hesitations and microphone
+level differences therefore cannot manufacture intermediate turn boundaries or
+their associated punctuation. Streaming still keeps the release-time upload
+limited to the unsent tail. If the stream breaks at any point, the complete
+recording is still buffered locally and is uploaded through the original
+one-shot path at release, so a broken stream costs latency rather than the
+dictation.
 
 Engines that cannot stream keep the bounded-snapshot preview loop, and any
 preview still in flight is cancelled when the shortcut is released so it cannot

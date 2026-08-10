@@ -595,9 +595,7 @@ protocol TranscriptStreaming: AnyObject {
     var supportsStreaming: Bool { get }
     func beginStream(_ start: DictationStreamStart)
     func appendStream(streamID: String, pcm16Audio: Data)
-    /// Closes the current segment so its transcript comes back while the user
-    /// keeps speaking.
-    func commitStreamSegment(streamID: String)
+    /// Commits the entire uploaded dictation when the shortcut is released.
     func finishStream(streamID: String)
     func cancelStream(streamID: String)
 }

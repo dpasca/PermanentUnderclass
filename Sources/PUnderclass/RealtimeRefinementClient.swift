@@ -208,9 +208,8 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     private var isAwaitingStreamConfiguration = false
     private var cancelledEventFilter = CancelledTranscriptionEventFilter()
 
-    /// A dictation that is uploading while the user speaks. Segments are
-    /// committed as the user pauses, so several items can be transcribing at
-    /// once and their transcripts are reassembled in commit order.
+    /// A dictation that uploads while the user speaks and is committed as one
+    /// transcription turn when the shortcut is released.
     private struct StreamState {
         let streamID: String
         let context: TranscriptionContext
@@ -219,14 +218,14 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         var isConfigured = false
         var isFinishing = false
         var pendingAudio = Data()
-        /// Bytes appended since the last commit.
-        var segmentBytes = 0
-        /// Bytes per committed segment, in commit order.
-        var committedSegmentBytes: [Int] = []
+        /// Bytes uploaded into the one still-uncommitted transcription turn.
+        var uncommittedBytes = 0
+        /// Bytes per committed turn, retained for event and usage accounting.
+        var committedTurnBytes: [Int] = []
         var uploadedBytes = 0
         var finishUptime: UInt64?
 
-        var commitsSent: Int { committedSegmentBytes.count }
+        var commitsSent: Int { committedTurnBytes.count }
     }
 
     init(
@@ -404,14 +403,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         }
     }
 
-    func commitStreamSegment(streamID: String) {
-        socketQueue.async { [weak self] in
-            guard let self, self.stream?.streamID == streamID else { return }
-            self.flushStreamAudio()
-            self.sendStreamCommit()
-        }
-    }
-
     func finishStream(streamID: String) {
         socketQueue.async { [weak self] in
             guard let self else { return }
@@ -436,7 +427,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
                 return
             }
             Self.logger.notice(
-                "stream_finished stream_id=\(stream.streamID, privacy: .public) segments=\(stream.commitsSent, privacy: .public) bytes=\(stream.uploadedBytes, privacy: .public)"
+                "stream_finished stream_id=\(stream.streamID, privacy: .public) turns=\(stream.commitsSent, privacy: .public) bytes=\(stream.uploadedBytes, privacy: .public)"
             )
             self.completeStreamIfFinished()
         }
@@ -506,8 +497,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
                     pcm16Audio: Data(),
                     context: stream.context,
                     recentTranscript: ""
-                ),
-                isContinuousDictationStream: true
+                )
             )
             guard let text = String(data: data, encoding: .utf8) else {
                 throw PUnderclassError.audio(
@@ -537,7 +527,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         }
         let audio = stream.pendingAudio
         self.stream?.pendingAudio = Data()
-        self.stream?.segmentBytes += audio.count
+        self.stream?.uncommittedBytes += audio.count
         self.stream?.uploadedBytes += audio.count
         let streamID = stream.streamID
         do {
@@ -569,15 +559,15 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
 
     private func sendStreamCommit() {
         guard let stream, stream.isConfigured, let task else { return }
-        let segmentSeconds = Double(stream.segmentBytes)
+        let audioSeconds = Double(stream.uncommittedBytes)
             / Double(Self.pcm16BytesPerSecond)
-        guard DictationSegmentCommitPolicy.canCommit(
-            segmentSeconds: segmentSeconds
+        guard DictationStreamCommitPolicy.canCommit(
+            audioSeconds: audioSeconds
         ) else {
             return
         }
-        self.stream?.committedSegmentBytes.append(stream.segmentBytes)
-        self.stream?.segmentBytes = 0
+        self.stream?.committedTurnBytes.append(stream.uncommittedBytes)
+        self.stream?.uncommittedBytes = 0
         do {
             let data = try Self.inputAudioCommitJSON()
             guard let text = String(data: data, encoding: .utf8) else {
@@ -613,7 +603,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
 
         case let .transcriptionCompleted(itemID, transcript, _):
             stream?.assembly.finalize(itemID: itemID, text: transcript)
-            publishSegmentUsage(itemID: itemID, completionUsage: completionUsage)
+            publishTurnUsage(itemID: itemID, completionUsage: completionUsage)
             publishStreamPartial()
             completeStreamIfFinished()
             return true
@@ -627,7 +617,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         }
     }
 
-    private func publishSegmentUsage(
+    private func publishTurnUsage(
         itemID: String,
         completionUsage: TranscriptionCompletionUsage?
     ) {
@@ -636,10 +626,10 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         let estimatedSeconds: Double? = stream.assembly.order
             .firstIndex(of: itemID)
             .flatMap { index in
-                guard index < stream.committedSegmentBytes.count else {
+                guard index < stream.committedTurnBytes.count else {
                     return nil
                 }
-                return Double(stream.committedSegmentBytes[index])
+                return Double(stream.committedTurnBytes[index])
                     / Double(Self.pcm16BytesPerSecond)
             }
         guard let seconds = reportedSeconds ?? estimatedSeconds else { return }
@@ -716,17 +706,13 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     }
 
     static func sessionUpdateJSON(
-        _ request: RealtimeRefinementRequest? = nil,
-        isContinuousDictationStream: Bool = false
+        _ request: RealtimeRefinementRequest? = nil
     ) throws -> Data {
         var transcription: [String: Any] = [
             "model": model
         ]
         if let request {
-            let prompt = transcriptionPrompt(
-                for: request,
-                isContinuousDictationStream: isContinuousDictationStream
-            )
+            let prompt = transcriptionPrompt(for: request)
             if !prompt.isEmpty {
                 transcription["prompt"] = prompt
             }
@@ -778,8 +764,7 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     }
 
     static func transcriptionPrompt(
-        for request: RealtimeRefinementRequest,
-        isContinuousDictationStream: Bool = false
+        for request: RealtimeRefinementRequest
     ) -> String {
         var sections: [String] = []
         let meetingContext = request.context.prompt
@@ -790,12 +775,6 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         if request.context.outputStyle == .cleanDictation {
             sections.append(QuickDictationContextPolicy.cleanupInstruction)
         }
-        if isContinuousDictationStream {
-            sections.append(
-                QuickDictationContextPolicy.streamingContinuityInstruction
-            )
-        }
-
         let recentTranscript = request.recentTranscript
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !recentTranscript.isEmpty {

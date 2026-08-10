@@ -1342,33 +1342,6 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
-    func testStreamedDictationPromptDoesNotTreatTransportSegmentsAsSentences() {
-        let request = RealtimeRefinementRequest(
-            transcriptID: "streamed-dictation",
-            speaker: .you,
-            pcm16Audio: Data(),
-            context: TranscriptionContext(
-                prompt: "",
-                keywords: [],
-                languages: ["en"],
-                delay: .medium
-            ),
-            recentTranscript: ""
-        )
-
-        XCTAssertFalse(
-            RealtimeRefinementClient.transcriptionPrompt(for: request)
-                .contains("transport segments")
-        )
-        XCTAssertTrue(
-            RealtimeRefinementClient.transcriptionPrompt(
-                for: request,
-                isContinuousDictationStream: true
-            )
-            .contains("transport segments")
-        )
-    }
-
     func testWhisperUsesOneLanguageHintOrAutomaticMultilingualDetection() {
         XCTAssertEqual(
             WhisperTranscriber.singleLanguageHint(from: ["EN-us", "en"]),
@@ -1990,55 +1963,15 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertTrue(assembly.isComplete(expectedSegments: 2))
     }
 
-    func testSegmentCommitPolicyIgnoresBriefHesitations() {
-        XCTAssertEqual(
-            DictationSegmentCommitPolicy.sustainedSilenceSeconds,
-            1.5
-        )
-        XCTAssertEqual(DictationSegmentCommitPolicy.briefSilenceSeconds, 0.35)
-
-        // Too short to commit at all, even after sustained silence.
+    func testStreamCommitPolicyRequiresEnoughReleaseTimeAudio() {
         XCTAssertFalse(
-            DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 0.1,
-                hasSustainedSilence: true,
-                hasBriefSilence: true
+            DictationStreamCommitPolicy.canCommit(
+                audioSeconds: 0.1
             )
         )
-        // A normal hesitation must not become a punctuation boundary.
-        XCTAssertFalse(
-            DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 10,
-                hasSustainedSilence: false,
-                hasBriefSilence: true
-            )
-        )
-        // Sustained silence after enough speech is a useful thought boundary.
         XCTAssertTrue(
-            DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 10,
-                hasSustainedSilence: true,
-                hasBriefSilence: true
-            )
-        )
-    }
-
-    func testSegmentCommitPolicyWaitsForSilenceInLongDictations() {
-        // Never cut in the middle of speech just because a timer expired.
-        XCTAssertFalse(
-            DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 120,
-                hasSustainedSilence: false,
-                hasBriefSilence: false
-            )
-        )
-        // After a long segment, a brief quiet boundary is enough to keep the
-        // untranscribed tail bounded.
-        XCTAssertTrue(
-            DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 120,
-                hasSustainedSilence: false,
-                hasBriefSilence: true
+            DictationStreamCommitPolicy.canCommit(
+                audioSeconds: 0.2
             )
         )
     }
@@ -2437,7 +2370,8 @@ final class PUnderclassTests: XCTestCase {
             DictationTranscriptionProgress.finishing.label,
             "Finishing…"
         )
-        // A streamed dictation has no upload bar to show; it is already there.
+        // A streamed dictation has no upload bar to show; its audio is already
+        // at the provider and only its release-time commit remains.
         XCTAssertNil(DictationTranscriptionProgress.finishing.fraction)
         XCTAssertNil(DictationTranscriptionProgress.transcribing.fraction)
     }

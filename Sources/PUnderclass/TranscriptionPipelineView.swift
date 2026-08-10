@@ -285,23 +285,23 @@ struct TranscriptionPipelineDiagram: View {
                 workflowTitle(
                     "Quick Dictation",
                     detail: controller.refinementEngine.isCloud
-                        ? "One session transcribes while you speak, so releasing the shortcut only sends the tail."
+                        ? "One session uploads while you speak, then commits the complete dictation when you release the shortcut."
                         : "The selected model is reused; the live-capture model is not involved."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
                         stage: controller.refinementEngine.isCloud
-                            ? "WHILE HELD · STREAMING"
+                            ? "WHILE HELD · UPLOADING"
                             : "OPTIONAL STAGE · WHILE HELD",
                         modelName: controller.refinementEngine.modelName,
                         role: controller.refinementEngine.isCloud
                             ? "\(controller.refinementEngine.title) · continuous upload"
                             : "\(controller.refinementEngine.title) · bounded snapshots",
                         detail: controller.refinementEngine.isCloud
-                            ? "Audio uploads as you speak. A segment closes only after sustained silence, so ordinary hesitations stay within the same sentence. This is not gpt-live-transcribe."
+                            ? "Audio uploads as you speak but remains one transcription turn. It is committed only when the shortcut is released. This is not gpt-live-transcribe."
                             : "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
                         badge: controller.refinementEngine.isCloud
-                            ? "ONE SESSION"
+                            ? "ONE TURN"
                             : (controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF"),
                         systemImage: "text.bubble",
                         color: .orange,
