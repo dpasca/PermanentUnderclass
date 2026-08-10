@@ -4,7 +4,7 @@ import XCTest
 @testable import PUnderclass
 
 /// Exercises the streamed dictation path against the real API. This is the only
-/// place the 16 kHz wire format, the mid-recording segment commits, and the
+/// place the 24 kHz wire format, the mid-recording segment commits, and the
 /// transcript reassembly are checked end to end.
 final class LiveStreamingDictationTests: XCTestCase {
     func testStreamedDictationTranscribesWhileRecording() throws {
@@ -27,7 +27,10 @@ final class LiveStreamingDictationTests: XCTestCase {
             "Pack my box with five dozen liquor jugs."
         )
         let pause = Data(
-            count: QuickDictationStreamPolicy.captureBytesPerSecond
+            count: Int(
+                Double(QuickDictationStreamPolicy.captureBytesPerSecond)
+                    * DictationSegmentCommitPolicy.sustainedSilenceSeconds
+            )
         )
 
         let connected = expectation(description: "Transcription socket connected")

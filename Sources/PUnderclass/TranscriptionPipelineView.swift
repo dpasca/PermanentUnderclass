@@ -298,7 +298,7 @@ struct TranscriptionPipelineDiagram: View {
                             ? "\(controller.refinementEngine.title) · continuous upload"
                             : "\(controller.refinementEngine.title) · bounded snapshots",
                         detail: controller.refinementEngine.isCloud
-                            ? "Audio uploads as you speak and a segment closes on each pause, so live text comes back from the same session that produces the final transcript. This is not gpt-live-transcribe."
+                            ? "Audio uploads as you speak. A segment closes only after sustained silence, so ordinary hesitations stay within the same sentence. This is not gpt-live-transcribe."
                             : "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
                         badge: controller.refinementEngine.isCloud
                             ? "ONE SESSION"

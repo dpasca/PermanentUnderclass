@@ -1336,6 +1336,37 @@ final class PUnderclassTests: XCTestCase {
             RealtimeRefinementClient.transcriptionPrompt(for: request)
                 .contains("Omit hesitation fillers")
         )
+        XCTAssertTrue(
+            RealtimeRefinementClient.transcriptionPrompt(for: request)
+                .contains("Do not treat a pause alone")
+        )
+    }
+
+    func testStreamedDictationPromptDoesNotTreatTransportSegmentsAsSentences() {
+        let request = RealtimeRefinementRequest(
+            transcriptID: "streamed-dictation",
+            speaker: .you,
+            pcm16Audio: Data(),
+            context: TranscriptionContext(
+                prompt: "",
+                keywords: [],
+                languages: ["en"],
+                delay: .medium
+            ),
+            recentTranscript: ""
+        )
+
+        XCTAssertFalse(
+            RealtimeRefinementClient.transcriptionPrompt(for: request)
+                .contains("transport segments")
+        )
+        XCTAssertTrue(
+            RealtimeRefinementClient.transcriptionPrompt(
+                for: request,
+                isContinuousDictationStream: true
+            )
+            .contains("transport segments")
+        )
     }
 
     func testWhisperUsesOneLanguageHintOrAutomaticMultilingualDetection() {
@@ -1959,33 +1990,55 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertTrue(assembly.isComplete(expectedSegments: 2))
     }
 
-    func testSegmentCommitPolicyCutsOnPausesAndBoundsSegmentLength() {
-        // Too short to commit at all, pause or not.
+    func testSegmentCommitPolicyIgnoresBriefHesitations() {
+        XCTAssertEqual(
+            DictationSegmentCommitPolicy.sustainedSilenceSeconds,
+            1.5
+        )
+        XCTAssertEqual(DictationSegmentCommitPolicy.briefSilenceSeconds, 0.35)
+
+        // Too short to commit at all, even after sustained silence.
         XCTAssertFalse(
             DictationSegmentCommitPolicy.shouldCommit(
                 segmentSeconds: 0.1,
-                trailingIsSilent: true
+                hasSustainedSilence: true,
+                hasBriefSilence: true
             )
         )
-        // Mid-sentence: wait rather than cut a word in half.
+        // A normal hesitation must not become a punctuation boundary.
         XCTAssertFalse(
             DictationSegmentCommitPolicy.shouldCommit(
                 segmentSeconds: 10,
-                trailingIsSilent: false
+                hasSustainedSilence: false,
+                hasBriefSilence: true
             )
         )
-        // A pause after enough speech is the right place to cut.
+        // Sustained silence after enough speech is a useful thought boundary.
         XCTAssertTrue(
             DictationSegmentCommitPolicy.shouldCommit(
                 segmentSeconds: 10,
-                trailingIsSilent: true
+                hasSustainedSilence: true,
+                hasBriefSilence: true
             )
         )
-        // An unbroken monologue still gets bounded so the tail stays short.
+    }
+
+    func testSegmentCommitPolicyWaitsForSilenceInLongDictations() {
+        // Never cut in the middle of speech just because a timer expired.
+        XCTAssertFalse(
+            DictationSegmentCommitPolicy.shouldCommit(
+                segmentSeconds: 120,
+                hasSustainedSilence: false,
+                hasBriefSilence: false
+            )
+        )
+        // After a long segment, a brief quiet boundary is enough to keep the
+        // untranscribed tail bounded.
         XCTAssertTrue(
             DictationSegmentCommitPolicy.shouldCommit(
-                segmentSeconds: 25,
-                trailingIsSilent: false
+                segmentSeconds: 120,
+                hasSustainedSilence: false,
+                hasBriefSilence: true
             )
         )
     }

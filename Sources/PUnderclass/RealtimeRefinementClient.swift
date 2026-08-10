@@ -506,7 +506,8 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
                     pcm16Audio: Data(),
                     context: stream.context,
                     recentTranscript: ""
-                )
+                ),
+                isContinuousDictationStream: true
             )
             guard let text = String(data: data, encoding: .utf8) else {
                 throw PUnderclassError.audio(
@@ -715,13 +716,17 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
     }
 
     static func sessionUpdateJSON(
-        _ request: RealtimeRefinementRequest? = nil
+        _ request: RealtimeRefinementRequest? = nil,
+        isContinuousDictationStream: Bool = false
     ) throws -> Data {
         var transcription: [String: Any] = [
             "model": model
         ]
         if let request {
-            let prompt = transcriptionPrompt(for: request)
+            let prompt = transcriptionPrompt(
+                for: request,
+                isContinuousDictationStream: isContinuousDictationStream
+            )
             if !prompt.isEmpty {
                 transcription["prompt"] = prompt
             }
@@ -772,7 +777,10 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         )
     }
 
-    static func transcriptionPrompt(for request: RealtimeRefinementRequest) -> String {
+    static func transcriptionPrompt(
+        for request: RealtimeRefinementRequest,
+        isContinuousDictationStream: Bool = false
+    ) -> String {
         var sections: [String] = []
         let meetingContext = request.context.prompt
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -781,6 +789,11 @@ final class RealtimeRefinementClient: NSObject, TranscriptRefining, TranscriptSt
         }
         if request.context.outputStyle == .cleanDictation {
             sections.append(QuickDictationContextPolicy.cleanupInstruction)
+        }
+        if isContinuousDictationStream {
+            sections.append(
+                QuickDictationContextPolicy.streamingContinuityInstruction
+            )
         }
 
         let recentTranscript = request.recentTranscript

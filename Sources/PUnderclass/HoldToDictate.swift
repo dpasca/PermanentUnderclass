@@ -462,7 +462,14 @@ enum QuickDictationContextPolicy {
         Quick Dictation output requirements: Preserve the speaker's meaning and wording. \
         Omit hesitation fillers, abandoned false starts, and immediate accidental repetitions. \
         Do not summarize, answer, or add information. Preserve technical terms, code identifiers, \
-        punctuation, and the language or languages spoken.
+        and the language or languages spoken. Use conservative punctuation supported by the \
+        wording and intonation. Do not treat a pause alone as the end of a sentence.
+        """
+
+    static let streamingContinuityInstruction = """
+        The audio may be divided into transport segments during one continuous dictation. \
+        Do not treat the end of an audio segment alone as the end of a sentence; the speaker \
+        may continue the same sentence in the next segment.
         """
 
     static func context(
@@ -1533,8 +1540,9 @@ final class HoldToDictateService {
         scheduleStreamSegmentCheck(recordingID: recordingID)
     }
 
-    /// Closes a segment when the user pauses, so its transcript comes back
-    /// while they keep talking instead of piling up for the final commit.
+    /// Closes a segment after sustained silence, so its transcript can come
+    /// back while the user keeps talking without turning ordinary hesitations
+    /// into artificial sentence boundaries.
     private func scheduleStreamSegmentCheck(recordingID: UUID) {
         streamSegmentWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
@@ -1562,22 +1570,31 @@ final class HoldToDictateService {
         let segmentBytes = max(0, totalBytes - streamCommittedByteCount)
         let segmentSeconds = Double(segmentBytes)
             / Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-        let trailingBytes = Int(
+        let sustainedSilenceBytes = Int(
             Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-                * DictationSegmentCommitPolicy.trailingSilenceSeconds
+                * DictationSegmentCommitPolicy.sustainedSilenceSeconds
         )
-        let trailingIsSilent = !PCM16SignalGate.containsAudibleSignal(
-            buffer.tail(trailingBytes),
+        let briefSilenceBytes = Int(
+            Double(QuickDictationStreamPolicy.captureBytesPerSecond)
+                * DictationSegmentCommitPolicy.briefSilenceSeconds
+        )
+        let hasSustainedSilence = !PCM16SignalGate.containsAudibleSignal(
+            buffer.tail(sustainedSilenceBytes),
+            minimumPeak: QuickDictationStreamPolicy.pausePeakThreshold
+        )
+        let hasBriefSilence = !PCM16SignalGate.containsAudibleSignal(
+            buffer.tail(briefSilenceBytes),
             minimumPeak: QuickDictationStreamPolicy.pausePeakThreshold
         )
         if DictationSegmentCommitPolicy.shouldCommit(
             segmentSeconds: segmentSeconds,
-            trailingIsSilent: trailingIsSilent
+            hasSustainedSilence: hasSustainedSilence,
+            hasBriefSilence: hasBriefSilence
         ) {
             streaming.commitStreamSegment(streamID: streamID)
             streamCommittedByteCount = totalBytes
             Self.logger.notice(
-                "stream_segment_committed seconds=\(Int(segmentSeconds), privacy: .public) silent_boundary=\(trailingIsSilent, privacy: .public)"
+                "stream_segment_committed seconds=\(Int(segmentSeconds), privacy: .public) sustained_silence=\(hasSustainedSilence, privacy: .public) brief_silence=\(hasBriefSilence, privacy: .public)"
             )
         }
         scheduleStreamSegmentCheck(recordingID: currentRecordingID)
@@ -2406,7 +2423,7 @@ enum QuickDictationStreamPolicy {
         RealtimeRefinementClient.captureSampleRate * MemoryLayout<Int16>.size
     /// Peak below which the trailing window counts as a pause rather than
     /// speech. Set well under conversational level so room tone does not read
-    /// as speech; if it never trips, the segment ceiling still forces a commit.
+    /// as speech. A segment is never committed while this gate detects speech.
     static let pausePeakThreshold: Int32 = 1_200
 }
 
