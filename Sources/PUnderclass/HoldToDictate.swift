@@ -466,12 +466,6 @@ enum QuickDictationContextPolicy {
         wording and intonation. Do not treat a pause alone as the end of a sentence.
         """
 
-    static let streamingContinuityInstruction = """
-        The audio may be divided into transport segments during one continuous dictation. \
-        Do not treat the end of an audio segment alone as the end of a sentence; the speaker \
-        may continue the same sentence in the next segment.
-        """
-
     static func context(
         from base: TranscriptionContext,
         cleanDictation: Bool,
@@ -648,8 +642,6 @@ final class HoldToDictateService {
     private var lastLivePreviewByteCount = 0
     private var activeStreamID: String?
     private var streamDidFail = false
-    private var streamSegmentWorkItem: DispatchWorkItem?
-    private var streamCommittedByteCount = 0
     private var generation = UUID()
     private var transcriberState: SocketState = .idle
     private var reconnectPolicy = QuickDictationReconnectPolicy()
@@ -803,8 +795,8 @@ final class HoldToDictateService {
             stopLivePreview()
             return
         }
-        // A streamed dictation already emits live text from the transcription
-        // socket, so only the sampling loop needs starting here.
+        // A streamed dictation already owns the primary transcriber, so a
+        // competing snapshot request cannot run while that stream is active.
         guard
             availableStreamingTranscriber == nil,
             let recordingID,
@@ -1223,10 +1215,10 @@ final class HoldToDictateService {
         let currentRecordingID = UUID()
         let buffer = LockedAudioBuffer()
 
-        // Streaming uploads audio as the user speaks so that releasing the
-        // shortcut only leaves the tail to send. The stream handle and ID are
-        // captured here rather than read from the audio thread, so the capture
-        // callback never races with the main-actor state below.
+        // Streaming uploads audio as the user speaks but leaves it in one
+        // transcription turn until the shortcut is released. The stream handle
+        // and ID are captured here rather than read from the audio thread, so
+        // the capture callback never races with the main-actor state below.
         let streamHandle = availableStreamingTranscriber
         let streamID = streamHandle == nil
             ? nil
@@ -1265,13 +1257,12 @@ final class HoldToDictateService {
         progressHandler(nil)
         beginDictationStream(
             streamHandle,
-            streamID: streamID,
-            recordingID: currentRecordingID
+            streamID: streamID
         )
         if transcribesAfterRecording, shouldProduceLivePreview(),
            streamID == nil {
-            // The stream produces its own live text, so the sampling preview
-            // loop only runs for engines that cannot stream.
+            // A cloud stream owns the primary transcriber while the shortcut is
+            // held, so the sampling preview loop only runs for other engines.
             scheduleLivePreview(recordingID: currentRecordingID)
         }
         Self.logger.notice("recording_started")
@@ -1371,7 +1362,6 @@ final class HoldToDictateService {
         pipeline?.finish()
         stopLivePreview()
         cancelInFlightPreviewWork()
-        stopStreamSegmentScheduling()
         recordingHandler(false)
 
         let audio = buffer?.take() ?? Data()
@@ -1511,12 +1501,10 @@ final class HoldToDictateService {
 
     private func beginDictationStream(
         _ streaming: TranscriptStreaming?,
-        streamID: String?,
-        recordingID: UUID
+        streamID: String?
     ) {
         activeStreamID = nil
         streamDidFail = false
-        streamCommittedByteCount = 0
         guard let streaming, let streamID else { return }
         let context: TranscriptionContext
         do {
@@ -1537,84 +1525,16 @@ final class HoldToDictateService {
         streaming.beginStream(
             DictationStreamStart(streamID: streamID, context: context)
         )
-        scheduleStreamSegmentCheck(recordingID: recordingID)
-    }
-
-    /// Closes a segment after sustained silence, so its transcript can come
-    /// back while the user keeps talking without turning ordinary hesitations
-    /// into artificial sentence boundaries.
-    private func scheduleStreamSegmentCheck(recordingID: UUID) {
-        streamSegmentWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.evaluateStreamSegment(recordingID: recordingID)
-        }
-        streamSegmentWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(500),
-            execute: workItem
-        )
-    }
-
-    private func evaluateStreamSegment(recordingID currentRecordingID: UUID) {
-        streamSegmentWorkItem = nil
-        guard
-            recordingID == currentRecordingID,
-            let streamID = activeStreamID,
-            !streamDidFail,
-            let streaming = availableStreamingTranscriber,
-            let buffer = audioBuffer
-        else {
-            return
-        }
-        let totalBytes = buffer.count
-        let segmentBytes = max(0, totalBytes - streamCommittedByteCount)
-        let segmentSeconds = Double(segmentBytes)
-            / Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-        let sustainedSilenceBytes = Int(
-            Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-                * DictationSegmentCommitPolicy.sustainedSilenceSeconds
-        )
-        let briefSilenceBytes = Int(
-            Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-                * DictationSegmentCommitPolicy.briefSilenceSeconds
-        )
-        let hasSustainedSilence = !PCM16SignalGate.containsAudibleSignal(
-            buffer.tail(sustainedSilenceBytes),
-            minimumPeak: QuickDictationStreamPolicy.pausePeakThreshold
-        )
-        let hasBriefSilence = !PCM16SignalGate.containsAudibleSignal(
-            buffer.tail(briefSilenceBytes),
-            minimumPeak: QuickDictationStreamPolicy.pausePeakThreshold
-        )
-        if DictationSegmentCommitPolicy.shouldCommit(
-            segmentSeconds: segmentSeconds,
-            hasSustainedSilence: hasSustainedSilence,
-            hasBriefSilence: hasBriefSilence
-        ) {
-            streaming.commitStreamSegment(streamID: streamID)
-            streamCommittedByteCount = totalBytes
-            Self.logger.notice(
-                "stream_segment_committed seconds=\(Int(segmentSeconds), privacy: .public) sustained_silence=\(hasSustainedSilence, privacy: .public) brief_silence=\(hasBriefSilence, privacy: .public)"
-            )
-        }
-        scheduleStreamSegmentCheck(recordingID: currentRecordingID)
-    }
-
-    private func stopStreamSegmentScheduling() {
-        streamSegmentWorkItem?.cancel()
-        streamSegmentWorkItem = nil
     }
 
     /// Abandons the open stream without publishing a result, for recordings
     /// that will never be transcribed or that fall back to the batch upload.
     private func discardDictationStream() {
-        stopStreamSegmentScheduling()
         if let activeStreamID {
             availableStreamingTranscriber?.cancelStream(streamID: activeStreamID)
         }
         activeStreamID = nil
         streamDidFail = false
-        streamCommittedByteCount = 0
     }
 
     private func handleStreamPartial(
@@ -1651,7 +1571,6 @@ final class HoldToDictateService {
         }
         if activeStreamID == streamID {
             activeStreamID = nil
-            streamCommittedByteCount = 0
             progressHandler(nil)
         }
         completeFinalTranscription(transcriptID: streamID, text: text)
@@ -1680,7 +1599,6 @@ final class HoldToDictateService {
         if isActiveRecordingStream {
             streamDidFail = true
             activeStreamID = nil
-            stopStreamSegmentScheduling()
         }
 
         // Still recording: the buffer keeps filling and the batch upload at
@@ -2421,10 +2339,6 @@ enum PCM16SignalGate {
 enum QuickDictationStreamPolicy {
     static let captureBytesPerSecond =
         RealtimeRefinementClient.captureSampleRate * MemoryLayout<Int16>.size
-    /// Peak below which the trailing window counts as a pause rather than
-    /// speech. Set well under conversational level so room tone does not read
-    /// as speech. A segment is never committed while this gate detects speech.
-    static let pausePeakThreshold: Int32 = 1_200
 }
 
 enum QuickDictationLivePreviewPolicy {
@@ -2479,14 +2393,6 @@ private final class LockedAudioBuffer: @unchecked Sendable {
         return data.count
     }
 
-    /// Copies only the trailing bytes. The segment scheduler polls for trailing
-    /// silence several times a second, and copying the whole recording each
-    /// time would grow more expensive the longer the user speaks.
-    func tail(_ byteCount: Int) -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return Data(data.suffix(byteCount))
-    }
 }
 
 struct QuickDictationPasteVerification {

@@ -1,10 +1,8 @@
 import Foundation
 
-/// A capability that cannot run on this Mac. Everything else works offline, so
-/// these are the only things an API key buys.
+/// A hosted capability that an OpenAI key adds. Meeting and Interview capture
+/// themselves are local-capable; these cases describe only their cloud tier.
 enum CloudFeature: String, CaseIterable, Identifiable {
-    /// The live meeting pass is a hosted streaming model with no on-device
-    /// equivalent, so meeting capture as a whole depends on it.
     case meetingCapture
     case answerMirror
     case mockMeeting
@@ -17,9 +15,9 @@ enum CloudFeature: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .meetingCapture:
-            "Meeting capture"
+            "Meeting live enhancements"
         case .answerMirror:
-            "Live interview"
+            "Interview live enhancements"
         case .mockMeeting:
             "Generated meeting replay"
         case .mockInterview:
@@ -34,9 +32,9 @@ enum CloudFeature: String, CaseIterable, Identifiable {
     var cloudReason: String {
         switch self {
         case .meetingCapture:
-            "Live meeting transcription and grounded response cues use OpenAI's streaming and language models."
+            "Local meeting transcripts work without a key. A key adds word-by-word live text, Meeting Assistant cues, and web-backed help."
         case .answerMirror:
-            "Live interview transcription and suggested answers use OpenAI's streaming and language models."
+            "Local interview transcripts work without a key. A key adds word-by-word live text, Answer Mirror suggestions, and web-backed help."
         case .mockMeeting:
             "Replay questions and grounded meeting responses are written by language models that run on OpenAI's servers."
         case .mockInterview:
@@ -48,7 +46,25 @@ enum CloudFeature: String, CaseIterable, Identifiable {
 
     /// Whether the app is still fully usable without it.
     var isOptionalUpgrade: Bool {
-        self == .bestAccuracyDictation
+        switch self {
+        case .meetingCapture, .answerMirror, .bestAccuracyDictation:
+            true
+        case .mockMeeting, .mockInterview:
+            false
+        }
+    }
+
+    var availableWithoutKeyDescription: String? {
+        switch self {
+        case .meetingCapture:
+            "Local two-speaker meeting transcripts still work"
+        case .answerMirror:
+            "Local two-speaker interview transcripts still work"
+        case .bestAccuracyDictation:
+            "Local dictation already works"
+        case .mockMeeting, .mockInterview:
+            nil
+        }
     }
 }
 
@@ -63,8 +79,8 @@ enum FeatureAccess: Equatable {
 }
 
 /// Decides what works right now. The app is local-first: with no key at all,
-/// dictation is fully functional and only the hosted features are locked, so
-/// nothing has to be configured before the app is useful.
+/// dictation and two-track capture are fully functional and only the hosted
+/// enhancements are locked, so nothing has to be configured before use.
 struct CloudCapability: Equatable {
     let hasAPIKey: Bool
     /// Set by someone who has a key but wants a hard guarantee that no audio
@@ -97,7 +113,10 @@ struct CloudCapability: Equatable {
         case .needsAPIKey:
             return feature.cloudReason
         case .blockedByPrivacyLock:
-            return "\(feature.title) is turned off because you asked for everything to stay on this Mac."
+            let localRemainder = feature.availableWithoutKeyDescription.map {
+                " \($0)."
+            } ?? ""
+            return "\(feature.title) is turned off because you asked for everything to stay on this Mac.\(localRemainder)"
         }
     }
 

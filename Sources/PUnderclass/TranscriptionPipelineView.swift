@@ -195,17 +195,19 @@ struct ModelUsageSummary: View {
             )
             row(
                 workflow: "Live capture · live",
-                model: RealtimeTranscriptionClient.model,
-                isCloud: true,
-                note: controller.capability.isCloudEnabled ? "fixed" : "needs a key"
+                model: controller.capability.isCloudEnabled
+                    ? RealtimeTranscriptionClient.model
+                    : "On-device turn buffer",
+                isCloud: controller.capability.isCloudEnabled,
+                note: controller.capability.isCloudEnabled
+                    ? "fixed"
+                    : "local · no partial text"
             )
             row(
                 workflow: "Live capture · final",
-                model: controller.refinementEngine.modelName,
-                isCloud: controller.refinementEngine.isCloud,
-                note: controller.capability.isCloudEnabled
-                    ? "same as Quick Dictation"
-                    : "needs a key"
+                model: controller.resolvedDictationEngine.modelName,
+                isCloud: controller.resolvedDictationEngine.isCloud,
+                note: "same as Quick Dictation"
             )
             row(
                 workflow: "Live assistants · cues",
@@ -254,28 +256,46 @@ struct TranscriptionPipelineDiagram: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-                workflowTitle(
+            workflowTitle(
                     "Meetings and interviews",
-                    detail: "Both use the same capture pipeline and evaluate other-speaker moments with a purpose-specific response assistant."
+                    detail: controller.capability.isCloudEnabled
+                        ? "Both use two-track capture, live partial text, and a purpose-specific response assistant."
+                        : "Both use local two-track capture. Each completed speaker turn is transcribed on this Mac; AI response features are off."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
-                        stage: "STAGE 1 · LIVE",
-                        modelName: RealtimeTranscriptionClient.model,
-                        role: "Streaming partial and completed text",
-                        detail: "Fixed OpenAI cloud model. Two parallel sessions cover microphone and the selected system-audio source while live capture is active.",
-                        badge: "FIXED · CLOUD",
-                        systemImage: "bolt.horizontal.fill",
-                        color: .blue
+                        stage: controller.capability.isCloudEnabled
+                            ? "STAGE 1 · LIVE"
+                            : "STAGE 1 · TURN BUFFER",
+                        modelName: controller.capability.isCloudEnabled
+                            ? RealtimeTranscriptionClient.model
+                            : "On-device voice activity",
+                        role: controller.capability.isCloudEnabled
+                            ? "Streaming partial and completed text"
+                            : "Separates and buffers completed turns",
+                        detail: controller.capability.isCloudEnabled
+                            ? "Fixed OpenAI cloud model. Two parallel sessions cover microphone and the selected system-audio source while live capture is active."
+                            : "Microphone and system audio stay separate. No words appear during speech; a turn is submitted locally after its end is detected or you click Finish My Turn.",
+                        badge: controller.capability.isCloudEnabled
+                            ? "FIXED · CLOUD"
+                            : "LOCAL · NO LIVE TEXT",
+                        systemImage: controller.capability.isCloudEnabled
+                            ? "bolt.horizontal.fill"
+                            : "waveform",
+                        color: controller.capability.isCloudEnabled
+                            ? .blue
+                            : .green
                     )
                     TranscriptionPipelineConnector(label: "TURN\nENDS")
                     TranscriptionStageCard(
                         stage: "STAGE 2 · FINAL",
-                        modelName: controller.refinementEngine.modelName,
-                        role: "\(controller.refinementEngine.title) · complete turn",
-                        detail: "Receives the captured turn audio and replaces or refines the live wording using the selected local or cloud engine.",
+                        modelName: controller.resolvedDictationEngine.modelName,
+                        role: "\(controller.resolvedDictationEngine.title) · complete turn",
+                        detail: controller.capability.isCloudEnabled
+                            ? "Receives the captured turn audio and replaces or refines the live wording using the selected local or cloud engine."
+                            : "Produces the first transcript for the completed turn entirely on this Mac.",
                         badge: selectedLocationBadge,
-                        systemImage: controller.refinementEngine.systemImage,
+                        systemImage: controller.resolvedDictationEngine.systemImage,
                         color: .green
                     )
                 }
@@ -285,23 +305,23 @@ struct TranscriptionPipelineDiagram: View {
                 workflowTitle(
                     "Quick Dictation",
                     detail: controller.refinementEngine.isCloud
-                        ? "One session transcribes while you speak, so releasing the shortcut only sends the tail."
+                        ? "One session uploads while you speak, then commits the complete dictation when you release the shortcut."
                         : "The selected model is reused; the live-capture model is not involved."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
                         stage: controller.refinementEngine.isCloud
-                            ? "WHILE HELD · STREAMING"
+                            ? "WHILE HELD · UPLOADING"
                             : "OPTIONAL STAGE · WHILE HELD",
                         modelName: controller.refinementEngine.modelName,
                         role: controller.refinementEngine.isCloud
                             ? "\(controller.refinementEngine.title) · continuous upload"
                             : "\(controller.refinementEngine.title) · bounded snapshots",
                         detail: controller.refinementEngine.isCloud
-                            ? "Audio uploads as you speak. A segment closes only after sustained silence, so ordinary hesitations stay within the same sentence. This is not gpt-live-transcribe."
+                            ? "Audio uploads as you speak but remains one transcription turn. It is committed only when the shortcut is released. This is not gpt-live-transcribe."
                             : "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
                         badge: controller.refinementEngine.isCloud
-                            ? "ONE SESSION"
+                            ? "ONE TURN"
                             : (controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF"),
                         systemImage: "text.bubble",
                         color: .orange,
@@ -340,7 +360,7 @@ struct TranscriptionPipelineDiagram: View {
     }
 
     private var selectedLocationBadge: String {
-        switch controller.refinementEngine {
+        switch controller.resolvedDictationEngine {
         case .localWhisper, .localParakeet:
             "SELECTED · ON DEVICE"
         case .openAITranscribe:

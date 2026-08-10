@@ -144,6 +144,22 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.behaviorDetail.contains("Ground concise"))
     }
 
+    func testLocalCapturePublishesTranscriptOnlyBehavior() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening locally with Whisper",
+            purpose: .meeting,
+            assistantAvailable: false
+        )
+        let snapshot = await hub.snapshot()
+
+        XCTAssertFalse(snapshot.session.assistantAvailable)
+        XCTAssertEqual(snapshot.session.behaviorName, "Local transcript")
+        XCTAssertTrue(snapshot.session.behaviorDetail.contains("OpenAI"))
+    }
+
     func testInterviewSessionPublishesPlausibleRehearsalMode() async {
         let hub = CompanionEventHub(streamID: "test-stream")
 

@@ -475,6 +475,21 @@ function renderSession(session) {
   if (!session) return;
   const synthetic = session.source === "syntheticInterview";
   const meeting = session.purpose === "meeting";
+  const assistantAvailable = session.assistantAvailable !== false;
+  $("#localTranscriptView").hidden = assistantAvailable;
+  $("#currentStage").hidden = !assistantAvailable;
+  $("#answerHistory").hidden = !assistantAvailable;
+  if (!assistantAvailable) {
+    $("#pausedState").hidden = true;
+    $("#localTranscriptTitle").textContent = meeting
+      ? "Meeting transcript"
+      : "Interview transcript";
+    $("#localTranscriptStatus").textContent = session.status
+      || (session.isListening ? "Listening locally" : "Local capture is ready");
+    $("#localLimitationsDetail").textContent = meeting
+      ? "Text appears after each completed turn. Live partial words, Meeting Assistant cues, web search, and generated replays require an OpenAI API key."
+      : "Text appears after each completed turn. Live partial words, Answer Mirror suggestions, web search, and generated replays require an OpenAI API key.";
+  }
   $("#behaviorName").textContent = session.behaviorName
     || (meeting ? "Meeting assistant" : "Answer mirror");
   $("#behaviorDetail").textContent = session.behaviorDetail
@@ -588,14 +603,14 @@ function createTurn(turn, partial = false) {
   return article;
 }
 
-function renderTranscript(transcript) {
-  const container = $("#transcriptScroll");
+function renderTranscriptInto(container, transcript) {
+  if (!container) return;
   container.replaceChildren();
   const turns = transcript?.turns || [];
   const partials = transcript?.partials || [];
   if (!turns.length && !partials.length) {
     const empty = document.createElement("article");
-    empty.className = "turn";
+    empty.className = "turn empty-transcript";
     const text = document.createElement("p");
     text.textContent = state.snapshot?.session?.purpose === "meeting"
       ? "Transcript turns will appear here when meeting capture starts."
@@ -615,6 +630,11 @@ function renderTranscript(transcript) {
   turns.forEach((turn) => container.append(createTurn(turn)));
   partials.filter((partial) => partial.text).forEach((partial) => container.append(createTurn(partial, true)));
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+}
+
+function renderTranscript(transcript) {
+  renderTranscriptInto($("#transcriptScroll"), transcript);
+  renderTranscriptInto($("#localTranscriptList"), transcript);
 }
 
 function answerHistoryFor(assistant) {
@@ -994,6 +1014,13 @@ function renderSuggestionStack(assistant) {
 }
 
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
+  if (state.snapshot?.session?.assistantAvailable === false) {
+    $("#currentStage").hidden = true;
+    $("#answerHistory").hidden = true;
+    $("#pausedState").hidden = true;
+    return;
+  }
+  $("#currentStage").hidden = false;
   renderInferenceStatus();
   const empty = $("#pausedState");
   const listeningStrip = $("#listeningStrip");

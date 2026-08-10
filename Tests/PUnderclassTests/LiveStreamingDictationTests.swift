@@ -4,10 +4,10 @@ import XCTest
 @testable import PUnderclass
 
 /// Exercises the streamed dictation path against the real API. This is the only
-/// place the 24 kHz wire format, the mid-recording segment commits, and the
-/// transcript reassembly are checked end to end.
+/// place the 24 kHz wire format, continuous upload, and the single release-time
+/// commit are checked end to end.
 final class LiveStreamingDictationTests: XCTestCase {
-    func testStreamedDictationTranscribesWhileRecording() throws {
+    func testStreamedDictationTranscribesAsOneReleaseTimeTurn() throws {
         guard ProcessInfo.processInfo.environment["RUN_OPENAI_LIVE_TESTS"] == "1"
         else {
             throw XCTSkip(
@@ -18,24 +18,20 @@ final class LiveStreamingDictationTests: XCTestCase {
             ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
         )
 
-        // Two spoken phrases separated by silence, so the segment scheduler has
-        // a real pause to cut on rather than only hitting the length ceiling.
+        // Keep a meaningful pause inside one sentence. The application must
+        // not turn it into a separate committed transcription item.
         let firstPhrase = try Self.synthesizedPCM16(
-            "The quick brown fox jumps over the lazy dog."
+            "We need some kind of repetition to make it so that"
         )
         let secondPhrase = try Self.synthesizedPCM16(
-            "Pack my box with five dozen liquor jugs."
+            "it is not limited on the X axis."
         )
         let pause = Data(
-            count: Int(
-                Double(QuickDictationStreamPolicy.captureBytesPerSecond)
-                    * DictationSegmentCommitPolicy.sustainedSilenceSeconds
-            )
+            count: QuickDictationStreamPolicy.captureBytesPerSecond
         )
 
         let connected = expectation(description: "Transcription socket connected")
         let completed = expectation(description: "Streamed dictation completed")
-        var partials: [String] = []
         var finalText = ""
         var failure: String?
         var didStart = false
@@ -57,9 +53,7 @@ final class LiveStreamingDictationTests: XCTestCase {
             onFailure: { _, message in
                 failure = message
             },
-            onStreamPartial: { _, text in
-                partials.append(text)
-            },
+            onStreamPartial: { _, _ in },
             onStreamCompleted: { _, text in
                 finalText = text
                 completed.fulfill()
@@ -89,7 +83,6 @@ final class LiveStreamingDictationTests: XCTestCase {
         // Feed the audio in real-world sized chunks rather than one blob.
         Self.feed(firstPhrase, to: client, streamID: streamID)
         Self.feed(pause, to: client, streamID: streamID)
-        client.commitStreamSegment(streamID: streamID)
         Self.feed(secondPhrase, to: client, streamID: streamID)
         client.finishStream(streamID: streamID)
 
@@ -99,16 +92,13 @@ final class LiveStreamingDictationTests: XCTestCase {
         XCTAssertNil(failure)
         let transcript = finalText.lowercased()
         XCTAssertTrue(
-            transcript.contains("quick brown fox"),
-            "First segment missing from transcript: \(finalText)"
+            transcript.contains("repetition"),
+            "First phrase missing from transcript: \(finalText)"
         )
         XCTAssertTrue(
-            transcript.contains("liquor jugs"),
-            "Second segment missing from transcript: \(finalText)"
+            transcript.contains("not limited"),
+            "Second phrase missing from transcript: \(finalText)"
         )
-        // Live text must arrive before the dictation ends, otherwise the
-        // overlay has nothing to show while the user is still speaking.
-        XCTAssertFalse(partials.isEmpty)
     }
 
     private static func feed(

@@ -100,6 +100,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var status = "Ready"
     var behaviorName = "Answer mirror"
     var behaviorDetail = "Show 3–5 shorthand beats when the interviewer pauses"
+    var assistantAvailable = true
     var suggestionsPaused = false
     var startedAt: Date?
     var endedAt: Date?
@@ -412,7 +413,8 @@ actor CompanionEventHub {
         title: String? = nil,
         isPreparingSyntheticInterview: Bool = false,
         answerMode: AssistantAnswerMode = .grounded,
-        earlyBridgeEnabled: Bool = false
+        earlyBridgeEnabled: Bool = false,
+        assistantAvailable: Bool = true
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
@@ -427,31 +429,38 @@ actor CompanionEventHub {
         state.session.title = title
         state.session.isPreparingSyntheticInterview =
             isPreparingSyntheticInterview
+        state.session.assistantAvailable = assistantAvailable
         state.session.answerMode = purpose == .interview
             ? answerMode
             : .grounded
         state.session.earlyBridgeEnabled = purpose == .interview
             && answerMode == .plausibleRehearsal
             && earlyBridgeEnabled
-        switch purpose {
-        case .meeting:
-            state.session.behaviorName = "Meeting assistant"
+        if !assistantAvailable {
+            state.session.behaviorName = "Local transcript"
             state.session.behaviorDetail =
-                "Ground concise response cues in the meeting references"
-        case .interview:
-            state.session.behaviorName = "Answer mirror"
-            if state.session.earlyBridgeEnabled {
+                "Completed turns are transcribed on this Mac; OpenAI response cues are off"
+        } else {
+            switch purpose {
+            case .meeting:
+                state.session.behaviorName = "Meeting assistant"
                 state.session.behaviorDetail =
-                    "Show an experimental early bridge, then a plausible rehearsal draft"
-            } else {
-                state.session.behaviorDetail = answerMode == .plausibleRehearsal
-                    ? "Draft plausible, project-specific rehearsal answers to verify"
-                    : "Show grounded shorthand beats when the interviewer pauses"
+                    "Ground concise response cues in the meeting references"
+            case .interview:
+                state.session.behaviorName = "Answer mirror"
+                if state.session.earlyBridgeEnabled {
+                    state.session.behaviorDetail =
+                        "Show an experimental early bridge, then a plausible rehearsal draft"
+                } else {
+                    state.session.behaviorDetail = answerMode == .plausibleRehearsal
+                        ? "Draft plausible, project-specific rehearsal answers to verify"
+                        : "Show grounded shorthand beats when the interviewer pauses"
+                }
+            case nil:
+                state.session.behaviorName = "Answer mirror"
+                state.session.behaviorDetail =
+                    "Show 3–5 shorthand beats when the interviewer pauses"
             }
-        case nil:
-            state.session.behaviorName = "Answer mirror"
-            state.session.behaviorDetail =
-                "Show 3–5 shorthand beats when the interviewer pauses"
         }
         return publish(name: "session.status", payload: state.session)
     }
