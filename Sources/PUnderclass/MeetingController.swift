@@ -5,6 +5,8 @@ import OSLog
 
 final class MeetingController: ObservableObject {
     @Published var apiKeyDraft = ""
+    @Published var exaAPIKeyDraft = ""
+    @Published var webReferenceURLDraft = ""
     @Published var meetingContextPrompt =
         "An English-language one-on-one technical company meeting. Speakers may have different regional or non-native English accents. Discussion may include software, hardware, APIs, product names, acronyms, numbers, and action items."
     @Published var interviewContextPrompt =
@@ -31,6 +33,7 @@ final class MeetingController: ObservableObject {
     @Published var statusMessage = "Ready"
     @Published var errorMessage: String?
     @Published var keyStatus = ""
+    @Published var exaKeyStatus = ""
     @Published var microphoneName = "System default microphone"
     @Published private(set) var microphoneAvailable = false
     @Published private(set) var inputDevices: [AudioDeviceOption] = []
@@ -60,6 +63,8 @@ final class MeetingController: ObservableObject {
     @Published var pendingSettingsSection: SettingsSection?
     @Published private(set) var apiExpenses = APIExpenseSummary()
     @Published private(set) var referenceLibraryState = ReferenceLibraryState()
+    @Published private(set) var referencePreparationState =
+        ReferencePreparationState()
     @Published private(set) var companionGatewayStatus = "Starting assistant server…"
     @Published private(set) var companionGatewayEndpoint: CompanionGatewayEndpoint?
     @Published private(set) var companionGatewayError: String?
@@ -89,12 +94,16 @@ final class MeetingController: ObservableObject {
     private var whisperWarmupTask: Task<Void, Never>?
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceLibraryService: ReferenceLibraryService?
+    private var referencePreparationTask: Task<Void, Never>?
+    private var referencePreparationRunID: UUID?
     private let companionGateway = CompanionGateway()
     private var companionGatewayAttemptID: UUID?
     private let liveAssistantClient = LiveAssistantClient()
     private let earlyInterviewBridgeClient = EarlyInterviewBridgeClient()
     private let syntheticInterviewGeneratorClient =
         SyntheticInterviewGeneratorClient()
+    private let referenceWebContentClient = ReferenceWebContentClient()
+    private let referencePreparationClient = ReferencePreparationClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTask: Task<Void, Never>?
     private var assistantGenerationRequestID: UUID?
@@ -111,10 +120,12 @@ final class MeetingController: ObservableObject {
     private var syntheticInterviewTask: Task<Void, Never>?
     private var syntheticInterviewRunID: UUID?
     private var syntheticInterviewReferences: ReferenceLibrarySnapshot?
+    private var activePreparedReferencePack: PreparedReferencePack?
     private let dictationOverlay = QuickDictationOverlayController()
     private let quickDictationHistoryStore: QuickDictationHistoryStore
     private let quickDictationRecoveryStore: QuickDictationRecoveryStore
     private let apiExpenseStore: APIExpenseStore
+    private let referencePreparationStore: ReferencePreparationStore
     private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
     private let syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore
     private let documentationDemoMode: DocumentationDemoMode?
@@ -156,6 +167,7 @@ final class MeetingController: ObservableObject {
         syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore =
             .applicationSupport(for: .meeting),
         apiExpenseStore: APIExpenseStore = .applicationSupport(),
+        referencePreparationStore: ReferencePreparationStore = .applicationSupport(),
         documentationDemoMode: DocumentationDemoMode? = nil
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
@@ -163,6 +175,7 @@ final class MeetingController: ObservableObject {
         self.syntheticInterviewScenarioStore = syntheticInterviewScenarioStore
         self.syntheticMeetingScenarioStore = syntheticMeetingScenarioStore
         self.apiExpenseStore = apiExpenseStore
+        self.referencePreparationStore = referencePreparationStore
         self.documentationDemoMode = documentationDemoMode
         if let documentationDemoMode {
             configureDocumentationDemo(documentationDemoMode)
@@ -174,6 +187,17 @@ final class MeetingController: ObservableObject {
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
+        exaAPIKeyDraft = KeychainStore.loadExaAPIKey()
+            ?? ProcessInfo.processInfo.environment["EXA_API_KEY"]
+            ?? ""
+        do {
+            referencePreparationState = ReferencePreparationState(
+                archive: try referencePreparationStore.load()
+            )
+        } catch {
+            errorMessage =
+                "Prepared interview evidence could not be loaded: \(error.localizedDescription)"
+        }
         dictationPreviewEnabled = UserDefaults.standard.object(
             forKey: Self.dictationPreviewEnabledDefaultsKey
         ) as? Bool ?? true
@@ -410,6 +434,11 @@ final class MeetingController: ObservableObject {
             apiExpenseStore: APIExpenseStore(
                 fileURL: rootURL.appendingPathComponent("APIExpenses.json")
             ),
+            referencePreparationStore: ReferencePreparationStore(
+                fileURL: rootURL.appendingPathComponent(
+                    "ReferencePreparation.json"
+                )
+            ),
             documentationDemoMode: mode
         )
     }
@@ -451,6 +480,23 @@ final class MeetingController: ObservableObject {
             {
                 restartDictationService()
             }
+        } catch {
+            present(error)
+        }
+    }
+
+    func saveExaAPIKey() {
+        let key = exaAPIKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !key.isEmpty else {
+            exaKeyStatus = "Enter an Exa key before saving."
+            return
+        }
+        do {
+            try KeychainStore.saveExaAPIKey(key)
+            exaAPIKeyDraft = key
+            exaKeyStatus = "Saved in Keychain"
         } catch {
             present(error)
         }
@@ -860,6 +906,21 @@ final class MeetingController: ObservableObject {
         if isListening {
             stopCapture()
         }
+        if referencePreparationState.phase.isWorking {
+            referencePreparationTask?.cancel()
+            referencePreparationTask = nil
+            referencePreparationRunID = nil
+            referencePreparationState.phase = .idle
+            for index in referencePreparationState.webSources.indices
+                where referencePreparationState.webSources[index].status
+                    == .fetching
+            {
+                referencePreparationState.webSources[index].status = .pending
+                referencePreparationState.webSources[index].detail =
+                    "Cancelled by privacy setting"
+            }
+            persistReferencePreparation()
+        }
         if refinementEngine.isCloud {
             selectRefinementEngine(.localWhisper)
         }
@@ -1156,6 +1217,249 @@ final class MeetingController: ObservableObject {
         referenceLibraryService?.setFolder(nil)
     }
 
+    func addReferenceWebSource() {
+        do {
+            let url = try ReferenceWebContentClient.validatedURL(
+                webReferenceURLDraft
+            )
+            guard !referencePreparationState.webSources.contains(where: {
+                $0.requestedURL == url.absoluteString
+            }) else {
+                webReferenceURLDraft = ""
+                return
+            }
+            referencePreparationState.webSources.append(
+                ReferenceWebSource(url: url)
+            )
+            referencePreparationState.phase = .idle
+            webReferenceURLDraft = ""
+            persistReferencePreparation()
+        } catch {
+            present(error)
+        }
+    }
+
+    func removeReferenceWebSource(id: String) {
+        guard !referencePreparationState.phase.isWorking else { return }
+        referencePreparationState.webSources.removeAll { $0.id == id }
+        referencePreparationState.phase = .idle
+        persistReferencePreparation()
+    }
+
+    func setPreparedReferenceEnabled(id: String, enabled: Bool) {
+        guard !referencePreparationState.phase.isWorking else { return }
+        guard var pack = referencePreparationState.pack else { return }
+        guard let index = pack.cards.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        pack.cards[index].isEnabled = enabled
+        referencePreparationState.pack = pack
+        persistReferencePreparation()
+    }
+
+    var isInterviewEvidenceCurrent: Bool {
+        referencePreparationState.pack?.isCurrent(
+            purpose: .interview,
+            localReferenceRevision: referenceLibraryState.snapshot?.revision,
+            webSources: referencePreparationState.webSources,
+            sessionContext: interviewContextPrompt
+        ) == true
+    }
+
+    var canPrepareInterviewEvidence: Bool {
+        guard
+            !referencePreparationState.phase.isWorking,
+            !isListening,
+            !syntheticInterviewState.isActive,
+            capability.isAvailable(.answerMirror)
+        else {
+            return false
+        }
+        return referenceLibraryState.snapshot?.documents.isEmpty == false
+            || !referencePreparationState.webSources.isEmpty
+    }
+
+    func interviewEvidenceReadinessDetail() -> String {
+        if let message = capability.lockMessage(for: .answerMirror) {
+            return message
+        }
+        if isListening || syntheticInterviewState.isActive {
+            return "Stop the active interview or replay before rebuilding evidence."
+        }
+        if referencePreparationState.phase.isWorking {
+            return referencePreparationState.phase.title
+        }
+        guard
+            referenceLibraryState.snapshot?.documents.isEmpty == false
+                || !referencePreparationState.webSources.isEmpty
+        else {
+            return "Add a reference folder or at least one public profile URL."
+        }
+        if let pack = referencePreparationState.pack {
+            if isInterviewEvidenceCurrent {
+                return "Ready: \(pack.enabledCardCount) enabled evidence cards."
+            }
+            return "Sources or role guidance changed. Rebuild before the next interview."
+        }
+        return "Reads the sources once and builds a compact, role-specific evidence pack."
+    }
+
+    func prepareInterviewEvidence() {
+        guard canPrepareInterviewEvidence else { return }
+        let apiKey = apiKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !apiKey.isEmpty else {
+            present(PUnderclassError.noAPIKey)
+            return
+        }
+
+        referencePreparationTask?.cancel()
+        let runID = UUID()
+        referencePreparationRunID = runID
+        let requestedSources = referencePreparationState.webSources
+        let localReferences = referenceLibraryState.snapshot
+        let localRevision = localReferences?.revision
+            ?? PreparedReferencePack.noLocalRevision
+        let sessionContext = interviewContextPrompt
+        let exaAPIKey = exaAPIKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let previousCards = referencePreparationState.pack?.cards ?? []
+
+        referencePreparationState.phase = requestedSources.isEmpty
+            ? .extracting
+            : .fetching
+        for index in referencePreparationState.webSources.indices {
+            referencePreparationState.webSources[index].status = .fetching
+            referencePreparationState.webSources[index].detail = ""
+        }
+        persistReferencePreparation()
+        statusMessage = "Preparing interview evidence…"
+
+        let webClient = referenceWebContentClient
+        let preparationClient = referencePreparationClient
+        referencePreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                for source in requestedSources {
+                    try Task.checkCancellation()
+                    do {
+                        let fetched = try await webClient.fetch(
+                            url: source.requestedURL,
+                            exaAPIKey: exaAPIKey
+                        )
+                        guard self.referencePreparationRunID == runID else {
+                            return
+                        }
+                        self.updateWebSource(source.id) { updated in
+                            updated.resolvedURL = fetched.resolvedURL
+                            updated.title = fetched.title
+                            updated.content = fetched.content
+                            updated.fetchedAt = fetched.fetchedAt
+                            updated.provider = fetched.provider
+                            updated.status = .ready
+                            updated.detail =
+                                "\(fetched.provider.title) · \(fetched.content.count) characters"
+                        }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        guard self.referencePreparationRunID == runID else {
+                            return
+                        }
+                        self.updateWebSource(source.id) { updated in
+                            updated.content = ""
+                            updated.status = Self.webSourceFailureStatus(
+                                for: error
+                            )
+                            updated.detail = error.localizedDescription
+                        }
+                    }
+                    self.persistReferencePreparation()
+                }
+
+                try Task.checkCancellation()
+                guard self.referencePreparationRunID == runID else { return }
+                self.referencePreparationState.phase = .extracting
+                let webSources = self.referencePreparationState.webSources
+                let combined = try ReferencePreparationClient.combinedReferences(
+                    localReferences: localReferences,
+                    webSources: webSources
+                )
+                let webRevision = ReferencePreparationDigest.webSourceRevision(
+                    webSources
+                )
+                let generation = try await preparationClient.prepare(
+                    apiKey: apiKey,
+                    references: combined,
+                    purpose: .interview,
+                    sessionContext: sessionContext,
+                    localReferenceRevision: localRevision,
+                    webSourceRevision: webRevision,
+                    previousCards: previousCards
+                )
+                try Task.checkCancellation()
+                guard self.referencePreparationRunID == runID else { return }
+                self.referencePreparationState.pack = generation.pack
+                self.referencePreparationState.phase = .ready
+                self.referencePreparationTask = nil
+                self.referencePreparationRunID = nil
+                self.recordAssistantUsage(generation.usage)
+                self.persistReferencePreparation()
+                self.statusMessage =
+                    "Prepared \(generation.pack.cards.count) interview evidence cards"
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.referencePreparationRunID == runID else { return }
+                self.referencePreparationState.phase = .failed(
+                    error.localizedDescription
+                )
+                self.referencePreparationTask = nil
+                self.referencePreparationRunID = nil
+                self.persistReferencePreparation()
+                self.present(error)
+            }
+        }
+    }
+
+    private func updateWebSource(
+        _ id: String,
+        update: (inout ReferenceWebSource) -> Void
+    ) {
+        guard let index = referencePreparationState.webSources.firstIndex(
+            where: { $0.id == id }
+        ) else {
+            return
+        }
+        update(&referencePreparationState.webSources[index])
+    }
+
+    private static func webSourceFailureStatus(
+        for error: Error
+    ) -> ReferenceWebSourceStatus {
+        guard
+            let webError = error as? ReferenceWebContentError,
+            case let .allProvidersFailed(exaKeyAvailable, _) = webError,
+            !exaKeyAvailable
+        else {
+            return .failed
+        }
+        return .keyRequired
+    }
+
+    private func persistReferencePreparation() {
+        do {
+            try referencePreparationStore.save(
+                ReferencePreparationArchive(state: referencePreparationState)
+            )
+        } catch {
+            errorMessage =
+                "Prepared interview evidence could not be saved: \(error.localizedDescription)"
+        }
+    }
+
     func generatedReplayState(
         for purpose: CapturePurpose
     ) -> SyntheticInterviewState {
@@ -1165,14 +1469,39 @@ final class MeetingController: ObservableObject {
         return syntheticInterviewState
     }
 
+    private func replayReferences(
+        for purpose: CapturePurpose
+    ) -> ReferenceLibrarySnapshot? {
+        if
+            purpose == .interview,
+            let pack = referencePreparationState.pack,
+            pack.isCurrent(
+                purpose: .interview,
+                localReferenceRevision: referenceLibraryState.snapshot?.revision,
+                webSources: referencePreparationState.webSources,
+                sessionContext: interviewContextPrompt
+            )
+        {
+            return pack.snapshot(
+                for: interviewContextPrompt,
+                folderURL: referenceLibraryState.snapshot?.folderURL,
+                maximumCards: 16
+            )
+        }
+        if purpose == .interview, referencePreparationState.pack != nil {
+            return nil
+        }
+        guard referenceLibraryState.phase == .ready else { return nil }
+        return referenceLibraryState.snapshot
+    }
+
     func canStartGeneratedReplay(for purpose: CapturePurpose) -> Bool {
         guard
             !syntheticInterviewState.isActive,
             !isListening,
             !isDictationBusy,
             capability.isCloudEnabled,
-            referenceLibraryState.phase == .ready,
-            referenceLibraryState.snapshot?.documents.isEmpty == false
+            replayReferences(for: purpose)?.documents.isEmpty == false
         else {
             return false
         }
@@ -1211,6 +1540,17 @@ final class MeetingController: ObservableObject {
         if let message = capability.lockMessage(for: feature) {
             return message
         }
+        if purpose == .interview,
+           referencePreparationState.pack != nil,
+           !isInterviewEvidenceCurrent
+        {
+            return "Rebuild the prepared interview evidence after the source or role-context change."
+        }
+        if let references = replayReferences(for: purpose) {
+            let count = references.documents.count
+            let label = count == 1 ? "source" : "sources"
+            return "Ready to generate from \(count) prepared \(label); the matching scenario is cached for repeatable reruns."
+        }
         switch referenceLibraryState.phase {
         case .notConfigured:
             return "Choose a reference folder; its indexed documents will drive every question and response."
@@ -1219,12 +1559,7 @@ final class MeetingController: ObservableObject {
         case .failed:
             return "Fix the reference-folder error before generating the replay."
         case .ready:
-            let count = referenceLibraryState.snapshot?.documents.count ?? 0
-            guard count > 0 else {
-                return "The reference folder has no supported readable documents."
-            }
-            let label = count == 1 ? "document" : "documents"
-            return "Ready to generate from \(count) indexed \(label); the matching scenario is cached for repeatable reruns."
+            return "The reference folder has no supported readable documents."
         }
     }
 
@@ -1288,8 +1623,7 @@ final class MeetingController: ObservableObject {
             in: .whitespacesAndNewlines
         )
         guard
-            referenceLibraryState.phase == .ready,
-            let references = referenceLibraryState.snapshot,
+            let references = replayReferences(for: purpose),
             !references.documents.isEmpty
         else {
             present(SyntheticInterviewError.referencesUnavailable)
@@ -1364,7 +1698,7 @@ final class MeetingController: ObservableObject {
                     }
                 }
                 guard
-                    self.referenceLibraryState.snapshot?.revision
+                    self.replayReferences(for: purpose)?.revision
                         == scenario.referenceRevision
                 else {
                     throw SyntheticInterviewError.referencesChanged
@@ -2369,6 +2703,10 @@ final class MeetingController: ObservableObject {
         activeAssistantEarlyBridgeEnabled = purpose == .interview
             && assistantAnswerMode == .plausibleRehearsal
             && assistantEarlyBridgeEnabled
+        activePreparedReferencePack = purpose == .interview
+            && isInterviewEvidenceCurrent
+            ? referencePreparationState.pack
+            : nil
     }
 
     private func publishCompanionSession() {
@@ -2845,9 +3183,11 @@ final class MeetingController: ObservableObject {
             ? apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
         let usesSyntheticReferences = syntheticInterviewState.isRunning
-        let references = usesSyntheticReferences
-            ? syntheticInterviewReferences
-            : referenceLibraryState.snapshot
+        let references = assistantReferences(
+            usesSyntheticReferences: usesSyntheticReferences,
+            purpose: purpose,
+            question: normalizedText
+        )
         let recentTranscript = transcript
             .filter { $0.purpose == purpose }
             .suffix(16)
@@ -2917,7 +3257,9 @@ final class MeetingController: ObservableObject {
 
                 let currentRevision = await MainActor.run {
                     controller.value?.assistantReferenceRevision(
-                        usesSyntheticReferences: usesSyntheticReferences
+                        usesSyntheticReferences: usesSyntheticReferences,
+                        purpose: purpose,
+                        question: normalizedText
                     )
                 }
                 guard currentRevision == references?.revision else {
@@ -2987,7 +3329,9 @@ final class MeetingController: ObservableObject {
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
                     controller.value?.assistantReferenceRevision(
-                        usesSyntheticReferences: usesSyntheticReferences
+                        usesSyntheticReferences: usesSyntheticReferences,
+                        purpose: purpose,
+                        question: normalizedText
                     ) == references?.revision
                 }
                 guard isCurrentRevision else {
@@ -3061,12 +3405,49 @@ final class MeetingController: ObservableObject {
     }
 
     private func assistantReferenceRevision(
-        usesSyntheticReferences: Bool
+        usesSyntheticReferences: Bool,
+        purpose: CapturePurpose,
+        question: String
     ) -> String? {
+        assistantReferences(
+            usesSyntheticReferences: usesSyntheticReferences,
+            purpose: purpose,
+            question: question
+        )?.revision
+    }
+
+    private func assistantReferences(
+        usesSyntheticReferences: Bool,
+        purpose: CapturePurpose,
+        question: String
+    ) -> ReferenceLibrarySnapshot? {
         if usesSyntheticReferences {
-            return syntheticInterviewReferences?.revision
+            return syntheticInterviewReferences
         }
-        return referenceLibraryState.snapshot?.revision
+        guard purpose == .interview else {
+            return referenceLibraryState.snapshot
+        }
+        if let activePreparedReferencePack {
+            return activePreparedReferencePack.snapshot(
+                for: question,
+                folderURL: referenceLibraryState.snapshot?.folderURL
+            )
+        }
+        if
+            let pack = referencePreparationState.pack,
+            pack.isCurrent(
+                purpose: .interview,
+                localReferenceRevision: referenceLibraryState.snapshot?.revision,
+                webSources: referencePreparationState.webSources,
+                sessionContext: interviewContextPrompt
+            )
+        {
+            return pack.snapshot(
+                for: question,
+                folderURL: referenceLibraryState.snapshot?.folderURL
+            )
+        }
+        return referenceLibraryState.snapshot
     }
 
     private static func sessionContext(
@@ -3622,6 +4003,7 @@ final class MeetingController: ObservableObject {
         refinementStates.removeAll()
         activeContext = nil
         activeSessionID = nil
+        activePreparedReferencePack = nil
         activeAssistantAnswerMode = .grounded
         activeAssistantEarlyBridgeEnabled = false
         isListening = false
@@ -3641,6 +4023,7 @@ final class MeetingController: ObservableObject {
     deinit {
         assistantGenerationTask?.cancel()
         assistantBridgeTask?.cancel()
+        referencePreparationTask?.cancel()
         whisperWarmupTask?.cancel()
         parakeetWarmupTask?.cancel()
         referenceLibraryService?.stop()

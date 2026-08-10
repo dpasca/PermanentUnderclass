@@ -572,10 +572,11 @@ final class CompanionTests: XCTestCase {
         let developerPrompt = try XCTUnwrap(
             developerContent[0]["text"] as? String
         )
-        XCTAssertTrue(developerPrompt.contains("temporary first sentence"))
-        XCTAssertTrue(developerPrompt.contains("Never claim or imply a project"))
+        XCTAssertTrue(developerPrompt.contains("actual first sentence"))
+        XCTAssertTrue(developerPrompt.contains("Never invent a named project"))
         XCTAssertTrue(developerPrompt.contains("short clauses, contractions"))
-        XCTAssertTrue(developerPrompt.contains("Avoid formal coaching language"))
+        XCTAssertTrue(developerPrompt.contains("Never say what example"))
+        XCTAssertFalse(developerPrompt.contains("I'd use one example and"))
         let userContent = try XCTUnwrap(
             input[1]["content"] as? [[String: Any]]
         )
@@ -619,7 +620,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertThrowsError(
             try EarlyInterviewBridgeClient.parseResponse(
                 try earlyBridgeResponseData(
-                    bridge: Array(repeating: "word", count: 19)
+                    bridge: Array(repeating: "word", count: 21)
                         .joined(separator: " ")
                 ),
                 generationMilliseconds: 900
@@ -962,6 +963,7 @@ final class CompanionTests: XCTestCase {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(root["service_tier"] as? String, "priority")
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
@@ -978,7 +980,7 @@ final class CompanionTests: XCTestCase {
             ["web_search_call.action.sources"]
         )
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
-        XCTAssertEqual(reasoning["effort"], "low")
+        XCTAssertEqual(reasoning["effort"], "medium")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]

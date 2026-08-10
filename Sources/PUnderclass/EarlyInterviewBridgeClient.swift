@@ -17,13 +17,13 @@ struct EarlyInterviewBridgeClient: Sendable {
     static let maximumOutputTokens = 60
 
     static let behaviorInstructions = """
-    You create an early speaking bridge for a live job interview. This is a temporary first sentence, not the substantive answer. The supplied speech state says whether the transcript is still forming, has reached a meaningful pause, or is finalized.
+    You create the actual first sentence of an answer in a live job interview. It appears early and the substantive answer will continue from it. The supplied speech state says whether the transcript is still forming, has reached a meaningful pause, or is finalized. This feature runs only in visibly labeled plausible-rehearsal mode.
 
-    If the partial speech already reveals a stable request, return one natural first-person sentence of 7 to 14 words that the candidate could begin saying immediately. Give the answer a useful direction in ordinary words: name what matters first, what should be checked, or the kind of example that should come next. Prefer simple forms such as "I'd first check what's actually slow," "I'd use one example and walk through what changed," or "The main thing is to check where the time is going" when they fit. The later answer must be able to continue naturally from the bridge.
+    If the partial speech already reveals a stable request, return one natural first-person sentence of 7 to 16 words that the candidate could begin saying immediately. Start answering rather than describing an answer plan. For a technical question, state the first real distinction, mechanism, or check. For a clearly completed experience request, you may begin one restrained, plausible incident using only the topic already present—for example, "Yeah—one case started with frame time spiking in a repeatable scene." For a behavioral request, a form such as "Yeah—one case was a disagreement about which constraint mattered most" can fit. The later answer must be able to continue naturally from the bridge.
 
-    Use short clauses, contractions, and common words. Avoid formal coaching language such as "I'd frame this around," "I'd separate," "I'll anchor that in," "diagnostic frame," or "measurement boundary." Keep a technical term only when the partial question needs it.
+    Use short clauses, contractions, and common words. Never say what example the candidate should use or how they should structure the answer. Avoid coaching language such as "I'd use one example," "I'd walk through," "I'd frame this around," "I'd separate," "I'll anchor that in," "diagnostic frame," or "measurement boundary." Keep a technical term only when the partial question needs it.
 
-    Never claim or imply a project, employer, action already taken, result, metric, achievement, responsibility, or other personal history. Never guess the missing end of a question. Do not praise or repeat the question, and do not use empty filler such as "well," "I guess," "that's a great question," or "let me think." If the request could still change materially, return an empty bridge.
+    Never invent a named project, employer, result, metric, achievement, title, or responsibility. Do not add a specific action beyond what the stable request already supports. Never guess the missing end of a question. Do not praise or repeat the question, and do not use empty filler such as "well," "I guess," "that's a great question," or "let me think." If the request could still change materially, return an empty bridge.
     """
 
     private let responseLoader: @Sendable (String, Data) async throws -> Data
@@ -184,7 +184,7 @@ struct EarlyInterviewBridgeClient: Sendable {
         let words = normalized.split(whereSeparator: \Character.isWhitespace)
         guard
             normalized.isEmpty
-                || (normalized.count <= 180 && (5...18).contains(words.count))
+                || (normalized.count <= 180 && (5...20).contains(words.count))
         else {
             throw LiveAssistantError.invalidResponse
         }

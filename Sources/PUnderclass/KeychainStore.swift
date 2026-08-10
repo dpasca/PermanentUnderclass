@@ -3,9 +3,18 @@ import Security
 
 enum KeychainStore {
     private static let service = "com.newtypekk.punderclass"
-    private static let account = "openai-api-key"
+    private static let openAIAccount = "openai-api-key"
+    private static let exaAccount = "exa-api-key"
 
     static func loadAPIKey() -> String? {
+        loadKey(account: openAIAccount)
+    }
+
+    static func loadExaAPIKey() -> String? {
+        loadKey(account: exaAccount)
+    }
+
+    private static func loadKey(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -24,6 +33,14 @@ enum KeychainStore {
     }
 
     static func saveAPIKey(_ key: String) throws {
+        try saveKey(key, account: openAIAccount)
+    }
+
+    static func saveExaAPIKey(_ key: String) throws {
+        try saveKey(key, account: exaAccount)
+    }
+
+    private static func saveKey(_ key: String, account: String) throws {
         let data = Data(key.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

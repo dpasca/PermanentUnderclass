@@ -158,24 +158,28 @@ enum LiveAssistantReasoningEffort: String, Codable, Equatable, Sendable,
 struct LiveAssistantConfiguration: Equatable, Sendable {
     let model: String
     let reasoningEffort: LiveAssistantReasoningEffort
+    let serviceTier: String?
     let additionalBehaviorInstructions: String
     let maximumOutputTokens: Int?
 
     init(
         model: String,
         reasoningEffort: LiveAssistantReasoningEffort,
+        serviceTier: String? = nil,
         additionalBehaviorInstructions: String = "",
         maximumOutputTokens: Int? = nil
     ) {
         self.model = model
         self.reasoningEffort = reasoningEffort
+        self.serviceTier = serviceTier
         self.additionalBehaviorInstructions = additionalBehaviorInstructions
         self.maximumOutputTokens = maximumOutputTokens
     }
 
     static let production = LiveAssistantConfiguration(
         model: "gpt-5.6-terra",
-        reasoningEffort: .low
+        reasoningEffort: .medium,
+        serviceTier: "priority"
     )
 }
 
@@ -196,6 +200,8 @@ struct LiveAssistantClient: Sendable {
     Each supporting beat has a one-to-three-word internal label and one short speaking cue, usually eight to twenty words. Every beat must add a new detail rather than restating the preamble or another beat. The display hides labels but preserves the sequence, so a beat may continue naturally from the preamble or the preceding point. Write in the responder's first-person voice with contractions and ordinary transitions where they help. Follow the answer-mode contract supplied after these instructions when deciding whether past-experience details may be extrapolated. Do not address the candidate as "you."
 
     Specificity is more important than covering every possible point. Anchor the cue in the most question-specific evidence available. For a technical answer, name the relevant version, API, mechanism, tool, constraint, or tradeoff and explain at least one causal link or diagnostic check. For an experience answer, reuse distinct source-backed details such as the actual setting, action, obstacle, measurement, or result. Avoid interchangeable claims about communication, collaboration, optimization, quality, or best practices when a concrete detail can replace them.
+
+    For an experience question, prefer the newest project that is comparably relevant and has enough concrete support. An exact term match in an old project is not automatically the best interview example. Use older work when it is uniquely relevant, when the interviewer explicitly asks about it, or when the recent alternatives genuinely lack the needed substance. When the references contain prepared evidence cards, use their period and role-relevance fields as selection evidence, then choose one coherent anchor rather than blending several projects.
 
     Make the cue sound like something the candidate could say from memory under pressure, not an idealized interview answer or a written report. When recent candidate speech gives a clear sample, match its usual sentence length and level of formality. Do not copy its filler, transcription mistakes, or abandoned phrases. Use ordinary vocabulary, short clauses, contractions, and everyday verbs. Prefer words such as "saw," "checked," "changed," "tried," "slowed," and "fixed" when they are as accurate as "observed," "validated," "implemented," "utilized," "leveraged," or "optimized." Keep a precise technical term when it carries real meaning, but put it in a simple sentence. Turn a dense noun phrase into a clause: say "the CPU spent less time submitting draws," not "I reduced CPU-side draw submission overhead." A short sentence fragment is fine when it sounds natural aloud.
 
@@ -263,6 +269,8 @@ struct LiveAssistantClient: Sendable {
     For a follow-up, preserve the project and causal story already established in the recent transcript, then add the requested deeper layer instead of restating the previous cue. For a profiling or verification follow-up, name at least one measurement boundary and one controlled comparison or perturbation. State the decision rule: what result would confirm the suspected bottleneck, and what result would send me elsewhere.
 
     Attach the story to a specific project or work setting whenever that makes the answer intelligible. Prefer a named project, product, role, technology, or employer already present in the references. If no supplied project fits, create a restrained descriptive project context consistent with the candidate's apparent domain, but do not invent a new employer, famous customer, award, launch, title, or public success. It is acceptable to extrapolate a likely bottleneck, diagnostic, change, tradeoff, validation step, and qualitative outcome.
+
+    Prefer a recent compatible project over an older familiar name. Use an old project only when its evidence is materially more relevant to the question or the interviewer asks about it. If the missing incident could plausibly belong to a recent source-backed project, attach it there; do not reach back to a legacy credit merely because it contains the closest literal technology term.
 
     Keep unsupported outcomes modest. Never invent exact revenue, sales, profit, valuation, market share, user count, deal size, award, team size, or sensational percentage improvement. Do not imply that a product made hundreds of millions or that one change transformed a business. Prefer a falsifiable qualitative before-and-after observation: a recurring stall disappeared on the fixed replay, one stage stopped dominating elapsed time, the working set stayed within its budget, or the same output completed with less data movement. The outcome must differ from the original goal; merely saying a real-time project ran in real time is not proof of an improvement. If a number materially improves the rehearsal template, make it rounded and restrained, and disclose it as an assumption.
 
@@ -518,7 +526,7 @@ struct LiveAssistantClient: Sendable {
                 ? 650
                 : 350
         }
-        let request: [String: Any] = [
+        var request: [String: Any] = [
             "model": configuration.model,
             "store": false,
             "max_output_tokens": configuration.maximumOutputTokens
@@ -564,6 +572,9 @@ struct LiveAssistantClient: Sendable {
                 ]
             ]
         ]
+        if let serviceTier = configuration.serviceTier {
+            request["service_tier"] = serviceTier
+        }
         return try JSONSerialization.data(
             withJSONObject: request,
             options: [.sortedKeys, .withoutEscapingSlashes]
