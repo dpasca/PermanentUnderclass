@@ -13,7 +13,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .dictation: "Dictation"
-        case .openAI: "OpenAI"
+        case .openAI: "API Keys"
         case .privacy: "Privacy"
         case .howItWorks: "How It Works"
         }
@@ -172,7 +172,7 @@ private struct OpenAISettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "OpenAI API key",
-                detail: "Optional. Dictation already works without it. A key adds meetings, live interviews, generated replays, and suggested answers."
+                detail: "Optional. Dictation already works without it. A key adds meetings, live interviews, source preparation, generated replays, and suggested answers."
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -203,7 +203,38 @@ private struct OpenAISettings: View {
                 }
             }
 
-            SettingsGroup("What a key unlocks", detail: nil) {
+            SettingsGroup(
+                "Exa API key (optional)",
+                detail: "Only used as a fallback when the free Jina Reader and a direct page fetch both fail."
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        SecureField("exa-\u{2026}", text: $controller.exaAPIKeyDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(controller.saveExaAPIKey)
+                        Button("Save", action: controller.saveExaAPIKey)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if !controller.exaKeyStatus.isEmpty {
+                        Text(controller.exaKeyStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Link(
+                        "Create an optional key at exa.ai",
+                        destination: URL(string: "https://dashboard.exa.ai/api-keys")!
+                    )
+                    .font(.caption)
+                    Text(
+                        "Web-source preparation normally needs no extraction key. If saved, this key stays in this Mac's Keychain and is sent only to Exa when a page needs the fallback."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SettingsGroup("What the OpenAI key unlocks", detail: nil) {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(CloudFeature.allCases) { feature in
                         FeatureStatusRow(
@@ -240,11 +271,11 @@ private struct PrivacySettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "Keep everything on this Mac",
-                detail: "Turns off every feature that would send audio or text to OpenAI or use its hosted web search, even if a key is saved."
+                detail: "Turns off every feature that would send audio, text, or a source URL to OpenAI, Jina, or Exa, even if keys are saved."
             ) {
                 VStack(alignment: .leading, spacing: 9) {
                     Toggle(
-                        "Never contact OpenAI",
+                        "Never contact cloud services",
                         isOn: Binding(
                             get: { controller.privacyLockEnabled },
                             set: controller.setPrivacyLock
@@ -266,7 +297,7 @@ private struct PrivacySettings: View {
                 VStack(alignment: .leading, spacing: 5) {
                     bullet("Recordings are never written anywhere except this Mac, and are deleted once the text is saved.")
                     bullet("Dictation history lives in this Mac's Application Support folder.")
-                    bullet("Your reference documents are read locally; only excerpts are sent, and only when a key is in use.")
+                    bullet("Local reference documents stay on this Mac until you explicitly prepare evidence or use a cloud assistant.")
                 }
             }
         }

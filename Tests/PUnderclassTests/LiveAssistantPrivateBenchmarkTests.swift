@@ -1,3 +1,5 @@
+import AppKit
+import CryptoKit
 import Foundation
 import XCTest
 @testable import PUnderclass
@@ -39,7 +41,7 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
         var results: [PrivateBenchmarkResult] = []
         var attemptCounts: [String: Int] = [:]
         var failureCounts: [String: Int] = [:]
-        var snapshotsByPath: [String: ReferenceLibrarySnapshot] = [:]
+        var snapshotsBySource: [String: ReferenceLibrarySnapshot] = [:]
 
         for configuration in configurations {
             for variant in variants {
@@ -54,21 +56,15 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                     configuration: candidateConfiguration
                 )
                 for benchmarkCase in suite.cases {
+                    let sourceKey = benchmarkCase.referenceSourceKey
                     let references: ReferenceLibrarySnapshot
-                    if let cached = snapshotsByPath[
-                        benchmarkCase.referenceFolderPath
-                    ] {
+                    if let cached = snapshotsBySource[sourceKey] {
                         references = cached
                     } else {
-                        references = try ReferenceLibraryScanner().scan(
-                            folderURL: URL(
-                                fileURLWithPath:
-                                    benchmarkCase.referenceFolderPath,
-                                isDirectory: true
-                            )
+                        references = try await Self.references(
+                            for: benchmarkCase
                         )
-                        snapshotsByPath[benchmarkCase.referenceFolderPath] =
-                            references
+                        snapshotsBySource[sourceKey] = references
                     }
                     for repetition in 1...repetitions {
                         let aggregateKey = "\(configuration.id)|\(variant.name)"
@@ -124,6 +120,10 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                                 plainSpokenLanguage:
                                     assessment.plainSpokenLanguage,
                                 specificity: assessment.specificity,
+                                anchorRelevance:
+                                    assessment.anchorRelevance,
+                                temporalJudgment:
+                                    assessment.temporalJudgment,
                                 causalUsefulness:
                                     assessment.causalUsefulness,
                                 mechanisticDepth:
@@ -204,6 +204,124 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
         }
     }
 
+    private static func references(
+        for benchmarkCase: PrivateBenchmarkCase
+    ) async throws -> ReferenceLibrarySnapshot {
+        let local = try ReferenceLibraryScanner().scan(
+            folderURL: URL(
+                fileURLWithPath: benchmarkCase.referenceFolderPath,
+                isDirectory: true
+            )
+        )
+        let webDocuments = try await referenceDocuments(
+            from: benchmarkCase.referenceURLs ?? []
+        )
+        guard !webDocuments.isEmpty else { return local }
+
+        let documents = local.documents + webDocuments
+        return ReferenceLibrarySnapshot(
+            folderURL: local.folderURL,
+            documents: documents,
+            revision: revision(for: documents),
+            indexedAt: local.indexedAt,
+            ignoredFileCount: local.ignoredFileCount,
+            issues: local.issues
+        )
+    }
+
+    private static func referenceDocuments(
+        from values: [String]
+    ) async throws -> [ReferenceDocument] {
+        var documents: [ReferenceDocument] = []
+        for value in values {
+            guard
+                let url = URL(string: value),
+                let scheme = url.scheme?.lowercased(),
+                scheme == "https" || scheme == "http"
+            else {
+                throw PrivateBenchmarkError.invalidReferenceURL(value)
+            }
+
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 20
+            request.setValue(
+                "PermanentUnderclass URL discovery benchmark",
+                forHTTPHeaderField: "User-Agent"
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard
+                let httpResponse = response as? HTTPURLResponse,
+                (200..<300).contains(httpResponse.statusCode)
+            else {
+                throw PrivateBenchmarkError.referenceFetchFailed(value)
+            }
+
+            let rawText: String
+            if httpResponse.value(forHTTPHeaderField: "Content-Type")?
+                .lowercased().contains("text/html") == true
+            {
+                rawText = try NSAttributedString(
+                    data: data,
+                    options: [
+                        .documentType: NSAttributedString.DocumentType.html,
+                        .characterEncoding: String.Encoding.utf8.rawValue
+                    ],
+                    documentAttributes: nil
+                ).string
+            } else {
+                rawText = String(decoding: data, as: UTF8.self)
+            }
+
+            let normalized = normalizedWebText(rawText)
+            let maximumCharacters = 200_000
+            let isTruncated = normalized.count > maximumCharacters
+            documents.append(
+                ReferenceDocument(
+                    relativePath: url.absoluteString,
+                    kind: .structuredText,
+                    content: isTruncated
+                        ? String(normalized.prefix(maximumCharacters))
+                        : normalized,
+                    sourceByteCount: data.count,
+                    isTruncated: isTruncated
+                )
+            )
+        }
+        return documents
+    }
+
+    private static func normalizedWebText(_ text: String) -> String {
+        var lines: [String] = []
+        var previousLineWasEmpty = false
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                if !previousLineWasEmpty {
+                    lines.append("")
+                }
+                previousLineWasEmpty = true
+            } else {
+                lines.append(line)
+                previousLineWasEmpty = false
+            }
+        }
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func revision(
+        for documents: [ReferenceDocument]
+    ) -> String {
+        var hasher = SHA256()
+        for document in documents {
+            hasher.update(data: Data(document.relativePath.utf8))
+            hasher.update(data: Data(document.content.utf8))
+        }
+        return hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     private static func summaries(
         from results: [PrivateBenchmarkResult],
         attemptCounts: [String: Int],
@@ -221,6 +339,12 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                 ? Double(latencies[middle - 1] + latencies[middle]) / 2
                 : Double(latencies[middle])
             let attemptCount = attemptCounts[key] ?? group.count
+            let meanLatency = Double(latencies.reduce(0, +))
+                / Double(latencies.count)
+            let p95Index = max(
+                0,
+                Int(ceil(Double(latencies.count) * 0.95)) - 1
+            )
             return PrivateBenchmarkSummary(
                 type: "ANSWER_MIRROR_BENCHMARK_SUMMARY",
                 configuration: first.configuration,
@@ -232,7 +356,21 @@ final class LiveAssistantPrivateBenchmarkTests: XCTestCase {
                     / Double(max(1, attemptCount)),
                 meanQuality: group.map(\.qualityMean).reduce(0, +)
                     / Double(group.count),
+                meanSpokenNaturalness: group
+                    .map { Double($0.spokenNaturalness) }
+                    .reduce(0, +) / Double(group.count),
+                meanSpecificity: group
+                    .map { Double($0.specificity) }
+                    .reduce(0, +) / Double(group.count),
+                meanAnchorRelevance: group
+                    .map { Double($0.anchorRelevance) }
+                    .reduce(0, +) / Double(group.count),
+                meanTemporalJudgment: group
+                    .map { Double($0.temporalJudgment) }
+                    .reduce(0, +) / Double(group.count),
+                meanGenerationMilliseconds: meanLatency,
                 medianGenerationMilliseconds: median,
+                p95GenerationMilliseconds: latencies[p95Index],
                 maximumGenerationMilliseconds: latencies.last ?? 0
             )
         }
@@ -268,8 +406,14 @@ private struct PrivateBenchmarkCase: Decodable {
     let currentPartial: String?
     let sessionContext: String?
     let referenceFolderPath: String
+    let referenceURLs: [String]?
     let answerMode: AssistantAnswerMode
     let expectedGrounding: CompanionSuggestionGrounding
+
+    var referenceSourceKey: String {
+        ([referenceFolderPath] + (referenceURLs ?? []))
+            .joined(separator: "\n")
+    }
 }
 
 private struct PrivatePromptVariant: Decodable {
@@ -297,6 +441,8 @@ private struct PrivateBenchmarkResult: Encodable {
     let spokenNaturalness: Int
     let plainSpokenLanguage: Int
     let specificity: Int
+    let anchorRelevance: Int
+    let temporalJudgment: Int
     let causalUsefulness: Int
     let mechanisticDepth: Int
     let verificationRigor: Int
@@ -321,17 +467,29 @@ private struct PrivateBenchmarkSummary: Encodable {
     let failureCount: Int
     let successRate: Double
     let meanQuality: Double
+    let meanSpokenNaturalness: Double
+    let meanSpecificity: Double
+    let meanAnchorRelevance: Double
+    let meanTemporalJudgment: Double
+    let meanGenerationMilliseconds: Double
     let medianGenerationMilliseconds: Double
+    let p95GenerationMilliseconds: Int
     let maximumGenerationMilliseconds: Int
 }
 
 private enum PrivateBenchmarkError: LocalizedError {
     case invalidConfiguration(String)
+    case invalidReferenceURL(String)
+    case referenceFetchFailed(String)
 
     var errorDescription: String? {
         switch self {
         case let .invalidConfiguration(value):
             "Invalid benchmark configuration: \(value)"
+        case let .invalidReferenceURL(value):
+            "Invalid benchmark reference URL: \(value)"
+        case let .referenceFetchFailed(value):
+            "Could not fetch benchmark reference URL: \(value)"
         }
     }
 }

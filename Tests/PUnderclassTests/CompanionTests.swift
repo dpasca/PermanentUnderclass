@@ -220,6 +220,42 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-1")
     }
 
+    func testEarlyBridgeSurvivesAnInconclusivePartialCheck() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        let bridge = CompanionAssistantBridge(
+            id: "bridge-1",
+            topicID: "other-turn-1",
+            sourceText: "How would you isolate the slow pass?",
+            text: "I'd first time each pass, then change one cost at a time.",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generationMilliseconds: 900
+        )
+
+        _ = await hub.assistantBridged(bridge)
+        _ = await hub.assistantWorking(
+            basedOnSequence: 4,
+            trigger: .partialTranscript
+        )
+        _ = await hub.assistantFinishedWithoutSuggestion(
+            basedOnSequence: 4,
+            trigger: .partialTranscript
+        )
+
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.bridge, bridge)
+
+        _ = await hub.assistantWorking(
+            basedOnSequence: 5,
+            trigger: .finalizedTurn
+        )
+        _ = await hub.assistantFinishedWithoutSuggestion(
+            basedOnSequence: 5,
+            trigger: .finalizedTurn
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.assistant.bridge)
+    }
+
     func testNewInterviewerTurnSupersedesStaleBridgeAndWorkingState() async {
         let hub = CompanionEventHub(streamID: "test-stream")
         _ = await hub.assistantBridged(
@@ -413,6 +449,15 @@ final class CompanionTests: XCTestCase {
             RealtimeTranscriptionClient.assistantPauseSilenceChunkCount * 20,
             AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
         )
+        XCTAssertEqual(
+            RealtimeTranscriptionClient
+                .earlyBridgePauseSilenceChunkCount * 20,
+            400
+        )
+        XCTAssertLessThan(
+            RealtimeTranscriptionClient.earlyBridgePauseSilenceChunkCount,
+            RealtimeTranscriptionClient.assistantPauseSilenceChunkCount
+        )
         XCTAssertTrue(
             AssistantEvaluationPolicy.shouldEvaluate(
                 speaker: .other,
@@ -462,20 +507,40 @@ final class CompanionTests: XCTestCase {
             )
         )
         XCTAssertEqual(
-            EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn,
+            EarlyInterviewBridgeEvaluationPolicy
+                .maximumFormingTranscriptAttemptsPerTurn,
             2
         )
         XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy
+                .maximumSpeechPauseAttemptsPerTurn,
+            3
+        )
+        XCTAssertEqual(
             EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
-                forAttempt: 0
+                for: .formingTranscript,
+                attempt: 0
             ),
             600
         )
         XCTAssertEqual(
             EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
-                forAttempt: 1
+                for: .formingTranscript,
+                attempt: 1
             ),
             200
+        )
+        XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
+                for: .speechPause
+            ),
+            0
+        )
+        XCTAssertEqual(
+            EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
+                for: .finalizedTurn
+            ),
+            0
         )
     }
 
@@ -484,7 +549,8 @@ final class CompanionTests: XCTestCase {
             currentPartial:
                 "How did you verify that you found the right bottleneck?",
             recentTranscript: "You: I changed the upload path.",
-            sessionContext: "Rendering systems interview."
+            sessionContext: "Rendering systems interview.",
+            opportunity: .speechPause
         )
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -506,14 +572,16 @@ final class CompanionTests: XCTestCase {
         let developerPrompt = try XCTUnwrap(
             developerContent[0]["text"] as? String
         )
-        XCTAssertTrue(developerPrompt.contains("temporary first sentence"))
-        XCTAssertTrue(developerPrompt.contains("Never claim or imply a project"))
+        XCTAssertTrue(developerPrompt.contains("actual first sentence"))
+        XCTAssertTrue(developerPrompt.contains("Never invent a named project"))
         XCTAssertTrue(developerPrompt.contains("short clauses, contractions"))
-        XCTAssertTrue(developerPrompt.contains("Avoid formal coaching language"))
+        XCTAssertTrue(developerPrompt.contains("Never say what example"))
+        XCTAssertFalse(developerPrompt.contains("I'd use one example and"))
         let userContent = try XCTUnwrap(
             input[1]["content"] as? [[String: Any]]
         )
         let userPrompt = try XCTUnwrap(userContent[0]["text"] as? String)
+        XCTAssertTrue(userPrompt.contains("Meaningful speech pause"))
         XCTAssertTrue(userPrompt.contains("CURRENT PARTIAL INTERVIEWER SPEECH"))
         XCTAssertTrue(userPrompt.contains("right bottleneck"))
 
@@ -552,7 +620,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertThrowsError(
             try EarlyInterviewBridgeClient.parseResponse(
                 try earlyBridgeResponseData(
-                    bridge: Array(repeating: "word", count: 19)
+                    bridge: Array(repeating: "word", count: 21)
                         .joined(separator: " ")
                 ),
                 generationMilliseconds: 900
@@ -895,6 +963,7 @@ final class CompanionTests: XCTestCase {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(root["service_tier"] as? String, "priority")
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
@@ -911,7 +980,7 @@ final class CompanionTests: XCTestCase {
             ["web_search_call.action.sources"]
         )
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
-        XCTAssertEqual(reasoning["effort"], "low")
+        XCTAssertEqual(reasoning["effort"], "medium")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]

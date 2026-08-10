@@ -21,6 +21,10 @@ struct ReferenceMaterialView: View {
                         answerModeSection
                     }
                     folderSection
+                    if purpose == .interview {
+                        webSourcesSection
+                        preparedEvidenceSection
+                    }
                     recognitionHintsSection
                     assistantUsesSection
                     documentSection
@@ -199,7 +203,7 @@ struct ReferenceMaterialView: View {
                             Text("Early speaking bridge (experimental)")
                                 .font(.body.weight(.semibold))
                             Text(
-                                "Uses a fast Priority request while the interviewer is still speaking. It shows one fact-free opening sentence, then the complete Answer Mirror cue replaces it. This can make an additional model call and may misread an unfinished question."
+                                "Uses fast Priority requests while the interviewer is speaking and again at the first stable pause. It shows one short answer opening, then the complete Answer Mirror cue replaces it. In this danger mode the opening may sketch a restrained incident from the question before the evidence pack is available, and it may misread an unfinished question."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -441,6 +445,272 @@ struct ReferenceMaterialView: View {
         }
     }
 
+    private var webSourcesSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(
+                    "Add public profile, portfolio, project, or credits pages that contain useful career detail. Pages are read only when you click Prepare Evidence."
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    TextField(
+                        "https://example.com/profile",
+                        text: $controller.webReferenceURLDraft
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(controller.addReferenceWebSource)
+
+                    Button(action: controller.addReferenceWebSource) {
+                        Label("Add URL", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        controller.webReferenceURLDraft.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                            || controller.referencePreparationState.phase.isWorking
+                    )
+                }
+
+                if controller.referencePreparationState.webSources.isEmpty {
+                    Label(
+                        "No web sources yet. The local reference folder can still be prepared by itself.",
+                        systemImage: "globe"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(controller.referencePreparationState.webSources) {
+                            source in
+                            HStack(alignment: .top, spacing: 11) {
+                                Image(systemName: webSourceIcon(source.status))
+                                    .foregroundStyle(webSourceColor(source.status))
+                                    .frame(width: 22)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(
+                                        source.title.flatMap {
+                                            $0.isEmpty ? nil : $0
+                                        } ?? source.requestedURL
+                                    )
+                                    .font(.body.weight(.medium))
+                                    .lineLimit(2)
+                                    Text(source.requestedURL)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .textSelection(.enabled)
+                                    Text(
+                                        source.detail.isEmpty
+                                            ? source.status.title
+                                            : "\(source.status.title) · \(source.detail)"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(webSourceColor(source.status))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer()
+
+                                Button {
+                                    controller.removeReferenceWebSource(
+                                        id: source.id
+                                    )
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(
+                                    controller.referencePreparationState.phase
+                                        .isWorking
+                                )
+                                .help("Remove web source")
+                            }
+                            .padding(.vertical, 9)
+
+                            if source.id
+                                != controller.referencePreparationState
+                                    .webSources.last?.id
+                            {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+
+                Label(
+                    "Jina Reader is tried first and needs no key. A direct fetch comes next; Exa is an optional fallback for difficult pages.",
+                    systemImage: "info.circle"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+        } label: {
+            Label("Public Web Sources", systemImage: "globe")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
+    private var preparedEvidenceSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    if controller.referencePreparationState.phase.isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(controller.interviewEvidenceReadinessDetail())
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(
+                                controller.isInterviewEvidenceCurrent
+                                    ? Color.green
+                                    : .secondary
+                            )
+                        Text(
+                            "This is an offline preparation step for the live assistant: it extracts factual anchors once, then selects a small relevant subset locally for each question."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    Button(action: controller.prepareInterviewEvidence) {
+                        Label(
+                            controller.referencePreparationState.pack == nil
+                                ? "Prepare Evidence"
+                                : "Rebuild Evidence",
+                            systemImage: "sparkles"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!controller.canPrepareInterviewEvidence)
+                }
+
+                if case let .failed(message) =
+                    controller.referencePreparationState.phase
+                {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                if let pack = controller.referencePreparationState.pack {
+                    Divider()
+
+                    HStack {
+                        Text(
+                            "\(pack.enabledCardCount) of \(pack.cards.count) cards enabled"
+                        )
+                        .font(.callout.weight(.semibold))
+                        Spacer()
+                        Text(
+                            controller.isInterviewEvidenceCurrent
+                                ? "CURRENT"
+                                : "STALE · REBUILD"
+                        )
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(
+                            controller.isInterviewEvidenceCurrent
+                                ? Color.green
+                                : .orange
+                        )
+                    }
+
+                    LazyVStack(spacing: 0) {
+                        ForEach(pack.cards) { card in
+                            Toggle(
+                                isOn: Binding(
+                                    get: { card.isEnabled },
+                                    set: {
+                                        controller.setPreparedReferenceEnabled(
+                                            id: card.id,
+                                            enabled: $0
+                                        )
+                                    }
+                                )
+                            ) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 7) {
+                                        Text(card.projectAnchor)
+                                            .font(.body.weight(.semibold))
+                                        if !card.period.isEmpty {
+                                            Text(card.period)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Text("ROLE \(card.roleRelevance)/5")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if !card.role.isEmpty {
+                                        Text(card.role)
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(card.summary)
+                                        .font(.callout)
+                                        .fixedSize(
+                                            horizontal: false,
+                                            vertical: true
+                                        )
+                                    ForEach(
+                                        Array(
+                                            card.concreteDetails
+                                                .prefix(3)
+                                                .enumerated()
+                                        ),
+                                        id: \.offset
+                                    ) { _, detail in
+                                        Text("• \(detail)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(
+                                                horizontal: false,
+                                                vertical: true
+                                            )
+                                    }
+                                    Text(card.sourcePaths.joined(separator: " · "))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .disabled(
+                                controller.referencePreparationState.phase
+                                    .isWorking
+                            )
+                            .padding(.vertical, 10)
+
+                            if card.id != pack.cards.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("Prepared Interview Evidence", systemImage: "rectangle.stack")
+                .font(.title3.weight(.semibold))
+        }
+    }
+
     @ViewBuilder
     private var documentSection: some View {
         GroupBox {
@@ -529,7 +799,7 @@ struct ReferenceMaterialView: View {
 
     private var privacyNote: some View {
         Label(
-            "Session guidance and document contents stay owned by the Mac host and are sent only as model context when a cloud assistant or generated replay is used. The browser companion receives citations, not the source files or setup text.",
+            "Local documents and fetched page text are stored on this Mac. Preparing evidence sends source text to OpenAI; reading a public URL sends that URL to Jina Reader, then optionally to Exa if the other paths fail. The browser companion receives citations, not the source files or setup text.",
             systemImage: "lock.shield.fill"
         )
         .font(.body)
@@ -581,6 +851,36 @@ struct ReferenceMaterialView: View {
             .green
         case .failed:
             .red
+        }
+    }
+
+    private func webSourceColor(_ status: ReferenceWebSourceStatus) -> Color {
+        switch status {
+        case .pending:
+            .secondary
+        case .fetching:
+            .orange
+        case .ready:
+            .green
+        case .keyRequired:
+            .orange
+        case .failed:
+            .red
+        }
+    }
+
+    private func webSourceIcon(_ status: ReferenceWebSourceStatus) -> String {
+        switch status {
+        case .pending:
+            "clock"
+        case .fetching:
+            "arrow.triangle.2.circlepath"
+        case .ready:
+            "checkmark.circle.fill"
+        case .keyRequired:
+            "key.horizontal"
+        case .failed:
+            "exclamationmark.triangle.fill"
         }
     }
 

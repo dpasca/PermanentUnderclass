@@ -26,7 +26,14 @@ enum AssistantEvaluationPolicy {
 }
 
 enum EarlyInterviewBridgeEvaluationPolicy {
-    static let maximumAttemptsPerTurn = 2
+    enum Opportunity: String {
+        case formingTranscript = "forming_transcript"
+        case speechPause = "speech_pause"
+        case finalizedTurn = "finalized_turn"
+    }
+
+    static let maximumFormingTranscriptAttemptsPerTurn = 2
+    static let maximumSpeechPauseAttemptsPerTurn = 3
 
     static func shouldEvaluate(
         speaker: SpeakerTag,
@@ -40,7 +47,15 @@ enum EarlyInterviewBridgeEvaluationPolicy {
             && answerMode == .plausibleRehearsal
     }
 
-    static func delayMilliseconds(forAttempt attempt: Int) -> Int {
-        attempt == 0 ? 600 : 200
+    static func delayMilliseconds(
+        for opportunity: Opportunity,
+        attempt: Int = 0
+    ) -> Int {
+        switch opportunity {
+        case .formingTranscript:
+            attempt == 0 ? 600 : 200
+        case .speechPause, .finalizedTurn:
+            0
+        }
     }
 }

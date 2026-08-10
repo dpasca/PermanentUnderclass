@@ -119,6 +119,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private let partialHandler: PartialHandler
     private let finalHandler: FinalHandler
     private let usageHandler: UsageHandler
+    private let earlyBridgePauseHandler: SpeechPauseHandler
     private let speechPauseHandler: SpeechPauseHandler
     private let socketQueue: DispatchQueue
 
@@ -131,6 +132,7 @@ final class RealtimeTranscriptionClient: NSObject {
     private var preRoll: [Data] = []
     private var consecutiveVoicedChunks = 0
     private var silentChunks = 0
+    private var hasPublishedEarlyBridgePause = false
     private var hasPublishedSpeechPause = false
     private var noiseFloor: Float = 0.001
     private var activeTurnStartedAt: Date?
@@ -142,6 +144,9 @@ final class RealtimeTranscriptionClient: NSObject {
     private let maximumQueuedAudioChunks = 250
     private let preRollChunkCount = 15
     private let speechOnsetChunkCount = 2
+    // Give the small opening-sentence model a 400 ms head start. The heavier
+    // full-answer check keeps the more conservative 800 ms pause.
+    static let earlyBridgePauseSilenceChunkCount = 20
     static let assistantPauseSilenceChunkCount = 40
     // Keep thoughtful or accented speech together across ordinary pauses.
     // Partial text still streams while this 3 s finalization window is open.
@@ -160,6 +165,7 @@ final class RealtimeTranscriptionClient: NSObject {
         onState: @escaping StateHandler,
         onPartial: @escaping PartialHandler,
         onFinal: @escaping FinalHandler,
+        onEarlyBridgePause: @escaping SpeechPauseHandler = { _ in },
         onSpeechPause: @escaping SpeechPauseHandler = { _ in },
         onUsage: @escaping UsageHandler = { _ in }
     ) {
@@ -168,6 +174,7 @@ final class RealtimeTranscriptionClient: NSObject {
         stateHandler = onState
         partialHandler = onPartial
         finalHandler = onFinal
+        earlyBridgePauseHandler = onEarlyBridgePause
         speechPauseHandler = onSpeechPause
         usageHandler = onUsage
         socketQueue = DispatchQueue(label: "PUnderclass.Realtime.\(label)")
@@ -259,11 +266,19 @@ final class RealtimeTranscriptionClient: NSObject {
             activeTurnAudio.append(data)
             if isVoiced {
                 silentChunks = 0
+                hasPublishedEarlyBridgePause = false
                 hasPublishedSpeechPause = false
                 lastVoicedAt = receivedAt
                 activeTurnLastVoicedByteCount = activeTurnAudio.count
             } else {
                 silentChunks += 1
+                if
+                    silentChunks == Self.earlyBridgePauseSilenceChunkCount,
+                    !hasPublishedEarlyBridgePause
+                {
+                    hasPublishedEarlyBridgePause = true
+                    publishEarlyBridgePause(lastVoicedAt ?? receivedAt)
+                }
                 if
                     silentChunks == Self.assistantPauseSilenceChunkCount,
                     !hasPublishedSpeechPause
@@ -298,6 +313,7 @@ final class RealtimeTranscriptionClient: NSObject {
         )
         lastVoicedAt = receivedAt
         silentChunks = 0
+        hasPublishedEarlyBridgePause = false
         hasPublishedSpeechPause = false
         activeTurnAudio.removeAll(keepingCapacity: true)
         for bufferedChunk in preRoll {
@@ -344,6 +360,7 @@ final class RealtimeTranscriptionClient: NSObject {
         lastVoicedAt = nil
         consecutiveVoicedChunks = 0
         silentChunks = 0
+        hasPublishedEarlyBridgePause = false
         hasPublishedSpeechPause = false
         activeTurnAudio.removeAll(keepingCapacity: true)
         activeTurnLastVoicedByteCount = 0
@@ -502,6 +519,12 @@ final class RealtimeTranscriptionClient: NSObject {
     private func publishSpeechPause(_ speechEndedAt: Date) {
         DispatchQueue.main.async { [speechPauseHandler] in
             speechPauseHandler(speechEndedAt)
+        }
+    }
+
+    private func publishEarlyBridgePause(_ speechEndedAt: Date) {
+        DispatchQueue.main.async { [earlyBridgePauseHandler] in
+            earlyBridgePauseHandler(speechEndedAt)
         }
     }
 

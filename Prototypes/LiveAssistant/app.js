@@ -317,6 +317,26 @@ function renderInferenceStatus() {
     return;
   }
 
+  const pendingSpeech = unclassifiedInterviewerSpeech(assistant);
+  if (pendingSpeech && !assistant?.bridge) {
+    const drafting = assistant?.phase === "working";
+    const holdingCue = Boolean(assistant?.suggestion);
+    setInferenceStatus(
+      drafting ? "working" : "general",
+      holdingCue
+        ? "LISTENING · CURRENT CUE HELD"
+        : drafting ? "CHECKING INTERVIEWER SPEECH" : "LISTENING",
+      holdingCue
+        ? "Keeping the current answer visible"
+        : drafting ? "Checking whether an answer is needed" : "Waiting for a stable interviewer pause",
+      holdingCue
+        ? "Unclassified interviewer speech cannot replace the cue until a model accepts a new bridge or answer."
+        : "A model will decide whether this speech needs an answer before it takes over the display.",
+      checkCount
+    );
+    return;
+  }
+
   if (assistant?.bridge) {
     const bridgeTime = Number.isFinite(assistant.bridge.generationMilliseconds)
       ? ` in ${assistant.bridge.generationMilliseconds.toLocaleString()} ms`
@@ -616,6 +636,27 @@ function answerHistoryFor(assistant) {
 
 function topicIDFor(suggestion) {
   return suggestion?.topicID || suggestion?.id || "";
+}
+
+function unclassifiedInterviewerSpeech(assistant) {
+  const transcript = state.snapshot?.transcript;
+  const currentTopicID = topicIDFor(assistant?.suggestion);
+  const partials = (transcript?.partials || []).filter((item) => (
+    item?.speaker === "other" && item?.text
+  ));
+  const partial = partials[partials.length - 1];
+  if (partial && (!currentTopicID || partial.id !== currentTopicID)) {
+    return partial;
+  }
+
+  if (assistant?.phase !== "working") return null;
+  const turns = (transcript?.turns || []).filter((item) => (
+    item?.speaker === "other" && item?.text
+  ));
+  const turn = turns[turns.length - 1];
+  return turn && (!currentTopicID || turn.id !== currentTopicID)
+    ? turn
+    : null;
 }
 
 function fallbackTopicNumber(suggestion, suggestions) {
@@ -958,6 +999,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
   const bridge = assistant?.bridge || null;
+  const pendingSpeech = bridge ? null : unclassifiedInterviewerSpeech(assistant);
   const suggestion = renderSuggestionStack(
     bridge
       ? { ...assistant, suggestion: null, suggestionHistory: [] }
@@ -969,6 +1011,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   listeningStrip.hidden = !suggestion;
   listeningStrip.classList.remove("is-updating", "is-plausible");
   listeningStrip.classList.toggle("is-plausible", plausibleRehearsal);
+  $("#confidenceLabel").hidden = false;
   $("#topicEyebrow").textContent = plausibleRehearsal
     ? "PLAUSIBLE REHEARSAL · VERIFY"
     : "CURRENT TOPIC";
@@ -983,6 +1026,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     $("#answerHistory").hidden = true;
     listeningStrip.hidden = false;
     listeningStrip.classList.add("is-updating", "is-plausible");
+    $("#confidenceLabel").hidden = true;
     $("#topicEyebrow").textContent = "EARLY BRIDGE · PARTIAL QUESTION";
     $("#questionText").textContent = bridge.sourceText;
     $("#topicContext").hidden = true;
@@ -990,6 +1034,36 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     $("#assistantState").textContent = assistant?.phase === "working"
       ? "Early bridge ready; drafting the full cue"
       : "Early bridge ready from partial speech";
+    scheduleCurrentStageFit();
+    return;
+  }
+
+  if (pendingSpeech) {
+    if (suggestion) {
+      listeningStrip.hidden = false;
+      listeningStrip.classList.add("is-updating");
+      $("#confidenceLabel").hidden = true;
+      $("#topicEyebrow").textContent = plausibleRehearsal
+        ? "PLAUSIBLE CUE HELD · VERIFY"
+        : "CURRENT CUE HELD · CHECKING SPEECH";
+      $("#questionText").textContent = suggestion.question;
+      empty.hidden = true;
+      $("#assistantState").textContent = "Keeping the current cue visible while checking interviewer speech";
+      scheduleCurrentStageFit();
+      return;
+    }
+
+    $("#currentStage").classList.add("has-current");
+    $("#answerStack").hidden = true;
+    $("#answerHistory").hidden = true;
+    listeningStrip.hidden = false;
+    listeningStrip.classList.add("is-updating");
+    $("#confidenceLabel").hidden = true;
+    $("#topicEyebrow").textContent = "CHECKING INTERVIEWER SPEECH";
+    $("#questionText").textContent = "Waiting to see whether a new answer is needed…";
+    $("#topicContext").hidden = true;
+    empty.hidden = true;
+    $("#assistantState").textContent = "Checking interviewer speech before showing a cue";
     scheduleCurrentStageFit();
     return;
   }
@@ -1117,6 +1191,7 @@ function applyEnvelope(envelope) {
       state.snapshot.transcript.partials = state.snapshot.transcript.partials.filter((item) => item.id !== payload.id);
       if (payload.text) state.snapshot.transcript.partials.push(payload);
       renderTranscript(state.snapshot.transcript);
+      renderAssistant(state.snapshot.assistant);
       break;
     case "transcript.final":
     case "transcript.revised":
@@ -1124,6 +1199,7 @@ function applyEnvelope(envelope) {
       state.snapshot.transcript.turns.sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt) || a.id.localeCompare(b.id));
       state.snapshot.transcript.partials = state.snapshot.transcript.partials.filter((item) => item.id !== payload.id);
       renderTranscript(state.snapshot.transcript);
+      renderAssistant(state.snapshot.assistant);
       break;
     case "transcript.cleared":
       state.snapshot.transcript = payload;

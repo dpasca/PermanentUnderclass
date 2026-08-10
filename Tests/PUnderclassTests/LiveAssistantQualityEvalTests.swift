@@ -15,20 +15,28 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
         )
         let client = EarlyInterviewBridgeClient()
-        let cases: [(name: String, partial: String, shouldShow: Bool)] = [
+        let cases: [(
+            name: String,
+            partial: String,
+            opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity,
+            shouldShow: Bool
+        )] = [
             (
                 "unfinished",
                 "All right, two quick questions. First, tell me",
+                .formingTranscript,
                 false
             ),
             (
                 "profiling",
                 "How did you profile or verify that you were addressing the right bottleneck?",
+                .speechPause,
                 true
             ),
             (
                 "experience",
                 "Tell me about a time you improved rendering performance without sacrificing visual quality.",
+                .finalizedTurn,
                 true
             )
         ]
@@ -38,7 +46,8 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             let generation = try await client.generate(
                 apiKey: apiKey,
                 currentPartial: evalCase.partial,
-                sessionContext: "An English-language technical job interview."
+                sessionContext: "An English-language technical job interview.",
+                opportunity: evalCase.opportunity
             )
             latencies.append(generation.generationMilliseconds)
             XCTAssertEqual(
@@ -210,6 +219,8 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                         + "naturalness=\(assessment.spokenNaturalness) "
                         + "plain_language=\(assessment.plainSpokenLanguage) "
                         + "specificity=\(assessment.specificity) "
+                        + "anchor_relevance=\(assessment.anchorRelevance) "
+                        + "temporal_judgment=\(assessment.temporalJudgment) "
                         + "causal_usefulness=\(assessment.causalUsefulness) "
                         + "mechanistic_depth=\(assessment.mechanisticDepth) "
                         + "verification_rigor=\(assessment.verificationRigor) "
@@ -309,6 +320,20 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(
             assessment.specificity,
+            4,
+            message,
+            file: file,
+            line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            assessment.anchorRelevance,
+            4,
+            message,
+            file: file,
+            line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            assessment.temporalJudgment,
             4,
             message,
             file: file,
@@ -521,6 +546,8 @@ struct AnswerMirrorQualityAssessment: Decodable {
     let spokenNaturalness: Int
     let plainSpokenLanguage: Int
     let specificity: Int
+    let anchorRelevance: Int
+    let temporalJudgment: Int
     let causalUsefulness: Int
     let mechanisticDepth: Int
     let verificationRigor: Int
@@ -536,6 +563,8 @@ struct AnswerMirrorQualityAssessment: Decodable {
                 + spokenNaturalness
                 + plainSpokenLanguage
                 + specificity
+                + anchorRelevance
+                + temporalJudgment
                 + causalUsefulness
                 + mechanisticDepth
                 + verificationRigor
@@ -543,7 +572,7 @@ struct AnswerMirrorQualityAssessment: Decodable {
                 + plausibilitySafety
                 + answerModeUsefulness
                 + conciseUsability
-        ) / 11
+        ) / 13
     }
 }
 
@@ -694,6 +723,8 @@ struct AnswerMirrorQualityJudge {
     Spoken naturalness: the sequence has the rhythm of concise notes a capable person could say aloud, not a written report, memorized speech, or interview-coach script.
     Plain spoken language: the cue uses ordinary vocabulary, short clauses, and contractions while keeping necessary technical nouns precise. When recent candidate speech provides a useful sample, the cue matches its overall sentence length and formality without copying filler or mistakes. Formal verbs where a common verb would be equally accurate, stacked abstract nouns, and polished signposting such as "I'd frame this around" lower the score. A 5 sounds direct and unforced; filler words and fake hesitation do not improve the score.
     Specificity: it uses question-specific mechanisms, evidence, causal reasoning, tradeoffs, or discriminating checks rather than interchangeable advice.
+    Anchor relevance: for a past-experience question, the cue chooses a project, product, role, or work setting that is genuinely useful for this question and the stated interview context. When the references contain multiple options, reward the best-supported and most role-relevant choice, not merely any named item. A vague category such as "cross-platform rendering work," an arbitrary famous product, or a project chosen only because it shares keywords is at most 3. When the question does not need a personal project, score whether the technical frame is appropriately relevant instead.
+    Temporal judgment: the cue uses sound judgment about when the experience occurred. Do not penalize an older project merely for its age when it is uniquely relevant, foundational, or explicitly requested. But when newer evidence is comparably strong, defaulting to an anachronistic example without a reason is at most 3. Confidential recent work may be described at a useful, non-identifying level. When time is immaterial to the question, score whether the cue avoids forcing irrelevant recency claims.
     Causal usefulness: when the question asks what the candidate did, the cue supplies an intelligible setting, the actual change or decision, why it mattered, how it was checked, and a useful outcome instead of merely inventorying résumé facts. In grounded mode, when the references do not support the requested past incident, a concrete conditional scenario is the correct form; judge the substance of that worked path and do not lower the score merely because it avoids claiming that the incident happened.
     Mechanistic depth: the cue explains the material implementation or decision as a before-to-after difference at the level an interviewer could probe. Merely naming components, technologies, constraints, or verbs such as built, optimized, reorganized, compressed, streamed, or isolated without explaining what operation or behavior changed is at most 3. For a question that does not call for an implementation change, score whether its technical explanation is comparably substantive.
     Verification rigor: when measurement, debugging, validation, or a causal result matters, the cue names the observable or measurement boundary, a controlled comparison or perturbation, and what outcome distinguishes the leading explanation from an alternative. Generic claims such as checked correctness, tested end to end, profiled representative scenes, measured before and after, or varied stages independently are at most 3 unless those concrete details are present. When the question genuinely does not call for verification, score whether its supporting evidence is appropriately specific instead of forcing an experiment.
@@ -713,6 +744,8 @@ struct AnswerMirrorQualityJudge {
             "spokenNaturalness": scoreSchema,
             "plainSpokenLanguage": scoreSchema,
             "specificity": scoreSchema,
+            "anchorRelevance": scoreSchema,
+            "temporalJudgment": scoreSchema,
             "causalUsefulness": scoreSchema,
             "mechanisticDepth": scoreSchema,
             "verificationRigor": scoreSchema,
@@ -727,6 +760,8 @@ struct AnswerMirrorQualityJudge {
             "spokenNaturalness",
             "plainSpokenLanguage",
             "specificity",
+            "anchorRelevance",
+            "temporalJudgment",
             "causalUsefulness",
             "mechanisticDepth",
             "verificationRigor",

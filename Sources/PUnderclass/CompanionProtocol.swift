@@ -615,7 +615,9 @@ actor CompanionEventHub {
         let evaluationTriggeredAt = triggeredAt
             ?? state.assistant.evaluationTriggeredAt
         state.assistant.phase = .idle
-        state.assistant.bridge = nil
+        if evaluationTrigger != .partialTranscript {
+            state.assistant.bridge = nil
+        }
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
         state.assistant.evaluatingTrigger = nil
