@@ -131,8 +131,8 @@ OPENAI_API_KEY="..." RUN_EARLY_BRIDGE_EVAL=1 \
 ```
 
 It incurs hosted Priority-processing usage. The deterministic suite still
-verifies its strict schema, two-attempt policy, and replacement state without
-making network calls.
+verifies its strict schema, speculative-attempt limit, independent pause/final
+opportunities, and replacement state without making network calls.
 
 For model, reasoning-effort, and prompt selection against private interview
 material, keep the fixture outside the repository and run:

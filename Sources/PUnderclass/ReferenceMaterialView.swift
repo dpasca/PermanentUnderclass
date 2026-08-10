@@ -199,7 +199,7 @@ struct ReferenceMaterialView: View {
                             Text("Early speaking bridge (experimental)")
                                 .font(.body.weight(.semibold))
                             Text(
-                                "Uses a fast Priority request while the interviewer is still speaking. It shows one fact-free opening sentence, then the complete Answer Mirror cue replaces it. This can make an additional model call and may misread an unfinished question."
+                                "Uses fast Priority requests while the interviewer is speaking and again at the first stable pause. It shows one fact-free opening sentence, then the complete Answer Mirror cue replaces it. This can make additional model calls and may misread an unfinished question."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)

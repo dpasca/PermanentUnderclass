@@ -317,6 +317,21 @@ function renderInferenceStatus() {
     return;
   }
 
+  const pendingSpeech = pendingInterviewerSpeech(assistant);
+  if (pendingSpeech && !assistant?.bridge) {
+    const drafting = assistant?.phase === "working";
+    setInferenceStatus(
+      drafting ? "working" : "general",
+      drafting ? "QUICK CUE DRAFTING" : "LISTENING · NEW QUESTION",
+      drafting ? "The new answer is being generated" : "Waiting for a stable interviewer pause",
+      drafting
+        ? "The previous cue is out of the speaking position while Luna and the full answer work in parallel."
+        : "The previous cue is out of the speaking position so it cannot be mistaken for the new answer.",
+      checkCount
+    );
+    return;
+  }
+
   if (assistant?.bridge) {
     const bridgeTime = Number.isFinite(assistant.bridge.generationMilliseconds)
       ? ` in ${assistant.bridge.generationMilliseconds.toLocaleString()} ms`
@@ -616,6 +631,27 @@ function answerHistoryFor(assistant) {
 
 function topicIDFor(suggestion) {
   return suggestion?.topicID || suggestion?.id || "";
+}
+
+function pendingInterviewerSpeech(assistant) {
+  const transcript = state.snapshot?.transcript;
+  const currentTopicID = topicIDFor(assistant?.suggestion);
+  const partials = (transcript?.partials || []).filter((item) => (
+    item?.speaker === "other" && item?.text
+  ));
+  const partial = partials[partials.length - 1];
+  if (partial && (!currentTopicID || partial.id !== currentTopicID)) {
+    return partial;
+  }
+
+  if (assistant?.phase !== "working") return null;
+  const turns = (transcript?.turns || []).filter((item) => (
+    item?.speaker === "other" && item?.text
+  ));
+  const turn = turns[turns.length - 1];
+  return turn && (!currentTopicID || turn.id !== currentTopicID)
+    ? turn
+    : null;
 }
 
 function fallbackTopicNumber(suggestion, suggestions) {
@@ -958,8 +994,9 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   const listeningStrip = $("#listeningStrip");
   const meeting = state.snapshot?.session?.purpose === "meeting";
   const bridge = assistant?.bridge || null;
+  const pendingSpeech = bridge ? null : pendingInterviewerSpeech(assistant);
   const suggestion = renderSuggestionStack(
-    bridge
+    bridge || pendingSpeech
       ? { ...assistant, suggestion: null, suggestionHistory: [] }
       : assistant
   );
@@ -969,6 +1006,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   listeningStrip.hidden = !suggestion;
   listeningStrip.classList.remove("is-updating", "is-plausible");
   listeningStrip.classList.toggle("is-plausible", plausibleRehearsal);
+  $("#confidenceLabel").hidden = false;
   $("#topicEyebrow").textContent = plausibleRehearsal
     ? "PLAUSIBLE REHEARSAL · VERIFY"
     : "CURRENT TOPIC";
@@ -983,6 +1021,7 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     $("#answerHistory").hidden = true;
     listeningStrip.hidden = false;
     listeningStrip.classList.add("is-updating", "is-plausible");
+    $("#confidenceLabel").hidden = true;
     $("#topicEyebrow").textContent = "EARLY BRIDGE · PARTIAL QUESTION";
     $("#questionText").textContent = bridge.sourceText;
     $("#topicContext").hidden = true;
@@ -991,6 +1030,25 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
       ? "Early bridge ready; drafting the full cue"
       : "Early bridge ready from partial speech";
     scheduleCurrentStageFit();
+    return;
+  }
+
+  if (pendingSpeech) {
+    $("#currentStage").classList.add("has-current");
+    $("#answerStack").hidden = true;
+    $("#answerHistory").hidden = true;
+    listeningStrip.hidden = false;
+    listeningStrip.classList.add("is-updating");
+    $("#confidenceLabel").hidden = true;
+    $("#topicEyebrow").textContent = assistant?.phase === "working"
+      ? "QUICK CUE DRAFTING"
+      : "LISTENING · NEW QUESTION";
+    $("#questionText").textContent = pendingSpeech.text;
+    $("#topicContext").hidden = true;
+    empty.hidden = true;
+    $("#assistantState").textContent = assistant?.phase === "working"
+      ? "Drafting the new answer; previous cue retired"
+      : "Listening for a stable pause; previous cue retired";
     return;
   }
 
@@ -1117,6 +1175,7 @@ function applyEnvelope(envelope) {
       state.snapshot.transcript.partials = state.snapshot.transcript.partials.filter((item) => item.id !== payload.id);
       if (payload.text) state.snapshot.transcript.partials.push(payload);
       renderTranscript(state.snapshot.transcript);
+      renderAssistant(state.snapshot.assistant);
       break;
     case "transcript.final":
     case "transcript.revised":
@@ -1124,6 +1183,7 @@ function applyEnvelope(envelope) {
       state.snapshot.transcript.turns.sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt) || a.id.localeCompare(b.id));
       state.snapshot.transcript.partials = state.snapshot.transcript.partials.filter((item) => item.id !== payload.id);
       renderTranscript(state.snapshot.transcript);
+      renderAssistant(state.snapshot.assistant);
       break;
     case "transcript.cleared":
       state.snapshot.transcript = payload;

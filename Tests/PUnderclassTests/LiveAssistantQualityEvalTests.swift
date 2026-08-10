@@ -15,20 +15,28 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
         )
         let client = EarlyInterviewBridgeClient()
-        let cases: [(name: String, partial: String, shouldShow: Bool)] = [
+        let cases: [(
+            name: String,
+            partial: String,
+            opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity,
+            shouldShow: Bool
+        )] = [
             (
                 "unfinished",
                 "All right, two quick questions. First, tell me",
+                .formingTranscript,
                 false
             ),
             (
                 "profiling",
                 "How did you profile or verify that you were addressing the right bottleneck?",
+                .speechPause,
                 true
             ),
             (
                 "experience",
                 "Tell me about a time you improved rendering performance without sacrificing visual quality.",
+                .finalizedTurn,
                 true
             )
         ]
@@ -38,7 +46,8 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
             let generation = try await client.generate(
                 apiKey: apiKey,
                 currentPartial: evalCase.partial,
-                sessionContext: "An English-language technical job interview."
+                sessionContext: "An English-language technical job interview.",
+                opportunity: evalCase.opportunity
             )
             latencies.append(generation.generationMilliseconds)
             XCTAssertEqual(

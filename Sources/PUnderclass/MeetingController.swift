@@ -103,7 +103,9 @@ final class MeetingController: ObservableObject {
     private var assistantBridgeRequestID: UUID?
     private var assistantBridgeTurnID: String?
     private var assistantBridgeLatestText = ""
-    private var assistantBridgeAttemptCount = 0
+    private var assistantBridgeFormingAttemptCount = 0
+    private var assistantBridgePauseAttemptCount = 0
+    private var assistantBridgeFinalAttempted = false
     private var activeAssistantBridge: CompanionAssistantBridge?
     private let syntheticSpeechPlayer = SyntheticSpeechPlayer()
     private var syntheticInterviewTask: Task<Void, Never>?
@@ -1547,6 +1549,10 @@ final class MeetingController: ObservableObject {
             )
 
             let endedAt = Date()
+            let earlyBridgePauseSeconds = Double(
+                RealtimeTranscriptionClient
+                    .earlyBridgePauseSilenceChunkCount * 20
+            ) / 1_000
             let partialPauseSeconds = Double(
                 AssistantEvaluationPolicy.partialSpeechPauseMilliseconds
             ) / 1_000
@@ -1564,7 +1570,25 @@ final class MeetingController: ObservableObject {
                     ? "The generated meeting response remains beside the assistant outline for comparison."
                     : "The candidate response remains beside the Answer Mirror outline for comparison."
             }
-            try await Self.sleep(seconds: partialPauseSeconds)
+            try await Self.sleep(seconds: earlyBridgePauseSeconds)
+            if AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: turn.speaker,
+                purpose: scenario.purpose
+            ) {
+                scheduleEarlyInterviewBridge(
+                    turnID: turnID,
+                    sourceText: turn.text,
+                    speaker: turn.speaker,
+                    purpose: scenario.purpose,
+                    opportunity: .speechPause
+                )
+            }
+            try await Self.sleep(
+                seconds: max(
+                    0,
+                    partialPauseSeconds - earlyBridgePauseSeconds
+                )
+            )
             if AssistantEvaluationPolicy.shouldEvaluate(
                 speaker: turn.speaker,
                 purpose: scenario.purpose
@@ -1680,6 +1704,13 @@ final class MeetingController: ObservableObject {
             speaker: speaker,
             purpose: purpose
         ) {
+            scheduleEarlyInterviewBridge(
+                turnID: id,
+                sourceText: text,
+                speaker: speaker,
+                purpose: purpose,
+                opportunity: .finalizedTurn
+            )
             scheduleLiveAssistant(
                 trigger: .finalizedTurn,
                 turnID: id,
@@ -1845,6 +1876,13 @@ final class MeetingController: ObservableObject {
                     speaker: speaker,
                     purpose: purpose
                 ) {
+                    self.scheduleEarlyInterviewBridge(
+                        turnID: transcriptID,
+                        sourceText: text,
+                        speaker: speaker,
+                        purpose: purpose,
+                        opportunity: .finalizedTurn
+                    )
                     self.scheduleLiveAssistant(
                         trigger: .finalizedTurn,
                         turnID: transcriptID,
@@ -1875,6 +1913,37 @@ final class MeetingController: ObservableObject {
                         context: activeContext,
                         recentTranscript: recentTranscript
                     )
+                )
+            },
+            onEarlyBridgePause: { [weak self] _ in
+                guard
+                    let self,
+                    self.activeSessionID == sessionID,
+                    EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+                        speaker: speaker,
+                        purpose: purpose,
+                        answerMode: self.activeAssistantAnswerMode,
+                        isEnabled: self.activeAssistantEarlyBridgeEnabled
+                    )
+                else {
+                    return
+                }
+                let itemID: String
+                let text: String
+                if speaker == .you {
+                    itemID = self.localTrack.lastItemID
+                    text = self.localTrack.partialTranscript
+                } else {
+                    itemID = self.remoteTrack.lastItemID
+                    text = self.remoteTrack.partialTranscript
+                }
+                guard !itemID.isEmpty else { return }
+                self.scheduleEarlyInterviewBridge(
+                    turnID: "\(speaker.rawValue)-\(itemID)",
+                    sourceText: text,
+                    speaker: speaker,
+                    purpose: purpose,
+                    opportunity: .speechPause
                 )
             },
             onSpeechPause: { [weak self] speechEndedAt in
@@ -2284,7 +2353,9 @@ final class MeetingController: ObservableObject {
         assistantBridgeRequestID = nil
         assistantBridgeTurnID = nil
         assistantBridgeLatestText = ""
-        assistantBridgeAttemptCount = 0
+        assistantBridgeFormingAttemptCount = 0
+        assistantBridgePauseAttemptCount = 0
+        assistantBridgeFinalAttempted = false
         activeAssistantBridge = nil
         enqueueCompanionUpdate { hub in
             await hub.clearTranscript()
@@ -2437,7 +2508,9 @@ final class MeetingController: ObservableObject {
         turnID: String,
         sourceText: String,
         speaker: SpeakerTag,
-        purpose: CapturePurpose
+        purpose: CapturePurpose,
+        opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
+            .formingTranscript
     ) {
         guard EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
             speaker: speaker,
@@ -2462,7 +2535,9 @@ final class MeetingController: ObservableObject {
             assistantBridgeRequestID = nil
             assistantBridgeTurnID = turnID
             assistantBridgeLatestText = ""
-            assistantBridgeAttemptCount = 0
+            assistantBridgeFormingAttemptCount = 0
+            assistantBridgePauseAttemptCount = 0
+            assistantBridgeFinalAttempted = false
             activeAssistantBridge = nil
             enqueueCompanionUpdate { hub in
                 await hub.assistantSupersededForNewTurn()
@@ -2470,14 +2545,7 @@ final class MeetingController: ObservableObject {
         }
         assistantBridgeLatestText = normalizedText
 
-        guard
-            activeAssistantBridge == nil,
-            assistantBridgeTask == nil,
-            assistantBridgeAttemptCount
-                < EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn
-        else {
-            return
-        }
+        guard activeAssistantBridge == nil else { return }
 
         let isLocalOnly = privacyLockEnabled
         let apiKey = capability.isAvailable(.answerMirror)
@@ -2485,16 +2553,50 @@ final class MeetingController: ObservableObject {
             : ""
         guard !isLocalOnly, !apiKey.isEmpty else { return }
 
-        let attempt = assistantBridgeAttemptCount
-        assistantBridgeAttemptCount += 1
+        if opportunity != .formingTranscript, assistantBridgeTask != nil {
+            assistantBridgeTask?.cancel()
+            assistantBridgeTask = nil
+            assistantBridgeRequestID = nil
+        }
+        guard assistantBridgeTask == nil else { return }
+
+        let attempt: Int
+        switch opportunity {
+        case .formingTranscript:
+            guard
+                assistantBridgeFormingAttemptCount
+                    < EarlyInterviewBridgeEvaluationPolicy
+                        .maximumFormingTranscriptAttemptsPerTurn
+            else {
+                return
+            }
+            attempt = assistantBridgeFormingAttemptCount
+            assistantBridgeFormingAttemptCount += 1
+        case .speechPause:
+            guard
+                assistantBridgePauseAttemptCount
+                    < EarlyInterviewBridgeEvaluationPolicy
+                        .maximumSpeechPauseAttemptsPerTurn
+            else {
+                return
+            }
+            attempt = assistantBridgePauseAttemptCount
+            assistantBridgePauseAttemptCount += 1
+        case .finalizedTurn:
+            guard !assistantBridgeFinalAttempted else { return }
+            assistantBridgeFinalAttempted = true
+            attempt = 0
+        }
+
         let requestID = UUID()
         assistantBridgeRequestID = requestID
         let delayMilliseconds =
             EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
-                forAttempt: attempt
+                for: opportunity,
+                attempt: attempt
             )
         let recentTranscript = transcript
-            .filter { $0.purpose == purpose }
+            .filter { $0.purpose == purpose && $0.id != turnID }
             .suffix(4)
             .map { "\($0.speaker.rawValue): \($0.text)" }
             .joined(separator: "\n")
@@ -2507,7 +2609,7 @@ final class MeetingController: ObservableObject {
         let controller = WeakMeetingController(self)
 
         Self.liveAssistantLogger.notice(
-            "assistant_bridge_scheduled turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) delay_ms=\(delayMilliseconds, privacy: .public) model=\(EarlyInterviewBridgeClient.model, privacy: .public) service_tier=\(EarlyInterviewBridgeClient.serviceTier, privacy: .public)"
+            "assistant_bridge_scheduled turn_id=\(turnID, privacy: .public) opportunity=\(opportunity.rawValue, privacy: .public) attempt=\(attempt + 1, privacy: .public) delay_ms=\(delayMilliseconds, privacy: .public) model=\(EarlyInterviewBridgeClient.model, privacy: .public) service_tier=\(EarlyInterviewBridgeClient.serviceTier, privacy: .public)"
         )
 
         assistantBridgeTask = Task {
@@ -2524,7 +2626,8 @@ final class MeetingController: ObservableObject {
                         controller.value?.completeAssistantBridgeRequest(
                             requestID: requestID,
                             attemptedText: nil,
-                            retryIfTextChanged: false
+                            retryIfTextChanged: false,
+                            opportunity: opportunity
                         )
                     }
                     return
@@ -2543,7 +2646,8 @@ final class MeetingController: ObservableObject {
                     apiKey: apiKey,
                     currentPartial: latestText,
                     recentTranscript: recentTranscript,
-                    sessionContext: sessionContext
+                    sessionContext: sessionContext,
+                    opportunity: opportunity
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
@@ -2554,7 +2658,8 @@ final class MeetingController: ObservableObject {
                         controller.value?.completeAssistantBridgeRequest(
                             requestID: requestID,
                             attemptedText: latestText,
-                            retryIfTextChanged: false
+                            retryIfTextChanged: false,
+                            opportunity: opportunity
                         )
                     }
                     return
@@ -2579,7 +2684,7 @@ final class MeetingController: ObservableObject {
                     guard accepted else { return }
                     await hub.assistantBridged(bridge)
                     Self.liveAssistantLogger.notice(
-                        "assistant_bridge_completed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=bridge model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
+                        "assistant_bridge_completed turn_id=\(turnID, privacy: .public) opportunity=\(opportunity.rawValue, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=bridge model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
                     )
                     return
                 }
@@ -2588,11 +2693,13 @@ final class MeetingController: ObservableObject {
                     controller.value?.completeAssistantBridgeRequest(
                         requestID: requestID,
                         attemptedText: latestText,
-                        retryIfTextChanged: true
+                        retryIfTextChanged:
+                            opportunity == .formingTranscript,
+                        opportunity: opportunity
                     )
                 }
                 Self.liveAssistantLogger.notice(
-                    "assistant_bridge_completed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=not_ready model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
+                    "assistant_bridge_completed turn_id=\(turnID, privacy: .public) opportunity=\(opportunity.rawValue, privacy: .public) attempt=\(attempt + 1, privacy: .public) outcome=not_ready model=\(EarlyInterviewBridgeClient.model, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public)"
                 )
                 if let retryText {
                     await MainActor.run {
@@ -2600,7 +2707,8 @@ final class MeetingController: ObservableObject {
                             turnID: turnID,
                             sourceText: retryText,
                             speaker: speaker,
-                            purpose: purpose
+                            purpose: purpose,
+                            opportunity: .formingTranscript
                         )
                     }
                 }
@@ -2611,12 +2719,13 @@ final class MeetingController: ObservableObject {
                     controller.value?.completeAssistantBridgeRequest(
                         requestID: requestID,
                         attemptedText: nil,
-                        retryIfTextChanged: false
+                        retryIfTextChanged: false,
+                        opportunity: opportunity
                     )
                 }
                 let errorType = String(describing: type(of: error))
                 Self.liveAssistantLogger.error(
-                    "assistant_bridge_failed turn_id=\(turnID, privacy: .public) attempt=\(attempt + 1, privacy: .public) error_type=\(errorType, privacy: .public)"
+                    "assistant_bridge_failed turn_id=\(turnID, privacy: .public) opportunity=\(opportunity.rawValue, privacy: .public) attempt=\(attempt + 1, privacy: .public) error_type=\(errorType, privacy: .public)"
                 )
             }
         }
@@ -2640,16 +2749,19 @@ final class MeetingController: ObservableObject {
     private func completeAssistantBridgeRequest(
         requestID: UUID,
         attemptedText: String?,
-        retryIfTextChanged: Bool
+        retryIfTextChanged: Bool,
+        opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity
     ) -> String? {
         guard assistantBridgeRequestID == requestID else { return nil }
         assistantBridgeTask = nil
         assistantBridgeRequestID = nil
         guard
             retryIfTextChanged,
+            opportunity == .formingTranscript,
             activeAssistantBridge == nil,
-            assistantBridgeAttemptCount
-                < EarlyInterviewBridgeEvaluationPolicy.maximumAttemptsPerTurn,
+            assistantBridgeFormingAttemptCount
+                < EarlyInterviewBridgeEvaluationPolicy
+                    .maximumFormingTranscriptAttemptsPerTurn,
             let attemptedText,
             assistantBridgeLatestText != attemptedText
         else {
@@ -2678,6 +2790,14 @@ final class MeetingController: ObservableObject {
     private func activeAssistantBridgeText(for turnID: String) -> String? {
         guard activeAssistantBridge?.topicID == turnID else { return nil }
         return activeAssistantBridge?.text
+    }
+
+    private func retireAssistantBridge(for turnID: String) {
+        guard assistantBridgeTurnID == turnID else { return }
+        assistantBridgeTask?.cancel()
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        activeAssistantBridge = nil
     }
 
     private func scheduleLiveAssistant(
@@ -2846,6 +2966,13 @@ final class MeetingController: ObservableObject {
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
+                    if generation.suggestion != nil
+                        || trigger == .finalizedTurn
+                    {
+                        controller.value?.retireAssistantBridge(
+                            for: turnID
+                        )
+                    }
                 }
                 let completedAt = Date()
                 let totalLatencyMilliseconds = Self.milliseconds(
@@ -3470,7 +3597,9 @@ final class MeetingController: ObservableObject {
         assistantBridgeRequestID = nil
         assistantBridgeTurnID = nil
         assistantBridgeLatestText = ""
-        assistantBridgeAttemptCount = 0
+        assistantBridgeFormingAttemptCount = 0
+        assistantBridgePauseAttemptCount = 0
+        assistantBridgeFinalAttempted = false
         activeAssistantBridge = nil
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil

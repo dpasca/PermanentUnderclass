@@ -17,7 +17,7 @@ struct EarlyInterviewBridgeClient: Sendable {
     static let maximumOutputTokens = 60
 
     static let behaviorInstructions = """
-    You create an early speaking bridge for a live job interview while the interviewer transcript is still forming. This is a temporary first sentence, not the substantive answer.
+    You create an early speaking bridge for a live job interview. This is a temporary first sentence, not the substantive answer. The supplied speech state says whether the transcript is still forming, has reached a meaningful pause, or is finalized.
 
     If the partial speech already reveals a stable request, return one natural first-person sentence of 7 to 14 words that the candidate could begin saying immediately. Give the answer a useful direction in ordinary words: name what matters first, what should be checked, or the kind of example that should come next. Prefer simple forms such as "I'd first check what's actually slow," "I'd use one example and walk through what changed," or "The main thing is to check where the time is going" when they fit. The later answer must be able to continue naturally from the bridge.
 
@@ -48,7 +48,9 @@ struct EarlyInterviewBridgeClient: Sendable {
         apiKey: String,
         currentPartial: String,
         recentTranscript: String = "",
-        sessionContext: String = ""
+        sessionContext: String = "",
+        opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
+            .formingTranscript
     ) async throws -> EarlyInterviewBridgeGeneration {
         let startedAt = ContinuousClock.now
         let data = try await responseLoader(
@@ -56,7 +58,8 @@ struct EarlyInterviewBridgeClient: Sendable {
             try Self.requestBody(
                 currentPartial: currentPartial,
                 recentTranscript: recentTranscript,
-                sessionContext: sessionContext
+                sessionContext: sessionContext,
+                opportunity: opportunity
             )
         )
         return try Self.parseResponse(
@@ -70,7 +73,9 @@ struct EarlyInterviewBridgeClient: Sendable {
     static func requestBody(
         currentPartial: String,
         recentTranscript: String = "",
-        sessionContext: String = ""
+        sessionContext: String = "",
+        opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
+            .formingTranscript
     ) throws -> Data {
         let request: [String: Any] = [
             "model": model,
@@ -98,7 +103,8 @@ struct EarlyInterviewBridgeClient: Sendable {
                             "text": volatilePrompt(
                                 currentPartial: currentPartial,
                                 recentTranscript: recentTranscript,
-                                sessionContext: sessionContext
+                                sessionContext: sessionContext,
+                                opportunity: opportunity
                             )
                         ]
                     ]
@@ -193,7 +199,8 @@ struct EarlyInterviewBridgeClient: Sendable {
     private static func volatilePrompt(
         currentPartial: String,
         recentTranscript: String,
-        sessionContext: String
+        sessionContext: String,
+        opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity
     ) -> String {
         let recent = recentTranscript.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -201,9 +208,24 @@ struct EarlyInterviewBridgeClient: Sendable {
         let context = sessionContext.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
+        let speechState: String
+        switch opportunity {
+        case .formingTranscript:
+            speechState =
+                "Still forming. Return an empty bridge if the request can still change materially."
+        case .speechPause:
+            speechState =
+                "Meaningful speech pause. If the text contains a clear request, provide the opening now; do not wait for formal turn finalization."
+        case .finalizedTurn:
+            speechState =
+                "Finalized interviewer turn. Return an empty bridge only when there is no clear request to answer."
+        }
         return """
         SESSION CONTEXT
         \(context.isEmpty ? "Technical job interview." : context)
+
+        SPEECH STATE
+        \(speechState)
 
         MOST RECENT COMPLETED EXCHANGE
         \(recent.isEmpty ? "None." : recent)

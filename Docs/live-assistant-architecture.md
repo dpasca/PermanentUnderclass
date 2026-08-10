@@ -110,7 +110,8 @@ Initial event set:
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
 - `assistant.bridge`: ephemeral, fact-free opening generated from a still-forming
-  interviewer partial. It is never added to suggestion history.
+  interviewer partial, the first short speech pause, or the finalized-turn
+  fallback. It is never added to suggestion history.
 - `assistant.working`: generation started for a transcript watermark.
 - `assistant.suggestion`: newest structured answer outline with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
@@ -161,10 +162,11 @@ publishes a smaller object before the full suggestion:
 ```
 
 The display temporarily hides the previous answer, shows this one opening, and
-then replaces it with `assistant.suggestion`. The full prompt receives the
-bridge too: it keeps the exact sentence as its preamble when the completed
-question is compatible, or corrects it when a later qualifier changed the
-request.
+then replaces it with `assistant.suggestion`. When a speculative bridge is ready
+before full generation begins, the full prompt receives it and keeps the exact
+sentence when the completed question is compatible. The pause bridge and full
+request otherwise run concurrently; the bridge is deliberately directional so
+the later detailed cue can continue it without depending on the exact wording.
 
 The host chooses the facts and concise first-person wording. For Answer Mirror,
 the teleprompter shows the spoken preamble first; labels remain internal
@@ -227,14 +229,49 @@ uses `gpt-5.6-luna`, no reasoning, a strict one-string schema, and Priority
 processing. The model—not a keyword or regex gate—decides whether the partial
 already establishes a stable answer shape. An unclear fragment returns an
 empty string. If the partial grew while that request ran, the host may try once
-more after 200 ms; the limit is two calls per interviewer turn. A bridge may
-name only what matters first, what should be checked, or the type of example
-that should come next. It uses short clauses and ordinary words rather than
-formal coaching language. It
-receives recent dialogue and session context, but no reference documents, and
-cannot claim a project, employer, action, result, metric, achievement, or other
-personal history. A new interviewer turn cancels the older full and bridge
-generations so a stale result cannot erase the new bridge.
+more after 200 ms; the speculative limit is two calls per interviewer turn.
+
+Those speculative attempts do not consume the reliable opportunities. A
+separate 400 ms silence callback starts a zero-delay bridge request from the
+latest partial, while the structured Terra check retains its 800 ms threshold.
+Voice resumption can re-arm this opportunity for up to three distinct pauses,
+so a mid-question pause does not consume the end-of-question chance. If those
+pause requests return no bridge, the finalized transcript receives one
+independent zero-delay fallback. Each request is told whether its input is
+forming, paused, or finalized so the model can be conservative without
+treating a completed question as perpetually unfinished. An inconclusive
+partial Terra check does not erase a useful bridge; the finalized check or full
+suggestion retires it.
+
+A bridge may name only what matters first, what should be checked, or the type
+of example that should come next. It uses short clauses and ordinary words
+rather than formal coaching language. It receives recent dialogue and session
+context, but no reference documents, and cannot claim a project, employer,
+action, result, metric, achievement, or other personal history. A new
+interviewer turn cancels the older full and bridge generations so a stale result
+cannot erase the new bridge. The focused display also removes the previous cue
+from the speaking position as soon as a different `Other` partial appears; it
+shows the live question and explicit listening/drafting state until a new bridge
+or full cue arrives.
+
+### Realtime audio-to-text answer lane
+
+The current audio WebSocket is a Realtime transcription session. A separate
+prototype can instead use a full Realtime conversation session for the remote
+speaker track, keep VAD, and request text-only model output with
+`output_modalities: ["text"]`. OpenAI's Realtime API also emits
+`response.output_text.delta`, so the companion could render the opening words
+without waiting for a complete response. VAD can retain speech boundaries while
+automatic response creation is disabled, and an out-of-band text response can
+be identified with metadata. See the official
+[Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations).
+
+The first experiment should replace only the Luna bridge, not the grounded Terra
+cue. Feed the remote audio track to the Realtime conversation, keep its context
+small, stream one plain-text opening, and compare speech-end-to-first-text,
+answerability, acknowledgement false positives, and bridge/full continuity
+against the existing lane. This isolates native audio latency without asking the
+Realtime response to reproduce the full citation and rehearsal-plan contract.
 
 The structured decision labels every displayed outline as `localReferences`,
 `webSearch`, or `generalKnowledge`. Local grounding requires at least one
@@ -470,12 +507,14 @@ The experimental early lane has its own public, non-personal hosted eval. In
 two consecutive August 2026 runs over the same three partials, it withheld a
 bridge for both unfinished-fragment trials and returned structural openings in
 all four complete-request trials. Priority Luna/no reasoning measured
-0.95–1.77 seconds across the six calls, with a 1.35 second overall median. The
-same small request measured roughly 4.5–5.5 seconds on the default service
-tier, so Priority processing is part of the prototype's latency contract
-rather than a cosmetic setting. These numbers measure model generation after
-request start; the 600 ms collection window and live transcription delay occur
-before it.
+0.95–1.77 seconds across the six calls, with a 1.35 second overall median. A
+post-change run covering forming, paused, and finalized speech returned the
+expected decision in all three cases at 1.684, 1.250, and 1.424 seconds, for a
+1.424 second median. The same small request measured roughly 4.5–5.5 seconds on
+the default service tier, so Priority processing is part of the prototype's
+latency contract rather than a cosmetic setting. These numbers measure model
+generation after request start; the speculative collection window or 400 ms
+pause occurs before it.
 
 ## Usage and cost
 
