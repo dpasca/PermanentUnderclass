@@ -7,8 +7,14 @@ enum PUnderclassWindow {
 
 struct ReferenceMaterialView: View {
     @ObservedObject var controller: MeetingController
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openSettings) private var openSettings
     @State private var showsPlausibleRehearsalConfirmation = false
+    @State private var showsSupportingSources = false
+    @State private var showsAnswerSettings = false
+    @State private var showsEvidenceDetails = false
+    @State private var showsSourceHandling = false
+    @State private var showsReadyRoleEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,32 +23,7 @@ struct ReferenceMaterialView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if !controller.capability.isCloudEnabled {
-                        LockedFeatureCard(
-                            feature: liveFeature,
-                            access: controller.access(to: liveFeature),
-                            onResolve: showSettings
-                        )
-                    }
-                    sessionGuidanceSection
-                    if purpose == .interview {
-                        answerModeSection
-                            .disabled(!controller.capability.isCloudEnabled)
-                            .opacity(
-                                controller.capability.isCloudEnabled ? 1 : 0.45
-                            )
-                        resumeSection
-                    }
-                    folderSection
-                    if purpose == .interview {
-                        webSourcesSection
-                        preparedEvidenceSection
-                    }
-                    recognitionHintsSection
-                    assistantUsesSection
-                    documentSection
-                    issueSection
-                    privacyNote
+                    preparationSections
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,6 +44,17 @@ struct ReferenceMaterialView: View {
             Text(
                 "Answer Mirror may attach a draft to a plausible project or work setting and fill in likely actions and outcomes. The assistant display will mark every such cue as a rehearsal draft, but you must replace or verify the invented details before using them as facts. This choice stays enabled for future interviews until you switch back to Grounded."
             )
+        }
+        .onAppear {
+            revealDetailsNeededForCurrentInterviewState(
+                controller.interviewPreparationReadiness
+            )
+        }
+        .onChange(of: controller.interviewPreparationReadiness) {
+            _, readiness in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                revealDetailsNeededForCurrentInterviewState(readiness)
+            }
         }
     }
 
@@ -122,7 +114,590 @@ struct ReferenceMaterialView: View {
         }
         return purpose == .meeting
             ? "Give transcription and Meeting Assistant the context they need before the conversation starts."
-            : "Give transcription and Answer Mirror the role context they need before the interview starts."
+            : "Follow the highlighted step. Optional details stay out of the way until you need them."
+    }
+
+    @ViewBuilder
+    private var preparationSections: some View {
+        if purpose == .interview {
+            interviewPreparationFlow
+        } else {
+            if !controller.capability.isCloudEnabled {
+                LockedFeatureCard(
+                    feature: liveFeature,
+                    access: controller.access(to: liveFeature),
+                    onResolve: showSettings
+                )
+            }
+            sessionGuidanceSection
+            folderSection
+            recognitionHintsSection
+            assistantUsesSection
+            documentSection
+            issueSection
+            privacyNote
+        }
+    }
+
+    private var interviewPreparationFlow: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            interviewProgressSection
+            interviewCurrentStepSection
+            issueSection
+
+            interviewDisclosure(
+                title: "Optional supporting sources",
+                detail: supportingSourcesSummary,
+                systemImage: "books.vertical",
+                isExpanded: $showsSupportingSources
+            ) {
+                Text(
+                    "Add these only when they provide useful detail beyond the resume. The selected resume remains the primary career source."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                folderSection
+                webSourcesSection
+            }
+
+            interviewDisclosure(
+                title: "Answer style and speech settings",
+                detail: "\(controller.assistantAnswerMode.title) answers · speech hints are optional",
+                systemImage: "slider.horizontal.3",
+                isExpanded: $showsAnswerSettings
+            ) {
+                answerModeSection
+                    .disabled(!controller.capability.isCloudEnabled)
+                    .opacity(
+                        controller.capability.isCloudEnabled ? 1 : 0.45
+                    )
+                recognitionHintsSection
+            }
+
+            if controller.referencePreparationState.pack != nil {
+                interviewDisclosure(
+                    title: "Review prepared evidence",
+                    detail: evidenceSummary,
+                    systemImage: "rectangle.stack",
+                    isExpanded: $showsEvidenceDetails
+                ) {
+                    preparedEvidenceSection
+                }
+            }
+
+            interviewDisclosure(
+                title: "How sources are handled",
+                detail: "Indexed documents, source use, and privacy",
+                systemImage: "lock.shield",
+                isExpanded: $showsSourceHandling
+            ) {
+                assistantUsesSection
+                documentSection
+                privacyNote
+            }
+        }
+    }
+
+    private var interviewProgressSection: some View {
+        HStack(spacing: 10) {
+            interviewProgressStep(number: 1, title: "Resume")
+            interviewProgressConnector(after: 1)
+            interviewProgressStep(number: 2, title: "Prepare")
+            interviewProgressConnector(after: 2)
+            interviewProgressStep(number: 3, title: "Ready")
+        }
+        .padding(.horizontal, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Interview preparation, step \(interviewProgressPosition) of 3"
+        )
+    }
+
+    private func interviewProgressStep(
+        number: Int,
+        title: String
+    ) -> some View {
+        let isComplete = interviewProgressPosition > number
+        let isCurrent = interviewProgressPosition == number
+        let color: Color = isComplete || isCurrent ? .accentColor : .secondary
+
+        return HStack(spacing: 7) {
+            ZStack {
+                Circle()
+                    .fill(
+                        isComplete
+                            ? color
+                            : color.opacity(isCurrent ? 0.18 : 0.1)
+                    )
+                    .frame(width: 28, height: 28)
+                if isComplete {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Text("\(number)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(color)
+                }
+            }
+            Text(title)
+                .font(.callout.weight(isCurrent ? .semibold : .regular))
+                .foregroundStyle(isCurrent || isComplete ? .primary : .secondary)
+        }
+    }
+
+    private func interviewProgressConnector(after number: Int) -> some View {
+        Capsule()
+            .fill(
+                interviewProgressPosition > number
+                    ? Color.accentColor
+                    : Color.secondary.opacity(0.2)
+            )
+            .frame(maxWidth: .infinity, minHeight: 2, maxHeight: 2)
+    }
+
+    private var interviewCurrentStepSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: interviewReadinessIcon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(interviewReadinessColor)
+                    .frame(width: 42, height: 42)
+                    .background(
+                        interviewReadinessColor.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 11)
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(interviewReadinessLabel.uppercased())
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(interviewReadinessColor)
+                    Text(interviewReadinessTitle)
+                        .font(.title2.weight(.semibold))
+                    Text(interviewReadinessDetail)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+            interviewCurrentStepControls
+        }
+        .padding(20)
+        .background(
+            interviewReadinessColor.opacity(0.065),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(interviewReadinessColor.opacity(0.32), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var interviewCurrentStepControls: some View {
+        switch controller.interviewPreparationReadiness {
+        case .unavailable:
+            HStack {
+                Label(
+                    "You can still record a local two-speaker transcript.",
+                    systemImage: "waveform"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                Spacer()
+                Button("Set Up OpenAI…") {
+                    showSettings(.openAI)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+
+        case .activeSession:
+            Label(
+                "Return here after stopping the active capture or generated replay.",
+                systemImage: "stop.circle"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
+        case .preparing:
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(controller.referencePreparationState.phase.title)
+                        .font(.body.weight(.semibold))
+                    Text(
+                        "This window will advance automatically when preparation finishes."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+        case .needsResume:
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PDF, RTF, or plain text")
+                        .font(.callout.weight(.semibold))
+                    Text(
+                        "You can add portfolio pages and project notes afterward."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: controller.chooseResumeFile) {
+                    Label("Choose Resume…", systemImage: "doc.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+
+        case .needsEvidence:
+            selectedResumeRow
+            interviewContextEditor
+            if case let .failed(message) =
+                controller.referencePreparationState.phase
+            {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 10) {
+                Button(action: controller.prepareInterviewEvidence) {
+                    Label(
+                        controller.referencePreparationState.pack == nil
+                            ? "Prepare for Interview"
+                            : "Update Preparation",
+                        systemImage: "sparkles"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!controller.canPrepareInterviewEvidence)
+
+                Button("Add Supporting Sources…") {
+                    withAnimation {
+                        showsSupportingSources = true
+                    }
+                }
+                .controlSize(.large)
+            }
+
+        case .needsSourceReview:
+            selectedResumeRow
+            if let summary = controller.referencePreparationState.pack?
+                .sourceManifest?.resolutionSummary
+            {
+                Label(summary, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                Button("Review Source Details") {
+                    withAnimation {
+                        showsEvidenceDetails = true
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                Button("Choose Another Resume…", action: controller.chooseResumeFile)
+                    .controlSize(.large)
+            }
+
+        case .needsUsableEvidence:
+            selectedResumeRow
+            HStack(spacing: 10) {
+                Button("Choose Another Resume…", action: controller.chooseResumeFile)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                Button("Add Supporting Sources…") {
+                    withAnimation {
+                        showsSupportingSources = true
+                    }
+                }
+                .controlSize(.large)
+            }
+
+        case let .ready(cardCount):
+            selectedResumeRow
+            HStack(spacing: 10) {
+                Label(
+                    "\(cardCount) evidence \(cardCount == 1 ? "card" : "cards") · \(controller.assistantAnswerMode.title)",
+                    systemImage: "checkmark.seal.fill"
+                )
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.green)
+                Spacer()
+                Button("Edit Role…") {
+                    withAnimation {
+                        showsReadyRoleEditor.toggle()
+                    }
+                }
+                .controlSize(.large)
+                Button("Done — Return to Interview") {
+                    dismissWindow(id: PUnderclassWindow.preparation)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            if showsReadyRoleEditor {
+                interviewContextEditor
+            }
+        }
+    }
+
+    private var selectedResumeRow: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "doc.text.fill")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    controller.referencePreparationState.resumeSource?
+                        .displayName ?? "No resume selected"
+                )
+                .font(.body.weight(.semibold))
+                Text("Primary career source")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Change…", action: controller.chooseResumeFile)
+            Menu {
+                Button(
+                    "Reveal in Finder",
+                    action: controller.revealResumeFile
+                )
+                Divider()
+                Button("Stop Using This Resume", role: .destructive) {
+                    controller.clearResumeFile()
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 28)
+            .help("More resume actions")
+        }
+        .padding(11)
+        .background(
+            Color.secondary.opacity(0.075),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+    }
+
+    private var interviewContextEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Role and interview context")
+                .font(.body.weight(.semibold))
+            Text(
+                "Recommended: add the company, role, interview stage, and likely topics. You can also leave the general technical-interview context as-is."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $controller.interviewContextPrompt)
+                .font(.body)
+                .frame(minHeight: 90)
+                .padding(7)
+                .background(
+                    Color(nsColor: .textBackgroundColor).opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: 9)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(.separator.opacity(0.75), lineWidth: 1)
+                }
+        }
+    }
+
+    private func interviewDisclosure<Content: View>(
+        title: String,
+        detail: String,
+        systemImage: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                content()
+            }
+            .padding(.top, 14)
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: systemImage)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(15)
+        .background(
+            Color.secondary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.separator.opacity(0.55), lineWidth: 1)
+        }
+    }
+
+    private var interviewProgressPosition: Int {
+        guard controller.referencePreparationState.resumeSource != nil else {
+            return 1
+        }
+        return controller.isInterviewPreparationReady ? 3 : 2
+    }
+
+    private var interviewReadinessTitle: String {
+        switch controller.interviewPreparationReadiness {
+        case .unavailable:
+            "Turn on Answer Mirror"
+        case .activeSession:
+            "Finish the current session first"
+        case .preparing:
+            "Preparing your interview evidence"
+        case .needsResume:
+            "Choose the resume for this interview"
+        case .needsEvidence:
+            controller.referencePreparationState.pack == nil
+                ? "Confirm the target role, then prepare"
+                : "Update the prepared evidence"
+        case .needsSourceReview:
+            "One source conflict still needs your choice"
+        case .needsUsableEvidence:
+            "No usable experience was found"
+        case .ready:
+            "Ready for the interview"
+        }
+    }
+
+    private var interviewReadinessDetail: String {
+        switch controller.interviewPreparationReadiness {
+        case .unavailable:
+            "An OpenAI key is needed for live answer suggestions and evidence preparation."
+        case .activeSession:
+            "Preparation cannot change while an interview or generated replay is active."
+        case .preparing:
+            "The app is reading your sources, separating factual career material from preparation notes, and building concise evidence cards."
+        case .needsResume:
+            "Choose the current resume you want to use. This keeps old drafts and interview notes from being treated as your work history."
+        case .needsEvidence:
+            controller.referencePreparationState.pack == nil
+                ? "Check the role context below, then let the app organize the resume into useful interview evidence."
+                : "The resume, supporting sources, or role context changed. Refresh the evidence before you start."
+        case .needsSourceReview:
+            "The app could not safely decide which source should establish a candidate fact."
+        case .needsUsableEvidence:
+            "Try a more complete resume or add a portfolio or project source with concrete work details."
+        case let .ready(cardCount):
+            "Everything Answer Mirror needs is prepared. It will select from \(cardCount) grounded evidence \(cardCount == 1 ? "card" : "cards") during the interview."
+        }
+    }
+
+    private var interviewReadinessLabel: String {
+        switch controller.interviewPreparationReadiness {
+        case .ready:
+            "Everything is ready"
+        case .preparing:
+            "Working"
+        case .unavailable, .activeSession, .needsResume, .needsEvidence,
+             .needsSourceReview, .needsUsableEvidence:
+            "Next step"
+        }
+    }
+
+    private var interviewReadinessIcon: String {
+        switch controller.interviewPreparationReadiness {
+        case .unavailable:
+            "lock.fill"
+        case .activeSession:
+            "waveform"
+        case .preparing:
+            "sparkles"
+        case .needsResume:
+            "doc.badge.plus"
+        case .needsEvidence:
+            "wand.and.stars"
+        case .needsSourceReview, .needsUsableEvidence:
+            "exclamationmark.triangle.fill"
+        case .ready:
+            "checkmark.seal.fill"
+        }
+    }
+
+    private var interviewReadinessColor: Color {
+        switch controller.interviewPreparationReadiness {
+        case .ready:
+            .green
+        case .needsSourceReview, .needsUsableEvidence:
+            .orange
+        case .unavailable, .activeSession:
+            .secondary
+        case .preparing, .needsResume, .needsEvidence:
+            .accentColor
+        }
+    }
+
+    private var supportingSourcesSummary: String {
+        let folderCount = controller.referenceLibraryState.snapshot?
+            .documents.count ?? 0
+        let webCount = controller.referencePreparationState.webSources.count
+        if folderCount == 0, webCount == 0 {
+            return "None added — the resume is enough to continue"
+        }
+        var parts: [String] = []
+        if folderCount > 0 {
+            parts.append("\(folderCount) folder \(folderCount == 1 ? "document" : "documents")")
+        }
+        if webCount > 0 {
+            parts.append("\(webCount) web \(webCount == 1 ? "page" : "pages")")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var evidenceSummary: String {
+        guard let pack = controller.referencePreparationState.pack else {
+            return "Not prepared"
+        }
+        if pack.sourceManifest?.requiresReview == true {
+            return "Source review needed"
+        }
+        if !controller.isInterviewEvidenceCurrent {
+            return "Out of date"
+        }
+        return "\(pack.enabledCardCount) of \(pack.cards.count) cards enabled"
+    }
+
+    private func revealDetailsNeededForCurrentInterviewState(
+        _ readiness: InterviewPreparationReadiness
+    ) {
+        switch readiness {
+        case .needsSourceReview:
+            showsEvidenceDetails = true
+        case .needsUsableEvidence:
+            showsSupportingSources = true
+        case .unavailable, .activeSession, .preparing, .needsResume,
+             .needsEvidence, .ready:
+            break
+        }
     }
 
     private var sessionGuidanceSection: some View {
@@ -474,70 +1049,6 @@ struct ReferenceMaterialView: View {
         }
     }
 
-    private var resumeSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(
-                    "Choose the current resume or CV explicitly. Evidence preparation checks it against every other document, uses it as the primary career summary, and treats conflicting drafts or preparation notes separately."
-                )
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-                if let source = controller.referencePreparationState.resumeSource {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "doc.text.fill")
-                            .font(.title2)
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 30)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(source.displayName)
-                                .font(.body.weight(.semibold))
-                            Text(
-                                (source.filePath as NSString)
-                                    .abbreviatingWithTildeInPath
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            Text(
-                                "\(compactCount(source.sourceByteCount)) bytes · checked again whenever evidence is rebuilt"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Button("Change…", action: controller.chooseResumeFile)
-                        Button("Reveal", action: controller.revealResumeFile)
-                        Button("Remove", role: .destructive) {
-                            controller.clearResumeFile()
-                        }
-                    }
-                } else {
-                    HStack(spacing: 12) {
-                        Label(
-                            "No resume has been identified explicitly.",
-                            systemImage: "doc.badge.plus"
-                        )
-                        .foregroundStyle(.secondary)
-                        Spacer()
-                        Button(action: controller.chooseResumeFile) {
-                            Label("Choose Resume…", systemImage: "doc.badge.plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-            }
-            .padding(8)
-        } label: {
-            Label("Current Resume", systemImage: "person.text.rectangle")
-                .font(.title3.weight(.semibold))
-        }
-    }
-
     private var webSourcesSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
@@ -687,7 +1198,11 @@ struct ReferenceMaterialView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(!controller.canPrepareInterviewEvidence)
+                    .disabled(
+                        !controller.canPrepareInterviewEvidence
+                            || controller.referencePreparationState.resumeSource
+                                == nil
+                    )
                 }
 
                 if case let .failed(message) =

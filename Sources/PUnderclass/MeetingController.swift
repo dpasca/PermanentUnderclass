@@ -1344,6 +1344,33 @@ final class MeetingController: ObservableObject {
                 != true
     }
 
+    var interviewPreparationReadiness: InterviewPreparationReadiness {
+        let pack = referencePreparationState.pack
+        return .resolve(
+            isAssistantAvailable: capability.isAvailable(.answerMirror),
+            hasActiveSession: isListening
+                || syntheticInterviewState.isActive,
+            isPreparing: referencePreparationState.phase.isWorking,
+            hasExplicitResume: referencePreparationState.resumeSource != nil,
+            hasPack: pack != nil,
+            isPackCurrent: isInterviewEvidenceCurrent,
+            requiresSourceReview: pack?.sourceManifest?.requiresReview == true,
+            enabledCardCount: pack?.enabledCardCount ?? 0
+        )
+    }
+
+    var isInterviewPreparationReady: Bool {
+        interviewPreparationReadiness.isReady
+    }
+
+    /// Unlike the guided readiness state, this remains true during an active
+    /// session so the pack selected at start can continue to be used.
+    private var hasReadyInterviewEvidence: Bool {
+        referencePreparationState.resumeSource != nil
+            && isInterviewEvidenceResolved
+            && (referencePreparationState.pack?.enabledCardCount ?? 0) > 0
+    }
+
     private var currentLocalReferenceRevision: String {
         ReferencePreparationDigest.localSourceRevision(
             folderRevision: referenceLibraryState.snapshot?.revision,
@@ -1366,35 +1393,32 @@ final class MeetingController: ObservableObject {
     }
 
     func interviewEvidenceReadinessDetail() -> String {
-        if let message = capability.lockMessage(for: .answerMirror) {
-            return message
-        }
-        if isListening || syntheticInterviewState.isActive {
+        switch interviewPreparationReadiness {
+        case .unavailable:
+            return capability.lockMessage(for: .answerMirror)
+                ?? "Answer Mirror is unavailable."
+        case .activeSession:
             return "Stop the active interview or replay before rebuilding evidence."
-        }
-        if referencePreparationState.phase.isWorking {
+        case .preparing:
             return referencePreparationState.phase.title
-        }
-        guard
-            referencePreparationState.resumeSource != nil
-                || referenceLibraryState.snapshot?.documents.isEmpty == false
-                || !referencePreparationState.webSources.isEmpty
-        else {
-            return "Choose a resume, a reference folder, or at least one public profile URL."
-        }
-        if let pack = referencePreparationState.pack {
-            if pack.sourceManifest?.requiresReview == true {
-                return "Choose the current resume explicitly, then rebuild to resolve the source conflict."
+        case .needsResume:
+            return "Choose the current resume you want Answer Mirror to use."
+        case .needsEvidence:
+            if case let .failed(message) = referencePreparationState.phase {
+                return "Preparation failed: \(message)"
             }
-            if isInterviewEvidenceCurrent {
-                if pack.enabledCardCount == 0 {
-                    return "Sources were classified, but none can establish candidate experience."
-                }
-                return "Ready: \(pack.enabledCardCount) enabled evidence cards."
+            if referencePreparationState.pack == nil {
+                return "Build a compact, role-specific evidence pack from the selected resume."
             }
             return "Sources or role guidance changed. Rebuild before the next interview."
+        case .needsSourceReview:
+            return "The selected resume conflicts with another source. Review the source choices before continuing."
+        case .needsUsableEvidence:
+            return "The sources were read, but none can establish usable candidate experience."
+        case let .ready(cardCount):
+            let label = cardCount == 1 ? "card" : "cards"
+            return "Ready: \(cardCount) evidence \(label) will ground Answer Mirror."
         }
-        return "Reads the sources once and builds a compact, role-specific evidence pack."
     }
 
     func prepareInterviewEvidence() {
@@ -1597,31 +1621,18 @@ final class MeetingController: ObservableObject {
     private func replayReferences(
         for purpose: CapturePurpose
     ) -> ReferenceLibrarySnapshot? {
-        if
-            purpose == .interview,
-            let pack = referencePreparationState.pack,
-            pack.sourceManifest?.requiresReview != true,
-            pack.isCurrent(
-                purpose: .interview,
-                localReferenceRevision: currentLocalReferenceRevision,
-                webSources: referencePreparationState.webSources,
-                sessionContext: interviewContextPrompt
-            )
-        {
+        if purpose == .interview {
+            guard
+                let pack = referencePreparationState.pack,
+                hasReadyInterviewEvidence
+            else {
+                return nil
+            }
             return pack.snapshot(
                 for: interviewContextPrompt,
                 folderURL: referenceLibraryState.snapshot?.folderURL,
                 maximumCards: 16
             )
-        }
-        if purpose == .interview, referencePreparationState.pack != nil {
-            return nil
-        }
-        if purpose == .interview,
-           (referencePreparationState.resumeSource != nil
-                || !referencePreparationState.webSources.isEmpty)
-        {
-            return nil
         }
         guard referenceLibraryState.phase == .ready else { return nil }
         return referenceLibraryState.snapshot
@@ -1633,17 +1644,13 @@ final class MeetingController: ObservableObject {
         // This method is called from SwiftUI readiness rendering. Keep it to
         // persisted metadata; replayReferences performs semantic selection.
         if purpose == .interview {
-            if let pack = referencePreparationState.pack {
-                guard isInterviewEvidenceResolved, pack.enabledCardCount > 0 else {
-                    return nil
-                }
-                return "prepared:\(pack.revision)"
-            }
-            if referencePreparationState.resumeSource != nil
-                || !referencePreparationState.webSources.isEmpty
-            {
+            guard
+                let pack = referencePreparationState.pack,
+                hasReadyInterviewEvidence
+            else {
                 return nil
             }
+            return "prepared:\(pack.revision)"
         }
         guard
             referenceLibraryState.phase == .ready,
@@ -1701,6 +1708,11 @@ final class MeetingController: ObservableObject {
             return message
         }
         if purpose == .interview,
+           referencePreparationState.resumeSource == nil
+        {
+            return "Choose the current resume in Prepare Interview before generating an interview."
+        }
+        if purpose == .interview,
            referencePreparationState.pack != nil,
            !isInterviewEvidenceCurrent
         {
@@ -1713,8 +1725,7 @@ final class MeetingController: ObservableObject {
         }
         if purpose == .interview,
            let pack = referencePreparationState.pack,
-           isInterviewEvidenceResolved,
-           pack.enabledCardCount > 0
+           hasReadyInterviewEvidence
         {
             let label = pack.enabledCardCount == 1 ? "card" : "cards"
             return "Ready to generate from \(pack.enabledCardCount) prepared evidence \(label); the matching scenario is cached for repeatable reruns."
@@ -2969,7 +2980,7 @@ final class MeetingController: ObservableObject {
             && assistantAnswerMode == .plausibleRehearsal
             && assistantEarlyBridgeEnabled
         activePreparedReferencePack = purpose == .interview
-            && isInterviewEvidenceResolved
+            && hasReadyInterviewEvidence
             ? referencePreparationState.pack
             : nil
     }
@@ -3690,17 +3701,11 @@ final class MeetingController: ObservableObject {
             return "prepared:\(activePreparedReferencePack.revision)"
         }
         if let pack = referencePreparationState.pack,
-           isInterviewEvidenceResolved
+           hasReadyInterviewEvidence
         {
             return "prepared:\(pack.revision)"
         }
-        if referencePreparationState.pack != nil
-            || referencePreparationState.resumeSource != nil
-            || !referencePreparationState.webSources.isEmpty
-        {
-            return nil
-        }
-        return referenceLibraryState.snapshot?.revision
+        return nil
     }
 
     private func assistantReferences(
@@ -3720,28 +3725,15 @@ final class MeetingController: ObservableObject {
                 folderURL: referenceLibraryState.snapshot?.folderURL
             )
         }
-        if
-            let pack = referencePreparationState.pack,
-            pack.sourceManifest?.requiresReview != true,
-            pack.isCurrent(
-                purpose: .interview,
-                localReferenceRevision: currentLocalReferenceRevision,
-                webSources: referencePreparationState.webSources,
-                sessionContext: interviewContextPrompt
-            )
+        if let pack = referencePreparationState.pack,
+           hasReadyInterviewEvidence
         {
             return pack.snapshot(
                 for: question,
                 folderURL: referenceLibraryState.snapshot?.folderURL
             )
         }
-        if referencePreparationState.pack != nil
-            || referencePreparationState.resumeSource != nil
-            || !referencePreparationState.webSources.isEmpty
-        {
-            return nil
-        }
-        return referenceLibraryState.snapshot
+        return nil
     }
 
     private static func sessionContext(

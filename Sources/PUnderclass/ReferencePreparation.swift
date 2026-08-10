@@ -407,6 +407,45 @@ enum ReferencePreparationPhase: Equatable, Sendable {
     }
 }
 
+/// The small set of states the guided interview setup can present. Keeping
+/// this separate from the extraction phase lets every surface agree on what
+/// the user actually needs to do next.
+enum InterviewPreparationReadiness: Equatable, Sendable {
+    case unavailable
+    case activeSession
+    case preparing
+    case needsResume
+    case needsEvidence
+    case needsSourceReview
+    case needsUsableEvidence
+    case ready(cardCount: Int)
+
+    static func resolve(
+        isAssistantAvailable: Bool,
+        hasActiveSession: Bool,
+        isPreparing: Bool,
+        hasExplicitResume: Bool,
+        hasPack: Bool,
+        isPackCurrent: Bool,
+        requiresSourceReview: Bool,
+        enabledCardCount: Int
+    ) -> Self {
+        guard isAssistantAvailable else { return .unavailable }
+        if isPreparing { return .preparing }
+        if hasActiveSession { return .activeSession }
+        guard hasExplicitResume else { return .needsResume }
+        guard hasPack, isPackCurrent else { return .needsEvidence }
+        if requiresSourceReview { return .needsSourceReview }
+        guard enabledCardCount > 0 else { return .needsUsableEvidence }
+        return .ready(cardCount: enabledCardCount)
+    }
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+}
+
 struct ReferencePreparationState: Equatable, Sendable {
     var resumeSource: ReferenceResumeSource?
     var webSources: [ReferenceWebSource] = []

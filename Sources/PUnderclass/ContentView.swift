@@ -825,7 +825,7 @@ struct ContentView: View {
                     Text(
                         purpose == .meeting
                             ? "Add a brief, exact terms, languages, and reference documents for transcription and Meeting Assistant."
-                            : "Add role context, exact terms, languages, and reference documents for transcription and Answer Mirror."
+                            : "Choose the resume, confirm the target role, and prepare evidence for Answer Mirror."
                     )
                     .font(.body)
                     .foregroundStyle(.secondary)
@@ -834,18 +834,27 @@ struct ContentView: View {
 
                 Spacer(minLength: 16)
 
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text("Session guidance + references")
-                        .font(.callout.weight(.medium))
-                    if let folderURL = state.folderURL {
-                        Text(referenceSummary(snapshot: snapshot, folderURL: folderURL))
+                if purpose == .interview {
+                    interviewPreparationAccessStatus
+                } else {
+                    VStack(alignment: .trailing, spacing: 5) {
+                        Text("Session guidance + references")
+                            .font(.callout.weight(.medium))
+                        if let folderURL = state.folderURL {
+                            Text(
+                                referenceSummary(
+                                    snapshot: snapshot,
+                                    folderURL: folderURL
+                                )
+                            )
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                    } else {
-                        Text("No folder selected")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("No folder selected")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -872,6 +881,86 @@ struct ContentView: View {
                 .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
         }
         .accessibilityLabel("Prepare \(purpose.title)")
+    }
+
+    private var interviewPreparationAccessStatus: some View {
+        let copy = interviewPreparationAccessCopy
+        return VStack(alignment: .trailing, spacing: 5) {
+            Label(copy.title, systemImage: copy.icon)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(copy.color)
+            Text(copy.detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var interviewPreparationAccessCopy: (
+        title: String,
+        detail: String,
+        icon: String,
+        color: Color
+    ) {
+        switch controller.interviewPreparationReadiness {
+        case .unavailable:
+            return (
+                "Answer Mirror needs setup",
+                "Local interview transcription still works",
+                "lock.fill",
+                .secondary
+            )
+        case .activeSession:
+            return (
+                "Interview is active",
+                "Stop it before changing preparation",
+                "waveform",
+                .secondary
+            )
+        case .preparing:
+            return (
+                controller.referencePreparationState.phase.title,
+                "The setup will advance automatically",
+                "sparkles",
+                .accentColor
+            )
+        case .needsResume:
+            return (
+                "Resume needed",
+                "Open setup to choose the current resume",
+                "doc.badge.plus",
+                .orange
+            )
+        case .needsEvidence:
+            return (
+                "Preparation needed",
+                controller.referencePreparationState.resumeSource?
+                    .displayName ?? "Resume selected",
+                "wand.and.stars",
+                .orange
+            )
+        case .needsSourceReview:
+            return (
+                "Source review needed",
+                "Open setup to resolve one conflict",
+                "exclamationmark.triangle.fill",
+                .orange
+            )
+        case .needsUsableEvidence:
+            return (
+                "More source detail needed",
+                "The current sources produced no usable evidence",
+                "exclamationmark.triangle.fill",
+                .orange
+            )
+        case let .ready(cardCount):
+            return (
+                "Ready for interview",
+                "\(cardCount) evidence \(cardCount == 1 ? "card" : "cards") prepared",
+                "checkmark.seal.fill",
+                .green
+            )
+        }
     }
 
     private func generatedReplayPanel(
