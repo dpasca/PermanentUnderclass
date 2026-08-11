@@ -852,7 +852,7 @@ enum QuickDictationDeliveryOutcome: Equatable {
     /// Posted to the app, but the app does not expose enough for the paste to
     /// be confirmed.
     case unverified(applicationName: String)
-    /// Nothing was pasted; the text is on the clipboard instead.
+    /// Nothing was pasted; the user can explicitly copy or dismiss the text.
     case notDelivered(reason: String)
 
     var isResolved: Bool {
@@ -886,7 +886,7 @@ enum QuickDictationDeliveryOutcome: Equatable {
         case let .unverified(applicationName):
             "\(applicationName) could not confirm the paste. Copy the text if it did not appear."
         case let .notDelivered(reason):
-            "\(reason) The text is on the clipboard — press ⌘V where you want it."
+            "\(reason) Copy the text, or dismiss this message."
         }
     }
 }

@@ -1718,7 +1718,7 @@ final class HoldToDictateService {
             Self.logger.notice(
                 "transcription_interrupted characters=\(result.count, privacy: .public)"
             )
-            finishDelivery(.interrupted, text: result)
+            finishDelivery(.interrupted)
             return
         }
 
@@ -1729,8 +1729,7 @@ final class HoldToDictateService {
             finishDelivery(
                 .notDelivered(
                     reason: "This dictation has no destination field."
-                ),
-                text: result
+                )
             )
             return
         }
@@ -1747,8 +1746,7 @@ final class HoldToDictateService {
             finishDelivery(
                 .notDelivered(
                     reason: "You switched to \(currentApplication) while this was transcribing."
-                ),
-                text: result
+                )
             )
             return
         }
@@ -1762,13 +1760,12 @@ final class HoldToDictateService {
                 )
                 switch delivery {
                 case .verified:
-                    self.finishDelivery(.pasted, text: result)
+                    self.finishDelivery(.pasted)
                 case .unverified:
                     self.finishDelivery(
                         .unverified(
                             applicationName: pasteTarget.applicationName
-                        ),
-                        text: result
+                        )
                     )
                 }
             case let .failure(error):
@@ -1776,27 +1773,16 @@ final class HoldToDictateService {
                     "paste_failed error=\(error.localizedDescription, privacy: .public)"
                 )
                 self.finishDelivery(
-                    .notDelivered(reason: error.localizedDescription),
-                    text: result
+                    .notDelivered(reason: error.localizedDescription)
                 )
             }
         }
     }
 
-    /// Publishes the delivery outcome and, when nothing was pasted, leaves the
-    /// text on the clipboard so it is one keystroke away instead of lost.
-    ///
-    /// Several dictations can be transcribing at once, so one going
-    /// undeliverable says nothing about whether another is mid-paste. The
-    /// clipboard write therefore goes through `PasteInjector`, which holds it
-    /// until no posted Cmd+V could still pick it up by mistake.
-    private func finishDelivery(
-        _ outcome: QuickDictationDeliveryOutcome,
-        text: String
-    ) {
-        if case .notDelivered = outcome {
-            pasteInjector.offerOnClipboard(text)
-        }
+    /// Publishes the delivery outcome without changing the clipboard. When a
+    /// paste fails, the overlay and history retain the text until the user
+    /// explicitly chooses Copy or Dismiss.
+    private func finishDelivery(_ outcome: QuickDictationDeliveryOutcome) {
         deliveryHandler(outcome)
         progressHandler(nil)
         if recordingID == nil {
@@ -2908,9 +2894,6 @@ final class PasteInjector {
     /// A restore that is waiting out its dwell. Until it runs, it — not the
     /// pasteboard — holds the user's real clipboard.
     private var pendingRestore: PasteAttempt?
-    /// Text owed to the clipboard once no paste is in flight. Last one wins,
-    /// matching the plain overwrite this replaced.
-    private var pendingClipboardOffer: String?
     private var scheduledWorkItem: DispatchWorkItem?
     private var generation = UUID()
 
@@ -2925,19 +2908,6 @@ final class PasteInjector {
         processNextRequest()
     }
 
-    /// Leaves text on the clipboard for the user to paste by hand, once doing
-    /// so cannot corrupt a paste in flight.
-    ///
-    /// Writing straight to the pasteboard — which is what callers used to do —
-    /// makes an already-posted Cmd+V deliver *this* text instead of its own,
-    /// and bumps the change count so the in-flight attempt gives up on handing
-    /// the user their real clipboard back. Several dictations can be in flight
-    /// at once, so this is reachable whenever one of them is undeliverable.
-    func offerOnClipboard(_ text: String) {
-        pendingClipboardOffer = text
-        drainClipboardOffer()
-    }
-
     func cancel() {
         generation = UUID()
         scheduledWorkItem?.cancel()
@@ -2945,35 +2915,10 @@ final class PasteInjector {
         restoreActiveClipboardIfUnchanged(isDeliveryProven: false)
         queuedRequests.removeAll()
         activeRequest = nil
-        drainClipboardOffer()
-    }
-
-    private func drainClipboardOffer() {
-        guard let text = pendingClipboardOffer else { return }
-        // The offer is only unsafe while a posted Cmd+V could still read it:
-        // an attempt that has not been retired yet (`activePasteAttempt`), one
-        // inside its dwell (`pendingRestore`), or one about to be posted.
-        // Notably this does *not* wait on `activeRequest`, so the ordinary
-        // "paste failed" path still hands the text over without delay.
-        guard
-            activePasteAttempt == nil,
-            pendingRestore == nil,
-            queuedRequests.isEmpty
-        else {
-            return
-        }
-        pendingClipboardOffer = nil
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        Self.logger.notice("clipboard_offer_delivered")
     }
 
     private func processNextRequest() {
-        guard activeRequest == nil, !queuedRequests.isEmpty else {
-            drainClipboardOffer()
-            return
-        }
+        guard activeRequest == nil, !queuedRequests.isEmpty else { return }
         let request = queuedRequests.removeFirst()
         activeRequest = request
         // Re-checked here, not just when the dictation was handed over: a
@@ -3404,9 +3349,6 @@ final class PasteInjector {
             guard self.pendingRestore?.id == attempt.id else { return }
             self.pendingRestore = nil
             Self.restoreClipboardAndLog(after: attempt)
-            // The dwell was the last thing holding back an undeliverable
-            // dictation waiting for the clipboard.
-            self.drainClipboardOffer()
         }
     }
 

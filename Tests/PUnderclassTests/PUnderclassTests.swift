@@ -2022,6 +2022,37 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
+    func testUndeliveredResultWaitsForExplicitCopyOrDismiss() {
+        var state = QuickDictationPreviewState()
+        state.handle(phase: .transcribing)
+        state.show(result: "Text that could not be pasted")
+
+        state.resolve(
+            delivery: .notDelivered(
+                reason: "The original field is no longer available."
+            )
+        )
+
+        XCTAssertTrue(state.content.needsAcknowledgement)
+        XCTAssertEqual(
+            state.content,
+            .result(
+                QuickDictationResultPresentation(
+                    text: "Text that could not be pasted",
+                    delivery: .notDelivered(
+                        reason: "The original field is no longer available."
+                    )
+                )
+            )
+        )
+        XCTAssertEqual(
+            QuickDictationDeliveryOutcome.notDelivered(
+                reason: "The original field is no longer available."
+            ).detail,
+            "The original field is no longer available. Copy the text, or dismiss this message."
+        )
+    }
+
     // MARK: - Local-first capability
 
     func testFreshInstallCanDictateWithoutAnAPIKey() {

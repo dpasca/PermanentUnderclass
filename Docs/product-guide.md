@@ -335,10 +335,11 @@ case leaves the overlay on screen offering **Copy** and **Dismiss**.
 
 If the user switched to a different application while the transcription was
 finishing, Quick Dictation does **not** paste and does not pull focus back.
-Instead the text is placed on the clipboard and the overlay says so, so a stray
-transcript can never land in whatever window happens to be frontmost. The same
-applies when the original target closes or can no longer be focused. In every
-one of these cases the text is also saved to history, so nothing is lost.
+Instead the overlay keeps the text on screen with **Copy** and **Dismiss**
+actions, so a stray transcript cannot land in the frontmost window or overwrite
+the clipboard. The same applies when the original target closes or can no
+longer be focused. In every one of these cases the text is also saved to
+history, so nothing is lost.
 
 While a dictation is being transcribed, the overlay reports what it is waiting
 on — streamed text as it arrives, upload percentage on the fallback path, then
