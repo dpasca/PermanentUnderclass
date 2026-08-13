@@ -263,7 +263,7 @@ actor WhisperTranscriber {
         }
 
         onProgress?(.checkingCache)
-        let task = Task(priority: .utility) {
+        let task = Task(priority: .userInitiated) {
             let cacheDirectory = try Self.cacheDirectory()
             let cachedFolder = Self.cachedModelFolder(in: cacheDirectory)
             let modelFolder: URL

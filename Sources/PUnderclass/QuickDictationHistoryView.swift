@@ -202,11 +202,12 @@ struct QuickDictationControlPanel: View {
         case .off:
             .secondary
         case .needsPermission, .preparing, .startingMicrophone,
-             .recoveringMicrophone, .transcribing:
+             .startingMicrophoneWhilePreparing, .recoveringMicrophone,
+             .waitingForModel, .transcribing:
             .orange
         case .ready:
             .green
-        case .recording:
+        case .recording, .recordingWhilePreparing:
             .red
         case .failed:
             .orange

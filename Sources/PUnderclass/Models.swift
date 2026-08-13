@@ -781,8 +781,11 @@ enum DictationPhase: Equatable {
     case preparing(TranscriptRefinementEngine)
     case ready
     case startingMicrophone
+    case startingMicrophoneWhilePreparing(TranscriptRefinementEngine)
     case recording
+    case recordingWhilePreparing(TranscriptRefinementEngine)
     case recoveringMicrophone
+    case waitingForModel(TranscriptRefinementEngine)
     case transcribing
     case failed(String)
 
@@ -805,10 +808,16 @@ enum DictationPhase: Equatable {
             "Ready"
         case .startingMicrophone:
             "Starting microphone…"
+        case let .startingMicrophoneWhilePreparing(engine):
+            "Starting microphone · Loading \(engine.shortLabel)…"
         case .recording:
             "Listening…"
+        case let .recordingWhilePreparing(engine):
+            "Listening · Loading \(engine.shortLabel)…"
         case .recoveringMicrophone:
             "Recovering microphone…"
+        case let .waitingForModel(engine):
+            "Waiting for \(engine.shortLabel)…"
         case .transcribing:
             "Transcribing…"
         case .failed:
@@ -821,16 +830,22 @@ enum DictationPhase: Equatable {
         case let .preparing(engine):
             switch engine {
             case .localWhisper:
-                return "Whisper is still loading. Release the shortcut and wait for Ready before dictating."
+                return "Whisper is still loading. You can start dictating now; audio will be captured locally and transcribed automatically when it is ready."
             case .localParakeet:
-                return "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+                return "Parakeet is still loading. You can start dictating now; audio will be captured locally and transcribed automatically when it is ready."
             case .openAITranscribe:
                 return "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
             }
         case .startingMicrophone:
             return "Waiting for the selected microphone to deliver its first audio buffer."
+        case let .startingMicrophoneWhilePreparing(engine):
+            return "\(engine.shortLabel) is still loading. The microphone is starting now, so you can dictate without waiting."
+        case let .recordingWhilePreparing(engine):
+            return "\(engine.shortLabel) is still loading. Keep speaking; your audio is being captured locally and will transcribe automatically."
         case .recoveringMicrophone:
             return "The selected microphone stopped delivering audio. Keep holding the shortcut while PermanentUnderclass reconnects it."
+        case let .waitingForModel(engine):
+            return "Your recording is saved locally. \(engine.shortLabel) is still loading, and transcription will start automatically when it is ready."
         case let .failed(message):
             return message
         default:

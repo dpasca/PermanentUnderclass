@@ -499,6 +499,20 @@ enum QuickDictationTranscriberAvailability {
     }
 }
 
+enum QuickDictationStartPolicy {
+    static func startsWhilePreparing(
+        isFinalTranscriberReady: Bool,
+        engine: TranscriptRefinementEngine,
+        transcriberState: SocketState
+    ) -> Bool {
+        guard !isFinalTranscriberReady, !engine.isCloud else { return false }
+        if case .connecting = transcriberState {
+            return true
+        }
+        return false
+    }
+}
+
 struct QuickDictationWorkState<Target> {
     private var targetsByTranscriptionID: [String: Target] = [:]
 
@@ -534,10 +548,14 @@ struct QuickDictationWorkState<Target> {
         engine: TranscriptRefinementEngine
     ) -> DictationPhase {
         if isRecording {
-            return .recording
+            return isModelReady
+                ? .recording
+                : .recordingWhilePreparing(engine)
         }
         if hasPendingTranscriptions {
-            return .transcribing
+            return isModelReady
+                ? .transcribing
+                : .waitingForModel(engine)
         }
         if !isRunning {
             return .off
@@ -644,6 +662,7 @@ final class HoldToDictateService {
     private var streamDidFail = false
     private var generation = UUID()
     private var transcriberState: SocketState = .idle
+    private var transcriberFailureMessage: String?
     private var reconnectPolicy = QuickDictationReconnectPolicy()
     private var reconnectWorkItem: DispatchWorkItem?
     private var isModelReady = false
@@ -736,6 +755,7 @@ final class HoldToDictateService {
             isRunning = true
             isModelReady = false
             transcriberState = .idle
+            transcriberFailureMessage = nil
             reconnectPolicy.reset()
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
@@ -785,6 +805,7 @@ final class HoldToDictateService {
         workState.reset()
         transcriptionStartUptimes.removeAll()
         transcriberState = .idle
+        transcriberFailureMessage = nil
         isModelReady = false
         isRunning = false
     }
@@ -948,6 +969,7 @@ final class HoldToDictateService {
 
     private func connectTranscriber(generation: UUID) {
         transcriberState = .connecting
+        transcriberFailureMessage = nil
         if recordingID == nil, !workState.hasPendingTranscriptions {
             phaseHandler(.preparing(transcriptionEngine))
         }
@@ -1066,6 +1088,7 @@ final class HoldToDictateService {
             }
         case .connecting:
             isModelReady = false
+            transcriberFailureMessage = nil
             if recordingID == nil, !workState.hasPendingTranscriptions {
                 phaseHandler(
                     isFallbackReady ? .ready : .preparing(transcriptionEngine)
@@ -1075,13 +1098,31 @@ final class HoldToDictateService {
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             isModelReady = true
-            if recordingID == nil, !workState.hasPendingTranscriptions {
-                phaseHandler(.ready)
+            transcriberFailureMessage = nil
+            if recordingID != nil,
+               microphoneCapture?.hasReceivedBuffer != true {
+                phaseHandler(.startingMicrophone)
+            } else {
+                phaseHandler(currentWorkPhase())
             }
         case let .failed(message):
             isModelReady = false
+            transcriberFailureMessage = message
+            if !transcriptionEngine.isCloud {
+                let pendingTranscriptionIDs = workState.pendingTranscriptionIDs
+                transcriber?.cancelPendingRequests()
+                for transcriptID in pendingTranscriptionIDs {
+                    handleTranscriptionFailure(
+                        transcriptID: transcriptID,
+                        message: message,
+                        generation: generation
+                    )
+                }
+            }
             if recordingID == nil, !workState.hasPendingTranscriptions {
                 phaseHandler(isFallbackReady ? .ready : .failed(message))
+            } else if recordingID != nil, !isFallbackReady {
+                phaseHandler(.failed(message))
             } else {
                 Self.logger.error(
                     "transcriber_failed_with_active_capture_or_recovery error=\(message, privacy: .public)"
@@ -1178,7 +1219,13 @@ final class HoldToDictateService {
         initialApplication: NSRunningApplication?
     ) {
         guard isRunning, recordingID == nil else { return }
-        guard isAnyFinalTranscriberReady else {
+        let isPreparingLocalModel = QuickDictationStartPolicy
+            .startsWhilePreparing(
+                isFinalTranscriberReady: isAnyFinalTranscriberReady,
+                engine: transcriptionEngine,
+                transcriberState: transcriberState
+            )
+        guard isAnyFinalTranscriberReady || isPreparingLocalModel else {
             if transcriptionEngine == .openAITranscribe,
                transcriberState != .connecting {
                 restartTranscriber()
@@ -1252,14 +1299,20 @@ final class HoldToDictateService {
         self.pipeline = pipeline
         microphoneCapture = capture
         recordingHandler(true)
-        phaseHandler(.startingMicrophone)
+        phaseHandler(
+            isPreparingLocalModel
+                ? .startingMicrophoneWhilePreparing(transcriptionEngine)
+                : .startingMicrophone
+        )
         partialHandler("")
         progressHandler(nil)
         beginDictationStream(
             streamHandle,
             streamID: streamID
         )
-        if transcribesAfterRecording, shouldProduceLivePreview(),
+        if transcribesAfterRecording,
+           isAnyFinalTranscriberReady,
+           shouldProduceLivePreview(),
            streamID == nil {
             // A cloud stream owns the primary transcriber while the shortcut is
             // held, so the sampling preview loop only runs for other engines.
@@ -1300,7 +1353,7 @@ final class HoldToDictateService {
                     }
                     self.microphoneRestartAttempts = 0
                     self.isRecoveringMicrophone = false
-                    self.phaseHandler(.recording)
+                    self.phaseHandler(self.currentWorkPhase())
                 }
             },
             onStall: { [weak self, weak capture] in
@@ -1434,6 +1487,17 @@ final class HoldToDictateService {
             )
             return
         }
+        if
+            !transcriptionEngine.isCloud,
+            !isAnyFinalTranscriberReady,
+            let transcriberFailureMessage
+        {
+            retainRecovery(
+                recovery,
+                message: transcriberFailureMessage
+            )
+            return
+        }
         let context: TranscriptionContext
         do {
             context = try makeTranscriptionContext(
@@ -1481,7 +1545,11 @@ final class HoldToDictateService {
         }
 
         discardDictationStream()
-        progressHandler(.uploading(fraction: 0))
+        progressHandler(
+            transcriptionEngine.isCloud
+                ? .uploading(fraction: 0)
+                : .transcribing
+        )
         transcriber.refine(request)
     }
 
@@ -2112,6 +2180,13 @@ final class HoldToDictateService {
         if recordingID != nil, isRecoveringMicrophone {
             return .recoveringMicrophone
         }
+        if
+            recordingID != nil,
+            !isAnyFinalTranscriberReady,
+            let transcriberFailureMessage
+        {
+            return .failed(transcriberFailureMessage)
+        }
         return workState.phase(
             isRunning: isRunning,
             isRecording: recordingID != nil,
@@ -2240,6 +2315,14 @@ final class HoldToDictateService {
     private func produceLivePreview(recordingID: UUID) {
         livePreviewWorkItem = nil
         guard self.recordingID == recordingID else { return }
+        guard isAnyFinalTranscriberReady else {
+            stopLivePreview()
+            return
+        }
+        guard transcriberFailureMessage == nil else {
+            stopLivePreview()
+            return
+        }
         guard shouldProduceLivePreview() else {
             stopLivePreview()
             return

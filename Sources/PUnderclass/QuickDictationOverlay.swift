@@ -9,8 +9,11 @@ struct QuickDictationResultPresentation: Equatable {
 enum QuickDictationPreviewContent: Equatable {
     case hidden
     case startingMicrophone
+    case startingMicrophoneWhilePreparing(TranscriptRefinementEngine)
     case listening
+    case listeningWhilePreparing(TranscriptRefinementEngine)
     case recoveringMicrophone
+    case waitingForModel(TranscriptRefinementEngine)
     case transcribing
     case result(QuickDictationResultPresentation)
     case failure(String)
@@ -21,6 +24,37 @@ enum QuickDictationPreviewContent: Equatable {
         guard case let .result(presentation) = self else { return false }
         return !presentation.delivery.isResolved
             && presentation.delivery != .delivering
+    }
+
+    var isStartingMicrophone: Bool {
+        switch self {
+        case .startingMicrophone, .startingMicrophoneWhilePreparing:
+            true
+        default:
+            false
+        }
+    }
+
+    var isListening: Bool {
+        switch self {
+        case .listening, .listeningWhilePreparing:
+            true
+        default:
+            false
+        }
+    }
+
+    var isCapturing: Bool {
+        isStartingMicrophone || isListening || self == .recoveringMicrophone
+    }
+
+    var isPendingTranscription: Bool {
+        switch self {
+        case .waitingForModel, .transcribing:
+            true
+        default:
+            false
+        }
     }
 }
 
@@ -42,19 +76,32 @@ struct QuickDictationPreviewState: Equatable {
         switch phase {
         case .startingMicrophone:
             content = .startingMicrophone
-            if previousContent == .transcribing {
+            if previousContent.isPendingTranscription {
+                backgroundContent = .transcribing
+            }
+        case let .startingMicrophoneWhilePreparing(engine):
+            content = .startingMicrophoneWhilePreparing(engine)
+            if previousContent.isPendingTranscription {
                 backgroundContent = .transcribing
             }
         case .recording:
             content = .listening
-            if previousContent == .transcribing {
+            if previousContent.isPendingTranscription {
+                backgroundContent = .transcribing
+            }
+        case let .recordingWhilePreparing(engine):
+            content = .listeningWhilePreparing(engine)
+            if previousContent.isPendingTranscription {
                 backgroundContent = .transcribing
             }
         case .recoveringMicrophone:
             content = .recoveringMicrophone
-            if previousContent == .transcribing {
+            if previousContent.isPendingTranscription {
                 backgroundContent = .transcribing
             }
+        case let .waitingForModel(engine):
+            content = .waitingForModel(engine)
+            backgroundContent = nil
         case .transcribing:
             content = .transcribing
             backgroundContent = nil
@@ -76,10 +123,7 @@ struct QuickDictationPreviewState: Equatable {
     }
 
     mutating func show(result: String) {
-        if content == .startingMicrophone
-            || content == .listening
-            || content == .recoveringMicrophone
-        {
+        if content.isCapturing {
             backgroundContent = .result(result)
             return
         }
@@ -158,7 +202,7 @@ private struct QuickDictationOverlayView: View {
                     Text(title)
                         .font(.system(size: 13, weight: .semibold))
                     Spacer(minLength: 12)
-                    if model.content == .listening {
+                    if model.content.isListening {
                         Text("Release ⌘ + ⌥ to transcribe")
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
@@ -168,16 +212,10 @@ private struct QuickDictationOverlayView: View {
                 // Which microphone is heard and which model is doing the work
                 // are both worth knowing at a glance, and stay visible through
                 // transcription rather than only while recording.
-                if model.content == .startingMicrophone
-                    || model.content == .listening
-                    || model.content == .recoveringMicrophone
-                    || model.content == .transcribing
-                {
+                if model.content.isCapturing
+                    || model.content.isPendingTranscription {
                     HStack(spacing: 9) {
-                        if model.content == .startingMicrophone
-                            || model.content == .listening
-                            || model.content == .recoveringMicrophone
-                        {
+                        if model.content.isCapturing {
                             Label {
                                 Text(model.microphoneName)
                                     .lineLimit(1)
@@ -332,6 +370,17 @@ private struct QuickDictationOverlayView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
+        case let .startingMicrophoneWhilePreparing(engine):
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(
+                    "\(engine.shortLabel) is still loading. Starting the microphone now so you can dictate without waiting…"
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            }
         case .listening:
             VStack(alignment: .leading, spacing: 5) {
                 Text(
@@ -351,6 +400,22 @@ private struct QuickDictationOverlayView: View {
                 )
                 .frame(height: 19)
             }
+        case let .listeningWhilePreparing(engine):
+            VStack(alignment: .leading, spacing: 5) {
+                Text(
+                    "\(engine.shortLabel) is loading. Keep speaking—your audio is being captured locally."
+                )
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+                WaveformView(
+                    samples: model.waveform,
+                    color: accentColor,
+                    normalization: .adaptive
+                )
+                .frame(height: 19)
+            }
         case .recoveringMicrophone:
             HStack(spacing: 8) {
                 ProgressView()
@@ -359,6 +424,17 @@ private struct QuickDictationOverlayView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+            }
+        case let .waitingForModel(engine):
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(
+                    "Recording saved locally. \(engine.shortLabel) is still loading; transcription will start automatically."
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
             }
         case .transcribing:
             VStack(alignment: .leading, spacing: 6) {
@@ -422,10 +498,16 @@ private struct QuickDictationOverlayView: View {
             "Quick Dictation"
         case .startingMicrophone:
             "Starting microphone…"
+        case let .startingMicrophoneWhilePreparing(engine):
+            "Starting microphone · \(engine.shortLabel) loading…"
         case .listening:
             "Listening…"
+        case let .listeningWhilePreparing(engine):
+            "Listening · \(engine.shortLabel) loading…"
         case .recoveringMicrophone:
             "Recovering microphone…"
+        case let .waitingForModel(engine):
+            "Waiting for \(engine.shortLabel)…"
         case .transcribing:
             model.progress?.label ?? "Transcribing…"
         case let .result(presentation):
@@ -437,11 +519,12 @@ private struct QuickDictationOverlayView: View {
 
     private var symbolName: String {
         switch model.content {
-        case .hidden, .listening:
+        case .hidden, .listening, .listeningWhilePreparing:
             "mic.fill"
-        case .startingMicrophone, .recoveringMicrophone:
+        case .startingMicrophone, .startingMicrophoneWhilePreparing,
+             .recoveringMicrophone:
             "arrow.clockwise"
-        case .transcribing:
+        case .waitingForModel, .transcribing:
             "text.bubble.fill"
         case let .result(presentation):
             presentation.delivery.isResolved
@@ -457,7 +540,9 @@ private struct QuickDictationOverlayView: View {
         switch model.content {
         case .hidden, .listening:
             .red
-        case .startingMicrophone, .recoveringMicrophone:
+        case .startingMicrophone, .startingMicrophoneWhilePreparing,
+             .listeningWhilePreparing, .recoveringMicrophone,
+             .waitingForModel:
             .orange
         case .transcribing:
             .orange
@@ -477,13 +562,19 @@ private struct QuickDictationOverlayView: View {
             return "Hidden"
         case .startingMicrophone:
             return "Waiting for the selected microphone to deliver its first audio buffer."
+        case let .startingMicrophoneWhilePreparing(engine):
+            return "\(engine.shortLabel) is still loading. The microphone is starting now so dictation can begin without waiting."
         case .listening:
             let status = model.partialTranscript.isEmpty
                 ? "Listening. Release Command and Option to transcribe."
                 : "Listening. Live transcript: \(model.partialTranscript)"
             return "\(status) Microphone: \(model.microphoneName)."
+        case let .listeningWhilePreparing(engine):
+            return "Listening. \(engine.shortLabel) is still loading. Audio is being captured locally and will transcribe automatically. Microphone: \(model.microphoneName)."
         case .recoveringMicrophone:
             return "The selected microphone stopped delivering audio. PermanentUnderclass is reconnecting it."
+        case let .waitingForModel(engine):
+            return "The recording is saved locally. \(engine.shortLabel) is still loading, and transcription will start automatically when it is ready."
         case .transcribing:
             let status = model.progress?.label ?? "Transcribing the recording."
             return model.partialTranscript.isEmpty
@@ -603,24 +694,24 @@ final class QuickDictationOverlayController {
             cancelBackgroundDismissal()
             setInteractive(false)
             hide()
-        case .startingMicrophone:
+        case .startingMicrophone, .startingMicrophoneWhilePreparing:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
             setInteractive(false)
-            if previousContent != .startingMicrophone {
+            if !previousContent.isStartingMicrophone {
                 model.waveform = Array(repeating: 0, count: 180)
                 model.partialTranscript = ""
                 model.progress = nil
             }
             present()
-        case .listening:
+        case .listening, .listeningWhilePreparing:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
             setInteractive(false)
             if state.backgroundContent == .transcribing {
                 cancelBackgroundDismissal()
             }
-            if previousContent != .listening {
+            if !previousContent.isListening {
                 model.waveform = Array(repeating: 0, count: 180)
                 model.partialTranscript = ""
                 model.progress = nil
@@ -631,7 +722,7 @@ final class QuickDictationOverlayController {
             dismissWorkItem = nil
             setInteractive(false)
             present()
-        case .transcribing:
+        case .waitingForModel, .transcribing:
             dismissWorkItem?.cancel()
             dismissWorkItem = nil
             cancelBackgroundDismissal()
@@ -649,7 +740,7 @@ final class QuickDictationOverlayController {
         guard
             isEnabled,
             !isSuppressed,
-            state.content == .listening
+            state.content.isListening
         else { return }
         model.waveform = telemetry.waveform
     }
@@ -657,8 +748,9 @@ final class QuickDictationOverlayController {
     func update(partialTranscript: String) {
         guard isEnabled, !isSuppressed else { return }
         switch state.content {
-        case .startingMicrophone, .listening, .recoveringMicrophone,
-             .transcribing:
+        case .startingMicrophone, .startingMicrophoneWhilePreparing,
+             .listening, .listeningWhilePreparing, .recoveringMicrophone,
+             .waitingForModel, .transcribing:
             model.partialTranscript = partialTranscript
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         case .hidden, .result, .failure:
@@ -689,7 +781,7 @@ final class QuickDictationOverlayController {
 
     func show(result: String) {
         guard isEnabled, !isSuppressed else { return }
-        let isBackgroundResult = state.content == .listening
+        let isBackgroundResult = state.content.isCapturing
         state.show(result: result)
         model.content = state.content
         model.backgroundContent = state.backgroundContent

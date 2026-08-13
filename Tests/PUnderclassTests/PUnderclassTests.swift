@@ -1631,14 +1631,14 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertEqual(whisper.label, "Loading Whisper…")
         XCTAssertEqual(
             whisper.detail,
-            "Whisper is still loading. Release the shortcut and wait for Ready before dictating."
+            "Whisper is still loading. You can start dictating now; audio will be captured locally and transcribed automatically when it is ready."
         )
 
         let local = DictationPhase.preparing(.localParakeet)
         XCTAssertEqual(local.label, "Loading Parakeet…")
         XCTAssertEqual(
             local.detail,
-            "Parakeet is still loading. Release the shortcut and wait for Ready before dictating."
+            "Parakeet is still loading. You can start dictating now; audio will be captured locally and transcribed automatically when it is ready."
         )
 
         let cloud = DictationPhase.preparing(.openAITranscribe)
@@ -1646,6 +1646,20 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertEqual(
             cloud.detail,
             "GPT-Transcribe is still connecting. Release the shortcut and wait for Ready before dictating."
+        )
+
+        let recording = DictationPhase.recordingWhilePreparing(.localWhisper)
+        XCTAssertEqual(recording.label, "Listening · Loading Whisper…")
+        XCTAssertEqual(
+            recording.detail,
+            "Whisper is still loading. Keep speaking; your audio is being captured locally and will transcribe automatically."
+        )
+
+        let waiting = DictationPhase.waitingForModel(.localWhisper)
+        XCTAssertEqual(waiting.label, "Waiting for Whisper…")
+        XCTAssertEqual(
+            waiting.detail,
+            "Your recording is saved locally. Whisper is still loading, and transcription will start automatically when it is ready."
         )
     }
 
@@ -1715,6 +1729,15 @@ final class PUnderclassTests: XCTestCase {
             state.phase(
                 isRunning: true,
                 isRecording: false,
+                isModelReady: false,
+                engine: .localWhisper
+            ),
+            .waitingForModel(.localWhisper)
+        )
+        XCTAssertEqual(
+            state.phase(
+                isRunning: true,
+                isRecording: false,
                 isModelReady: true,
                 engine: .localParakeet
             ),
@@ -1727,7 +1750,7 @@ final class PUnderclassTests: XCTestCase {
                 isModelReady: false,
                 engine: .localParakeet
             ),
-            .recording
+            .recordingWhilePreparing(.localParakeet)
         )
 
         state.submit(transcriptID: "second", target: "second window")
@@ -1843,6 +1866,69 @@ final class PUnderclassTests: XCTestCase {
                 fallbackState: .connected
             )
         )
+    }
+
+    func testLocalDictationCanStartWhileItsModelIsLoading() {
+        XCTAssertTrue(
+            QuickDictationStartPolicy.startsWhilePreparing(
+                isFinalTranscriberReady: false,
+                engine: .localWhisper,
+                transcriberState: .connecting
+            )
+        )
+        XCTAssertTrue(
+            QuickDictationStartPolicy.startsWhilePreparing(
+                isFinalTranscriberReady: false,
+                engine: .localParakeet,
+                transcriberState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationStartPolicy.startsWhilePreparing(
+                isFinalTranscriberReady: false,
+                engine: .openAITranscribe,
+                transcriberState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            QuickDictationStartPolicy.startsWhilePreparing(
+                isFinalTranscriberReady: false,
+                engine: .localWhisper,
+                transcriberState: .failed("Model unavailable")
+            )
+        )
+    }
+
+    func testQuickDictationPreviewExplainsWhisperLoadingDuringCapture() {
+        var state = QuickDictationPreviewState()
+
+        // Background warmup alone stays unobtrusive.
+        state.handle(phase: .preparing(.localWhisper))
+        XCTAssertEqual(state.content, .hidden)
+
+        // The user's hotkey attempt must always receive visible feedback.
+        state.handle(
+            phase: .startingMicrophoneWhilePreparing(.localWhisper)
+        )
+        XCTAssertEqual(
+            state.content,
+            .startingMicrophoneWhilePreparing(.localWhisper)
+        )
+
+        state.handle(phase: .recordingWhilePreparing(.localWhisper))
+        XCTAssertEqual(
+            state.content,
+            .listeningWhilePreparing(.localWhisper)
+        )
+
+        state.handle(phase: .waitingForModel(.localWhisper))
+        XCTAssertEqual(
+            state.content,
+            .waitingForModel(.localWhisper)
+        )
+
+        state.handle(phase: .transcribing)
+        XCTAssertEqual(state.content, .transcribing)
     }
 
     func testQuickDictationPreviewTracksCaptureAndTranscription() {

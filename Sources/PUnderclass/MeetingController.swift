@@ -238,6 +238,10 @@ final class MeetingController: ObservableObject {
         dictationOverlay.update(
             engine: capability.resolvedEngine(preferring: refinementEngine)
         )
+        // Core ML model loading is the longest launch task. Start it before
+        // synchronous history and audio-device discovery so those operations
+        // overlap instead of delaying Whisper preparation.
+        startWhisperWarmup()
         do {
             quickDictationHistory = try quickDictationHistoryStore.load()
             lastDictation = quickDictationHistory.first?.text ?? ""
@@ -269,7 +273,6 @@ final class MeetingController: ObservableObject {
             present(error)
         }
 
-        startWhisperWarmup()
         configureReferenceLibrary()
         startReferenceEmbeddingWarmupIfNeeded()
         startCompanionGateway()
@@ -3984,7 +3987,7 @@ final class MeetingController: ObservableObject {
                 startedAt: startedAt
             )
         }
-        whisperWarmupTask = Task(priority: .utility) { [weak self] in
+        whisperWarmupTask = Task(priority: .userInitiated) { [weak self] in
             do {
                 try await WhisperTranscriber.shared.prepare { event in
                     progressRelay.send(event)
