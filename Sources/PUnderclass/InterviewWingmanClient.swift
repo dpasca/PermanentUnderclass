@@ -81,6 +81,7 @@ struct LiveAssistantGeneration: Equatable, Sendable {
 enum LiveAssistantError: LocalizedError, Equatable, Sendable {
     case invalidResponse
     case invalidGrounding
+    case usefulnessDeadlineExceeded
     case requestFailed(String)
     case incomplete(String)
     case refused(String)
@@ -91,6 +92,8 @@ enum LiveAssistantError: LocalizedError, Equatable, Sendable {
             "The assistant returned an unreadable response."
         case .invalidGrounding:
             "The assistant returned an answer whose grounding could not be verified."
+        case .usefulnessDeadlineExceeded:
+            "The assistant response arrived too late to be useful."
         case let .requestFailed(message):
             "Assistant request failed: \(message)"
         case let .incomplete(reason):
@@ -123,6 +126,42 @@ private struct LiveAssistantOutput: Decodable {
     let plausibleAssumptions: [String]?
     let plausibleRehearsalPlan: CompanionPlausibleRehearsalPlan?
     let spokenCueContainsMetaCommentary: Bool?
+}
+
+struct AssistantRehearsalStoryContext: Codable, Equatable, Sendable {
+    let suggestionID: String
+    let topicID: String?
+    let question: String
+    let preamble: String?
+    let beats: [CompanionAnswerBeat]
+    let assumptions: [String]
+    let plan: CompanionPlausibleRehearsalPlan
+
+    init?(suggestion: CompanionAssistantSuggestion) {
+        guard
+            suggestion.answerMode == .plausibleRehearsal,
+            let plan = suggestion.plausibleRehearsalPlan
+        else {
+            return nil
+        }
+        suggestionID = suggestion.id
+        topicID = suggestion.topicID
+        question = suggestion.question
+        preamble = suggestion.preamble
+        beats = suggestion.beats
+        assumptions = suggestion.plausibleAssumptions
+        self.plan = plan
+    }
+
+    func promptJSON() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(self)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        return text
+    }
 }
 
 struct LiveAssistantWebSource: Equatable, Sendable {
@@ -203,7 +242,9 @@ struct LiveAssistantClient: Sendable {
 
     For an experience question, prefer the newest project that is comparably relevant and has enough concrete support. An exact term match in an old project is not automatically the best interview example. Use older work when it is uniquely relevant, when the interviewer explicitly asks about it, or when the recent alternatives genuinely lack the needed substance. When the references contain prepared evidence cards, use their period and role-relevance fields as selection evidence, then choose one coherent anchor rather than blending several projects.
 
-    Make the cue sound like something the candidate could say from memory under pressure, not an idealized interview answer or a written report. When recent candidate speech gives a clear sample, match its usual sentence length and level of formality. Do not copy its filler, transcription mistakes, or abandoned phrases. Use ordinary vocabulary, short clauses, contractions, and everyday verbs. Prefer words such as "saw," "checked," "changed," "tried," "slowed," and "fixed" when they are as accurate as "observed," "validated," "implemented," "utilized," "leveraged," or "optimized." Keep a precise technical term when it carries real meaning, but put it in a simple sentence. Turn a dense noun phrase into a clause: say "the CPU spent less time submitting draws," not "I reduced CPU-side draw submission overhead." A short sentence fragment is fine when it sounds natural aloud.
+    Use the recent transcript to resolve follow-ups, pronouns, corrections, and concrete facts already established in the conversation. Before choosing the substance, apply this priority order: the current interviewer request; concrete facts, corrections, limitations, and denials in the candidate's speech; supplied reference evidence; an applicable assistant-created rehearsal story; then generic candidate phrasing or style. A candidate statement that names a project, mechanism, test, result, constraint, correction, or lack of experience is authoritative conversation context and overrides any conflicting assistant-created detail field by field. Do not let an older rehearsal story keep its project, mechanism, or outcome after the candidate has supplied different concrete information. A generic aspiration, slogan, or self-description is style context only and is not substance for the next answer.
+
+    Make the cue sound like something the candidate could say from memory under pressure, not an idealized interview answer or a written report. When recent candidate speech gives a clear sample, use only its broad sentence length and level of formality as a final style check after choosing the substance. Never reuse its generic framing, slogans, self-description, or topic choice merely because it was recent. Do not echo phrases such as "new challenges," "make a difference," or "as much as possible" unless the current question and concrete story independently require them. Do not copy filler, transcription mistakes, or abandoned phrases. Use ordinary vocabulary, short clauses, contractions, and everyday verbs. Prefer words such as "saw," "checked," "changed," "tried," "slowed," and "fixed" when they are as accurate as "observed," "validated," "implemented," "utilized," "leveraged," or "optimized." Keep a precise technical term when it carries real meaning, but put it in a simple sentence. Turn a dense noun phrase into a clause: say "the CPU spent less time submitting draws," not "I reduced CPU-side draw submission overhead." A short sentence fragment is fine when it sounds natural aloud.
 
     Do not stack abstract nouns, announce an answer framework, or use polished coaching lines such as "I'd frame this around," "I'd structure this in three parts," or "there are three key considerations." Prefer a candid caveat, failed first try, or next check when it is both relevant and supported. Avoid resume language, corporate abstractions, slogans, tidy STAR arcs, and polished lessons. Colloquial does not mean sloppy: do not imitate hesitation with "um," "you know," "basically," or other filler. Prefer ordinary internal labels such as Why, What I saw, What I tried, Check, Catch, Result, Not sure, and Next step; choose labels that fit the question.
 
@@ -258,7 +299,7 @@ struct LiveAssistantClient: Sendable {
     ANSWER MODE: PLAUSIBLE REHEARSAL — THE UI WILL MARK THE ENTIRE CUE AS A DRAFT TO VERIFY
     The goal is a useful example of how the candidate could answer, even when the references do not contain enough detail. For a shown cue in this mode, return exactly three beats and aim for roughly 55 to 80 spoken words overall. Sound like I am talking from memory: direct and specific, but not rehearsed. Use first-person past tense, short clauses, everyday verbs, and contractions. Keep the technical nouns precise. Never put provenance, uncertainty, or memory disclaimers into the spoken preamble or beats: omit phrases such as "maybe," "kind of," "I guess," "I would like to," "I don't remember," "I wouldn't claim," "needs verification," or "a plausible example." Do not pad the cue with "you know," "basically," or "frankly." The persistent UI warning and plausibleAssumptions carry that qualification outside the answer.
 
-    Before drafting the spoken cue, build plausibleRehearsalPlan as an internal substance map with five non-empty fields: projectAnchor names the one project or work setting; observedSignal names what was concretely seen before the change; mechanismChange states the implementation or decision as a before-to-after difference; discriminatingCheck names the measurement, instrumentation boundary, controlled perturbation, or comparison that tests the causal claim; boundedOutcome states what changed afterward without an extreme claim. For a nontechnical or behavioral question, use the analogous concrete elements—situation, action or decision, evidence or feedback, and bounded result—without forcing profiling vocabulary into the answer. Then express every field in the preamble and three beats. Do not mention this plan or let its field names shape the spoken wording. In particular, do not say "observed signal," "mechanism change," "discriminating check," or "bounded outcome" merely because those are internal labels. If shouldShow is false, return all five plan fields as empty strings.
+    Before drafting the spoken cue, build plausibleRehearsalPlan as one coherent internal mini-story with five non-empty fields: projectAnchor names the one project or work setting; observedSignal names what was concretely seen before the change; mechanismChange states the implementation or decision as a before-to-after difference; discriminatingCheck names the measurement, instrumentation boundary, controlled perturbation, or comparison that tests the causal claim; boundedOutcome states what changed afterward without an extreme claim. Keep each internal field to one terse clause; the five fields together should normally stay under about 50 words rather than duplicating the spoken answer. For a nontechnical or behavioral question, use the analogous concrete elements—situation, action or decision, evidence or feedback, and bounded result—without forcing profiling vocabulary into the answer. The preamble and all three beats must advance that same scene and causal thread; never use the beats as three unrelated examples, approaches, or invented incidents. Express every plan field across the spoken cue, with each beat adding a different part of the one story. Do not mention this plan or let its field names shape the spoken wording. In particular, do not say "observed signal," "mechanism change," "discriminating check," or "bounded outcome" merely because those are internal labels. If shouldShow is false, return all five plan fields as empty strings.
 
     Before returning the cue, do one silent plain-language pass. When a shorter common word keeps the same meaning, use it. Break a report-like sentence into shorter spoken clauses. Do not remove the actual mechanism, comparison, or result just to make the language simpler.
 
@@ -266,13 +307,15 @@ struct LiveAssistantClient: Sendable {
 
     This mode exists specifically to fill gaps in the source material. Do not relabel broad system construction or a list of documented responsibilities as the requested optimization. When the source establishes a real project but omits the incident the interviewer asks for, invent one technically coherent incident within that project. A component inventory is not a change: "I used compression, streaming, and decompression" is inadequate unless the cue says what the path did before, what I changed in that path, and why that changed the observed signal. Likewise, "I profiled it," "I isolated the path," "I checked end-to-end playback," or "I tested representative scenes" is inadequate unless the cue names what was timed or counted, what was varied or held fixed, and which observation distinguished the leading hypothesis from an alternative.
 
-    For a follow-up, preserve the project and causal story already established in the recent transcript, then add the requested deeper layer instead of restating the previous cue. For a profiling or verification follow-up, name at least one measurement boundary and one controlled comparison or perturbation. State the decision rule: what result would confirm the suspected bottleneck, and what result would send me elsewhere.
+    The request may include the most recent assistant-created rehearsal story. It is continuity context, not factual evidence. First reconcile it against the candidate turns that followed that story. A newer concrete project, mechanism, check, result, constraint, correction, or denial from the candidate overrides the corresponding story field. Replace the whole story when the project changed or the candidate contradicted its central causal chain. Reuse the remaining story only when the current question is a direct follow-up and no newer concrete speech superseded it; then add the requested deeper layer instead of inventing a competing incident. Generic aspirations, filler, and style do not override a concrete story. If the question is not a direct follow-up, ignore the prior story and build one new coherent mini-story. Make this decision inside the same response; do not request a separate continuity or story-generation step. Never cite the previous rehearsal story or treat it as support for a personal claim.
 
-    Attach the story to a specific project or work setting whenever that makes the answer intelligible. Prefer a named project, product, role, technology, or employer already present in the references. If no supplied project fits, create a restrained descriptive project context consistent with the candidate's apparent domain, but do not invent a new employer, famous customer, award, launch, title, or public success. It is acceptable to extrapolate a likely bottleneck, diagnostic, change, tradeoff, validation step, and qualitative outcome.
+    For a profiling or verification follow-up, name at least one measurement boundary and one controlled comparison or perturbation. State the decision rule: what result would confirm the suspected bottleneck, and what result would send me elsewhere.
+
+    Attach the story to a specific project or work setting already established by the transcript or references whenever that makes the answer intelligible. Do not invent a new personal project, employer, customer, role, title, award, launch, or public success. Within a real anchor, it is acceptable to extrapolate a likely bottleneck, diagnostic, change, tradeoff, validation step, and modest qualitative outcome. If no established anchor fits, give a concrete conditional approach rather than fabricating a personal setting.
 
     Prefer a recent compatible project over an older familiar name. Use an old project only when its evidence is materially more relevant to the question or the interviewer asks about it. If the missing incident could plausibly belong to a recent source-backed project, attach it there; do not reach back to a legacy credit merely because it contains the closest literal technology term.
 
-    Keep unsupported outcomes modest. Never invent exact revenue, sales, profit, valuation, market share, user count, deal size, award, team size, or sensational percentage improvement. Do not imply that a product made hundreds of millions or that one change transformed a business. Prefer a falsifiable qualitative before-and-after observation: a recurring stall disappeared on the fixed replay, one stage stopped dominating elapsed time, the working set stayed within its budget, or the same output completed with less data movement. The outcome must differ from the original goal; merely saying a real-time project ran in real time is not proof of an improvement. If a number materially improves the rehearsal template, make it rounded and restrained, and disclose it as an assumption.
+    Keep unsupported outcomes modest. Never invent a number, revenue, sales, profit, valuation, market share, user count, deal size, award, team size, date, deadline, or sensational improvement. When the current question asks for a measurement, first scan concrete candidate speech and references for an actual number or comparison and use it when relevant. If none exists, do not manufacture one; use a falsifiable qualitative before-and-after observation and name how it was checked—for example, a recurring stall disappeared on the fixed replay, one stage stopped dominating elapsed time, the working set stayed within its budget, or the same output completed with less data movement. The outcome must differ from the original goal; merely saying a real-time project ran in real time is not proof of an improvement.
 
     Reference-document notes such as "do not invent numbers," "prepare from memory," or "detail not recovered" define the factual boundary; they do not instruct you to suppress the extrapolation explicitly authorized by this mode. Keep the real anchor factual, fill the missing incident, and disclose the invented substance in plausibleAssumptions.
 
@@ -315,7 +358,9 @@ struct LiveAssistantClient: Sendable {
         basedOnSequence: Int,
         trigger: CompanionAssistantTrigger = .finalizedTurn,
         webSearchMode: LiveAssistantWebSearchMode = .automatic,
-        answerMode: AssistantAnswerMode = .grounded
+        answerMode: AssistantAnswerMode = .grounded,
+        previousRehearsalStory: AssistantRehearsalStoryContext? = nil,
+        usefulnessDeadline: ContinuousClock.Instant? = nil
     ) async throws -> LiveAssistantGeneration {
         let prefix = try AssistantPromptBuilder.cachedPrefix(
             behaviorInstructions: Self.behaviorInstructions(
@@ -326,10 +371,12 @@ struct LiveAssistantClient: Sendable {
             ),
             references: references
         )
+        let rehearsalStory = try previousRehearsalStory?.promptJSON() ?? ""
         let plan = AssistantPromptBuilder.plan(
             cachedPrefix: prefix,
             recentTranscript: recentTranscript,
             currentPartial: currentPartial,
+            rehearsalStory: rehearsalStory,
             sessionContext: sessionContext,
             focusSpeaker: SpeakerTag.other.displayName(for: purpose),
             focusText: otherSpeakerText,
@@ -341,15 +388,16 @@ struct LiveAssistantClient: Sendable {
             references?.documents.map(\.relativePath) ?? []
         )
         let startedAt = ContinuousClock.now
-        let data = try await responseLoader(
-            apiKey,
-            try Self.requestBody(
+        let data = try await loadResponse(
+            apiKey: apiKey,
+            body: try Self.requestBody(
                 for: plan,
                 purpose: purpose,
                 webSearchMode: webSearchMode,
                 answerMode: answerMode,
                 configuration: configuration
-            )
+            ),
+            usefulnessDeadline: usefulnessDeadline
         )
         let firstAttemptMilliseconds = Self.milliseconds(
             from: ContinuousClock.now - startedAt
@@ -370,9 +418,9 @@ struct LiveAssistantClient: Sendable {
             )
             var retryData: Data?
             do {
-                let responseData = try await responseLoader(
-                    apiKey,
-                    try Self.requestBody(
+                let responseData = try await loadResponse(
+                    apiKey: apiKey,
+                    body: try Self.requestBody(
                         for: Self.groundingCorrectionPlan(
                             from: plan,
                             answerMode: answerMode
@@ -381,7 +429,8 @@ struct LiveAssistantClient: Sendable {
                         webSearchMode: webSearchMode,
                         answerMode: answerMode,
                         configuration: configuration
-                    )
+                    ),
+                    usefulnessDeadline: usefulnessDeadline
                 )
                 retryData = responseData
                 let generationMilliseconds = Self.milliseconds(
@@ -438,6 +487,25 @@ struct LiveAssistantClient: Sendable {
                     "assistant_grounding_repair_failed sequence=\(basedOnSequence, privacy: .public) purpose=\(purpose.rawValue, privacy: .public) outcome=\(outcome, privacy: .public) total_ms=\(generationMilliseconds, privacy: .public)"
                 )
                 if
+                    let cause = error as? LiveAssistantError,
+                    cause == .usefulnessDeadlineExceeded
+                {
+                    let repairMilliseconds = max(
+                        0,
+                        generationMilliseconds - firstAttemptMilliseconds
+                    )
+                    let usage = Self.usage(from: data)
+                        .recordingGroundingRepair(
+                            milliseconds: repairMilliseconds,
+                            succeeded: false
+                        )
+                    throw LiveAssistantFailure(
+                        cause: cause,
+                        usage: usage,
+                        generationMilliseconds: generationMilliseconds
+                    )
+                }
+                if
                     let retryData,
                     let cause = error as? LiveAssistantError,
                     cause == .invalidGrounding
@@ -460,6 +528,30 @@ struct LiveAssistantClient: Sendable {
                 }
                 throw error
             }
+        }
+    }
+
+    private func loadResponse(
+        apiKey: String,
+        body: Data,
+        usefulnessDeadline: ContinuousClock.Instant?
+    ) async throws -> Data {
+        guard let usefulnessDeadline else {
+            return try await responseLoader(apiKey, body)
+        }
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await responseLoader(apiKey, body)
+            }
+            group.addTask {
+                try await ContinuousClock().sleep(until: usefulnessDeadline)
+                throw LiveAssistantError.usefulnessDeadlineExceeded
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw LiveAssistantError.invalidResponse
+            }
+            return first
         }
     }
 

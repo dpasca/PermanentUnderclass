@@ -313,6 +313,7 @@ final class PUnderclassTests: XCTestCase {
             cachedPrefix: prefix,
             recentTranscript: "Other: What did you build?",
             currentPartial: "You: I built…",
+            rehearsalStory: #"{"projectAnchor":"Audio engine"}"#,
             sessionContext: "Backend role at Example Corp",
             focusSpeaker: "Other",
             focusText: "What did you build?",
@@ -331,6 +332,12 @@ final class PUnderclassTests: XCTestCase {
             plan.volatileSuffix.contains("Backend role at Example Corp")
         )
         XCTAssertTrue(plan.volatileSuffix.contains("CURRENT RESPONSE TARGET"))
+        XCTAssertTrue(
+            plan.volatileSuffix.contains(
+                "MOST RECENT PLAUSIBLE REHEARSAL STORY"
+            )
+        )
+        XCTAssertTrue(plan.volatileSuffix.contains("Audio engine"))
         XCTAssertTrue(plan.volatileSuffix.contains("Speaker: Other"))
         XCTAssertTrue(
             plan.volatileSuffix.contains("Turn state: finalized speaker turn")

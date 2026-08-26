@@ -25,6 +25,29 @@ enum AssistantEvaluationPolicy {
     }
 }
 
+enum LiveAssistantUsefulnessPolicy {
+    // A cue that arrives later than this is usually behind the candidate's
+    // spoken answer. Measure from the end of the interviewer's speech, not
+    // from the eventual model-call start.
+    static let maximumInterviewLatencyMilliseconds = 6_000
+
+    static func remainingInterviewLatencyMilliseconds(
+        observedAt: Date,
+        now: Date
+    ) -> Int {
+        let elapsed = max(0, Int(now.timeIntervalSince(observedAt) * 1_000))
+        return max(0, maximumInterviewLatencyMilliseconds - elapsed)
+    }
+
+    static func isInterviewCueUseful(
+        observedAt: Date,
+        completedAt: Date
+    ) -> Bool {
+        completedAt.timeIntervalSince(observedAt) * 1_000
+            < Double(maximumInterviewLatencyMilliseconds)
+    }
+}
+
 enum EarlyInterviewBridgeEvaluationPolicy {
     enum Opportunity: String {
         case formingTranscript = "forming_transcript"

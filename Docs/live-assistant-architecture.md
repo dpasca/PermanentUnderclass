@@ -110,9 +110,10 @@ Initial event set:
 - `transcript.partial`: replace the partial for one `turnId`; safe to coalesce.
 - `transcript.final`: append or replace the finalized `turnId`.
 - `transcript.revised`: replace text after the final transcription pass.
-- `assistant.bridge`: ephemeral, fact-free opening generated from a still-forming
-  interviewer partial, the first short speech pause, or the finalized-turn
-  fallback. It is never added to suggestion history.
+- `assistant.bridge`: ephemeral, non-substantive thinking phrase generated from
+  a still-forming interviewer partial, the first short speech pause, or the
+  finalized-turn fallback. It is never added to the four-card display history,
+  but every accepted bridge is retained in the local interview archive.
 - `assistant.working`: generation started for a transcript watermark.
 - `assistant.suggestion`: newest structured answer outline with citation labels.
 - `assistant.state`: idle state after a completed model check, including whether
@@ -156,18 +157,16 @@ publishes a smaller object before the full suggestion:
   "id": "bridge_01J...",
   "topicID": "Other-item-91",
   "sourceText": "How did you verify that you found the right bottleneck?",
-  "text": "I'd first check where the time is going, then narrow it down.",
+  "text": "Let me choose the clearest example for a moment.",
   "generatedAt": "2026-08-09T07:39:58Z",
   "generationMilliseconds": 1276
 }
 ```
 
-The display temporarily hides the previous answer, shows this one opening, and
-then replaces it with `assistant.suggestion`. When a speculative bridge is ready
-before full generation begins, the full prompt receives it and keeps the exact
-sentence when the completed question is compatible. The pause bridge and full
-request otherwise run concurrently; the bridge is deliberately directional so
-the later detailed cue can continue it without depending on the exact wording.
+The display temporarily hides the previous answer, shows this thinking phrase,
+and then replaces it with `assistant.suggestion`. The bridge and full request
+run independently: bridge text is never inserted into the full prompt, so its
+early interpretation cannot steer or constrain the substantive cue.
 
 The host chooses the facts and concise first-person wording. For Answer Mirror,
 the teleprompter shows the spoken preamble first; labels remain internal
@@ -178,7 +177,14 @@ keeping exact technical nouns when they carry the substance. The prompt rejects
 report-like signposting and abstract noun stacks, but it does not add fake
 hesitation or filler to simulate speech. Recent candidate turns provide a style
 sample for sentence length and formality, with fillers, mistakes, and abandoned
-phrases explicitly excluded.
+phrases explicitly excluded. Candidate wording is used only for broad sentence
+length and formality after the answer substance is chosen; generic framing,
+slogans, self-description, and recently mentioned topics are not copied merely
+because they appeared in the candidate's last turn. For substance, the prompt
+orders evidence as: current interviewer request, concrete candidate speech,
+reference evidence, an applicable cached rehearsal story, and only then generic
+candidate style. A concrete correction, denial, project, mechanism, check,
+constraint, or result in candidate speech therefore wins field by field.
 For an unsupported past-incident request in Grounded mode, the spoken cue uses
 a worked `If` scenario rather than claiming that the event happened. It names a
 specific symptom, competing causes, controlled check, resulting change, and
@@ -188,10 +194,16 @@ invalid grounding and enters the existing one-retry correction path instead of
 being shown to the candidate.
 Plausible Rehearsal also requires a structured substance map: project anchor,
 observed signal, before-to-after mechanism change, discriminating check, and
-bounded outcome. All five must appear in the spoken preamble and three beats.
-The map remains machine-readable for evaluation and diagnostics, while the
-display shows the cue and its separate verify-before-use warning rather than a
-second block of planning prose.
+bounded outcome. All five form one causal mini-story across the spoken preamble
+and three beats. The host retains the most recent assistant-created map and cue
+and includes them in the next full request as non-factual continuity context.
+The model decides in that same response whether the question is a follow-up; if
+so it preserves the story and deepens it, and otherwise ignores it and creates a
+new story. Intervening candidate speech that clearly establishes a different
+account overrides the retained draft. This adds no preliminary model call. The
+map remains machine-readable for evaluation and diagnostics, while the display
+shows the cue and its separate verify-before-use warning rather than a second
+block of planning prose.
 Suggestions generated from the pause-time partial and finalized text of the
 same transcript turn share one `topicID` and `topicNumber`. The newest cue is
 primary while each point from the latest earlier version appears directly
@@ -228,9 +240,11 @@ Plausible Rehearsal can optionally start an independent early-bridge lane 600
 ms after the first `Other` partial arrives, without waiting for silence. It
 uses `gpt-5.6-luna`, no reasoning, a strict one-string schema, and Priority
 processing. The model—not a keyword or regex gate—decides whether the partial
-already establishes a stable answer shape. An unclear fragment returns an
-empty string. If the partial grew while that request ran, the host may try once
-more after 200 ms; the speculative limit is two calls per interviewer turn.
+already establishes a stable request. If so it returns a five-to-twelve-word
+request for thinking time without any answer substance; an unclear fragment
+returns an empty string. If the partial grew while that request ran, the host
+may try once more after 200 ms; the speculative limit is two calls per
+interviewer turn.
 
 Those speculative attempts do not consume the reliable opportunities. A
 separate 400 ms silence callback starts a zero-delay bridge request from the
@@ -244,11 +258,20 @@ treating a completed question as perpetually unfinished. An inconclusive
 partial Terra check does not erase a useful bridge; the finalized check or full
 suggestion retires it.
 
-A bridge may name only what matters first, what should be checked, or the type
-of example that should come next. It uses short clauses and ordinary words
-rather than formal coaching language. It receives recent dialogue and session
-context, but no reference documents, and cannot claim a project, employer,
-action, result, metric, achievement, or other personal history. A new
+Interview cues have a six-second usefulness deadline measured from the end of
+the interviewer's speech, including host delay, the first request, and any
+grounding repair. The first request and repair share one absolute deadline. A
+late result is recorded as `timedOut` and is not published or shown as an error;
+an already visible early bridge remains in place. Meeting Assistant keeps its
+existing request timeout because its interaction cadence is different.
+
+A bridge may only ask for a brief moment to think, lightly adapting to whether
+the request calls for an example, explanation, comparison, or decision. It uses
+short clauses and ordinary words rather than formal coaching language. It
+receives recent dialogue, session context, and the last four accepted bridge
+phrases so it can vary its wording, but no reference documents. It cannot state
+a conclusion, approach, mechanism, action, fact, opinion, project, result, or
+other answer substance. A new
 interviewer turn cancels the older full and bridge generations so a stale result
 cannot erase the new bridge. Raw `Other` speech is still unclassified, though,
 so it cannot remove a usable cue from the focused display by itself. The display
@@ -268,10 +291,10 @@ automatic response creation is disabled, and an out-of-band text response can
 be identified with metadata. See the official
 [Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations).
 
-The first experiment should replace only the Luna bridge, not the grounded Terra
+The first experiment should replace only the Luna bridge, not the structured Terra
 cue. Feed the remote audio track to the Realtime conversation, keep its context
 small, stream one plain-text opening, and compare speech-end-to-first-text,
-answerability, acknowledgement false positives, and bridge/full continuity
+answerability, acknowledgement false positives, and bridge/full independence
 against the existing lane. This isolates native audio latency without asking the
 Realtime response to reproduce the full citation and rehearsal-plan contract.
 
@@ -321,11 +344,15 @@ Recommended initial buffer: the larger of 10,000 events or two hours. Partial
 transcript events may be coalesced in the buffer, but final/revised transcript,
 suggestion, command-result, and usage events must not be dropped.
 
-This protects against a companion connection loss. It does not protect against
-the PermanentUnderclass process crashing because transcripts are currently in memory.
-If crash recovery is in scope, journal the same envelopes to local SQLite in
-WAL mode before publishing them, expose retention controls, and update the
-product's current in-memory-only privacy promise.
+This protects against a companion connection loss. Separately, every interview
+is incrementally written as a plain JSON file under
+`~/Library/Application Support/com.newtypekk.punderclass/InterviewSessions/`.
+The archive upserts finalized and revised transcript turns and appends every
+accepted bridge and every published suggestion, including partial cues later
+replaced by a final cue. It stores session metadata and assistant structure but
+no audio, reference corpus, API key, or raw model prompt. Meeting sessions and
+in-flight partial transcript fragments remain memory-only. The interview
+transcript header can reveal the latest archive in Finder.
 
 ## Failure behavior
 
@@ -339,6 +366,7 @@ product's current in-memory-only privacy promise.
 | Producer restarts | New `streamId`; client performs a full snapshot |
 | No heartbeat for 15 s | UI shows reconnecting; do not discard visible help |
 | Assistant model fails | Transcript continues; emit a dismissible error card |
+| Interview cue exceeds 6 s | Suppress it as stale; keep any early bridge visible |
 | Client is slow | Coalesce partials; disconnect and force snapshot before unbounded buffering |
 
 ## Security and pairing
@@ -483,7 +511,7 @@ behavior's model makes that structured decision.
 
 ### Measured model selection
 
-The live assistant uses `gpt-5.6-terra` at `reasoning.effort: low`. Keep this as
+The live assistant uses `gpt-5.6-terra` at `reasoning.effort: medium`. Keep this as
 a measured default rather than a permanent routing assumption: compare
 representative private fixtures whenever the prompt or model family changes.
 The external-fixture benchmark records structured quality, generation latency,
@@ -506,12 +534,14 @@ rubric adds plain spoken language and answer-mode usefulness for eleven scores
 in total. Both are small internal
 samples, not a universal model ranking.
 
-The experimental early lane has its own public, non-personal hosted eval. In
-two consecutive August 2026 runs over the same three partials, it withheld a
-bridge for both unfinished-fragment trials and returned structural openings in
-all four complete-request trials. Priority Luna/no reasoning measured
+The experimental early lane has its own public, non-personal hosted eval. Before
+the lane changed from a structural answer opening to a non-substantive thinking
+phrase, two consecutive August 2026 runs over the same three partials withheld
+a bridge for both unfinished-fragment trials and returned openings in all four
+complete-request trials. Those runs remain a latency baseline, not a validation
+of the current wording contract. Priority Luna/no reasoning measured
 0.95–1.77 seconds across the six calls, with a 1.35 second overall median. A
-post-change run covering forming, paused, and finalized speech returned the
+later pre-redesign run covering forming, paused, and finalized speech returned the
 expected decision in all three cases at 1.684, 1.250, and 1.424 seconds, for a
 1.424 second median. The same small request measured roughly 4.5–5.5 seconds on
 the default service tier, so Priority processing is part of the prototype's

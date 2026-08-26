@@ -73,6 +73,7 @@ final class MeetingController: ObservableObject {
         "Starting companion display server…"
     @Published private(set) var companionGatewayEndpoint: CompanionGatewayEndpoint?
     @Published private(set) var companionGatewayError: String?
+    @Published private(set) var latestInterviewArchiveURL: URL?
     @Published private(set) var syntheticInterviewState =
         SyntheticInterviewState.ready(for: .interview)
 
@@ -127,6 +128,10 @@ final class MeetingController: ObservableObject {
     private var assistantBridgePauseAttemptCount = 0
     private var assistantBridgeFinalAttempted = false
     private var activeAssistantBridge: CompanionAssistantBridge?
+    private var recentAssistantBridgeTexts: [String] = []
+    private var latestRehearsalStory: AssistantRehearsalStoryContext?
+    private var activeInterviewArchive: InterviewSessionArchive?
+    private var interviewArchiveSaveErrorShown = false
     private let syntheticSpeechPlayer = SyntheticSpeechPlayer()
     private var syntheticInterviewTask: Task<Void, Never>?
     private var syntheticInterviewRunID: UUID?
@@ -137,6 +142,7 @@ final class MeetingController: ObservableObject {
     private let quickDictationRecoveryStore: QuickDictationRecoveryStore
     private let apiExpenseStore: APIExpenseStore
     private let referencePreparationStore: ReferencePreparationStore
+    private let interviewSessionArchiveStore: InterviewSessionArchiveStore
     private let syntheticInterviewScenarioStore: SyntheticInterviewScenarioStore
     private let syntheticMeetingScenarioStore: SyntheticInterviewScenarioStore
     private let documentationDemoMode: DocumentationDemoMode?
@@ -179,6 +185,8 @@ final class MeetingController: ObservableObject {
             .applicationSupport(for: .meeting),
         apiExpenseStore: APIExpenseStore = .applicationSupport(),
         referencePreparationStore: ReferencePreparationStore = .applicationSupport(),
+        interviewSessionArchiveStore: InterviewSessionArchiveStore =
+            .applicationSupport(),
         documentationDemoMode: DocumentationDemoMode? = nil
     ) {
         self.quickDictationHistoryStore = quickDictationHistoryStore
@@ -187,6 +195,7 @@ final class MeetingController: ObservableObject {
         self.syntheticMeetingScenarioStore = syntheticMeetingScenarioStore
         self.apiExpenseStore = apiExpenseStore
         self.referencePreparationStore = referencePreparationStore
+        self.interviewSessionArchiveStore = interviewSessionArchiveStore
         self.documentationDemoMode = documentationDemoMode
         if let documentationDemoMode {
             configureDocumentationDemo(documentationDemoMode)
@@ -210,6 +219,8 @@ final class MeetingController: ObservableObject {
                 "Prepared interview evidence could not be loaded: \(error.localizedDescription)"
         }
         interviewContextPrompt = referencePreparationState.interviewContext.text
+        latestInterviewArchiveURL = try? interviewSessionArchiveStore
+            .mostRecentArchiveURL()
         dictationPreviewEnabled = UserDefaults.standard.object(
             forKey: Self.dictationPreviewEnabledDefaultsKey
         ) as? Bool ?? true
@@ -455,6 +466,12 @@ final class MeetingController: ObservableObject {
                     "ReferencePreparation.json"
                 )
             ),
+            interviewSessionArchiveStore: InterviewSessionArchiveStore(
+                directoryURL: rootURL.appendingPathComponent(
+                    "InterviewSessions",
+                    isDirectory: true
+                )
+            ),
             documentationDemoMode: mode
         )
     }
@@ -573,12 +590,22 @@ final class MeetingController: ObservableObject {
                 "Refinement was interrupted when new live capture started."
             )
             let sessionID = UUID()
+            let sessionStartedAt = Date()
             activeSessionID = sessionID
             activeContext = context
             activeCaptureUsesHostedTranscription = usesHostedLiveTranscription
             microphoneRecoveryAttempts = 0
             clearMicrophoneRecoveryError()
             clearMicrophoneSignalError()
+            beginInterviewArchive(
+                id: sessionID,
+                source: .liveCapture,
+                startedAt: sessionStartedAt,
+                referenceRevision: assistantReferenceStateRevision(
+                    usesSyntheticReferences: false,
+                    purpose: purpose
+                )
+            )
             isListening = true
             statusMessage = "Starting \(purpose.title.lowercased()) capture…"
             publishCompanionSession()
@@ -747,6 +774,7 @@ final class MeetingController: ObservableObject {
     func stopCapture() {
         guard activeSessionID != nil else { return }
         isListening = false
+        finishActiveInterviewArchive()
         statusMessage = "Finalizing transcript…"
         publishCompanionSession()
         microphoneRestartWorkItem?.cancel()
@@ -2065,6 +2093,12 @@ final class MeetingController: ObservableObject {
             currentTurn: 0,
             totalTurns: cachedScenario?.turns.count ?? 10
         )
+        beginInterviewArchive(
+            id: runID,
+            source: .syntheticInterview,
+            startedAt: Date(),
+            referenceRevision: references.revision
+        )
         statusMessage = cachedScenario == nil
             ? "Generating \(purpose.title.lowercased()) replay…"
             : "Preparing \(purpose.title.lowercased()) replay…"
@@ -2196,6 +2230,12 @@ final class MeetingController: ObservableObject {
             referenceRevision: scenario.referenceRevision,
             currentTurn: 0,
             totalTurns: scenario.turns.count
+        )
+        beginInterviewArchive(
+            id: runID,
+            source: .syntheticInterview,
+            startedAt: Date(),
+            referenceRevision: scenario.referenceRevision
         )
         statusMessage = "Live web-search test running"
         publishCompanionSession()
@@ -2455,6 +2495,7 @@ final class MeetingController: ObservableObject {
                 sourceText: text,
                 speaker: speaker,
                 purpose: purpose,
+                observedAt: endedAt,
                 webSearchMode: webSearchMode
             )
         }
@@ -2501,6 +2542,7 @@ final class MeetingController: ObservableObject {
         syntheticInterviewState.isRunning = false
         syntheticInterviewState.title = title
         syntheticInterviewState.detail = detail
+        closeActiveInterviewArchive()
         statusMessage = title
         publishCompanionSession()
     }
@@ -2535,6 +2577,13 @@ final class MeetingController: ObservableObject {
         } catch {
             present(error)
         }
+    }
+
+    func revealLatestInterviewArchive() {
+        guard let latestInterviewArchiveURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            latestInterviewArchiveURL
+        ])
     }
 
     private func makeClient(
@@ -2739,7 +2788,8 @@ final class MeetingController: ObservableObject {
                     turnID: transcriptID,
                     sourceText: normalizedLiveText,
                     speaker: speaker,
-                    purpose: purpose
+                    purpose: purpose,
+                    observedAt: endedAt ?? Date()
                 )
             }
         }
@@ -3151,6 +3201,7 @@ final class MeetingController: ObservableObject {
     }
 
     private func prepareCompanionForNewSession() {
+        closeActiveInterviewArchive()
         assistantGenerationTask?.cancel()
         assistantGenerationTask = nil
         assistantGenerationRequestID = nil
@@ -3164,6 +3215,8 @@ final class MeetingController: ObservableObject {
         assistantBridgePauseAttemptCount = 0
         assistantBridgeFinalAttempted = false
         activeAssistantBridge = nil
+        recentAssistantBridgeTexts = []
+        latestRehearsalStory = nil
         enqueueCompanionUpdate { hub in
             await hub.clearTranscript()
         }
@@ -3237,6 +3290,7 @@ final class MeetingController: ObservableObject {
 
     private func publishCompanionFinal(_ turn: TranscriptTurn) {
         let projected = companionTurn(turn)
+        recordInterviewTranscriptTurn(projected)
         enqueueCompanionUpdate { hub in
             await hub.appendFinal(projected)
         }
@@ -3244,6 +3298,7 @@ final class MeetingController: ObservableObject {
 
     private func publishCompanionRevision(_ turn: TranscriptTurn) {
         let projected = companionTurn(turn)
+        recordInterviewTranscriptTurn(projected)
         enqueueCompanionUpdate { hub in
             await hub.revise(projected)
         }
@@ -3416,6 +3471,7 @@ final class MeetingController: ObservableObject {
             .suffix(4)
             .map { "\($0.speaker.rawValue): \($0.text)" }
             .joined(separator: "\n")
+        let recentBridges = Array(recentAssistantBridgeTexts.suffix(4))
         let sessionContext = contextPrompt(for: purpose).trimmingCharacters(
             in: .whitespacesAndNewlines
         )
@@ -3462,6 +3518,7 @@ final class MeetingController: ObservableObject {
                     apiKey: apiKey,
                     currentPartial: latestText,
                     recentTranscript: recentTranscript,
+                    recentBridges: recentBridges,
                     sessionContext: sessionContext,
                     opportunity: opportunity
                 )
@@ -3600,12 +3657,14 @@ final class MeetingController: ObservableObject {
         assistantBridgeTask = nil
         assistantBridgeRequestID = nil
         activeAssistantBridge = bridge
+        recentAssistantBridgeTexts.append(bridge.text)
+        if recentAssistantBridgeTexts.count > 4 {
+            recentAssistantBridgeTexts.removeFirst(
+                recentAssistantBridgeTexts.count - 4
+            )
+        }
+        recordInterviewBridge(bridge)
         return true
-    }
-
-    private func activeAssistantBridgeText(for turnID: String) -> String? {
-        guard activeAssistantBridge?.topicID == turnID else { return nil }
-        return activeAssistantBridge?.text
     }
 
     private func retireAssistantBridge(for turnID: String) {
@@ -3671,7 +3730,7 @@ final class MeetingController: ObservableObject {
             purpose: purpose
         )
         let recentTranscript = transcript
-            .filter { $0.purpose == purpose }
+            .filter { $0.purpose == purpose && $0.id != turnID }
             .suffix(16)
             .map { "\($0.speaker.rawValue): \($0.text)" }
             .joined(separator: "\n")
@@ -3688,6 +3747,9 @@ final class MeetingController: ObservableObject {
         let answerMode = purpose == .interview
             ? activeAssistantAnswerMode
             : .grounded
+        let previousRehearsalStory = answerMode == .plausibleRehearsal
+            ? latestRehearsalStory
+            : nil
         let pendingCompanionUpdates = companionUpdateTail
         let hub = companionGateway.hub
         let client = liveAssistantClient
@@ -3704,6 +3766,7 @@ final class MeetingController: ObservableObject {
         )
 
         assistantGenerationTask = Task {
+            var evaluationSequence: Int?
             do {
                 if delayMilliseconds > 0 {
                     try await Task.sleep(
@@ -3751,7 +3814,35 @@ final class MeetingController: ObservableObject {
                 }
 
                 let basedOnSequence = await hub.currentWatermark()
+                evaluationSequence = basedOnSequence
                 let evaluationStartedAt = Date()
+                let usefulnessDeadline: ContinuousClock.Instant?
+                if purpose == .interview {
+                    let remainingMilliseconds =
+                        LiveAssistantUsefulnessPolicy
+                            .remainingInterviewLatencyMilliseconds(
+                                observedAt: observedAt,
+                                now: evaluationStartedAt
+                            )
+                    guard remainingMilliseconds > 0 else {
+                        Self.liveAssistantLogger.notice(
+                            "assistant_inference_skipped sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) reason=usefulness_deadline_elapsed"
+                        )
+                        await hub.assistantFinishedWithoutSuggestion(
+                            basedOnSequence: basedOnSequence,
+                            trigger: trigger,
+                            triggeredAt: observedAt,
+                            completedAt: evaluationStartedAt,
+                            outcome: .timedOut,
+                            preserveBridge: true
+                        )
+                        return
+                    }
+                    usefulnessDeadline = ContinuousClock.now
+                        + .milliseconds(remainingMilliseconds)
+                } else {
+                    usefulnessDeadline = nil
+                }
                 let triggerToStartMilliseconds = Self.milliseconds(
                     from: observedAt,
                     to: evaluationStartedAt
@@ -3766,29 +3857,46 @@ final class MeetingController: ObservableObject {
                     startedAt: evaluationStartedAt
                 )
 
-                let earlyBridgeText = await MainActor.run {
-                    controller.value?.activeAssistantBridgeText(for: turnID)
-                }
-                let generationSessionContext = Self.sessionContext(
-                    sessionContext,
-                    continuingFromEarlyBridge: earlyBridgeText
-                )
-
                 let generation = try await client.generate(
                     apiKey: apiKey,
                     references: references,
                     recentTranscript: recentTranscript,
                     currentPartial: partialTranscript,
                     otherSpeakerText: normalizedText,
-                    sessionContext: generationSessionContext,
+                    sessionContext: sessionContext,
                     purpose: purpose,
                     basedOnSequence: basedOnSequence,
                     trigger: trigger,
                     webSearchMode: webSearchMode,
-                    answerMode: answerMode
+                    answerMode: answerMode,
+                    previousRehearsalStory: previousRehearsalStory,
+                    usefulnessDeadline: usefulnessDeadline
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
+                }
+                let completedAt = Date()
+                if
+                    purpose == .interview,
+                    !LiveAssistantUsefulnessPolicy.isInterviewCueUseful(
+                        observedAt: observedAt,
+                        completedAt: completedAt
+                    )
+                {
+                    Self.liveAssistantLogger.notice(
+                        "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) total_ms=\(Self.milliseconds(from: observedAt, to: completedAt), privacy: .public) reason=usefulness_deadline_elapsed_after_response"
+                    )
+                    await hub.assistantFinishedWithoutSuggestion(
+                        basedOnSequence: basedOnSequence,
+                        trigger: trigger,
+                        triggeredAt: observedAt,
+                        completedAt: completedAt,
+                        outcome: .timedOut,
+                        preserveBridge: true
+                    )
+                    return
+                }
+                await MainActor.run {
                     if generation.suggestion != nil
                         || trigger == .finalizedTurn
                     {
@@ -3797,7 +3905,6 @@ final class MeetingController: ObservableObject {
                         )
                     }
                 }
-                let completedAt = Date()
                 let totalLatencyMilliseconds = Self.milliseconds(
                     from: observedAt,
                     to: completedAt
@@ -3840,8 +3947,15 @@ final class MeetingController: ObservableObject {
                     suggestion.totalLatencyMilliseconds =
                         totalLatencyMilliseconds
                     suggestion.topicID = turnID
+                    suggestion.inferenceOutcome = generation.outcome
+                    let completedSuggestion = suggestion
+                    await MainActor.run {
+                        controller.value?.recordAssistantSuggestion(
+                            completedSuggestion
+                        )
+                    }
                     await hub.assistantSuggested(
-                        suggestion,
+                        completedSuggestion,
                         outcome: generation.outcome
                     )
                 } else {
@@ -3860,14 +3974,37 @@ final class MeetingController: ObservableObject {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                let liveError = (error as? LiveAssistantFailure)?.cause
+                    ?? error as? LiveAssistantError
                 await MainActor.run {
-                    controller.value?.allowAssistantRetry(requestID: requestID)
+                    if liveError != .usefulnessDeadlineExceeded {
+                        controller.value?.allowAssistantRetry(requestID: requestID)
+                    }
                     if let failure = error as? LiveAssistantFailure {
                         controller.value?.recordAssistantUsage(failure.usage)
                     }
                 }
-                let liveError = (error as? LiveAssistantFailure)?.cause
-                    ?? error as? LiveAssistantError
+                if liveError == .usefulnessDeadlineExceeded {
+                    let completedAt = Date()
+                    let basedOnSequence: Int
+                    if let evaluationSequence {
+                        basedOnSequence = evaluationSequence
+                    } else {
+                        basedOnSequence = await hub.currentWatermark()
+                    }
+                    Self.liveAssistantLogger.notice(
+                        "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) total_ms=\(Self.milliseconds(from: observedAt, to: completedAt), privacy: .public)"
+                    )
+                    await hub.assistantFinishedWithoutSuggestion(
+                        basedOnSequence: basedOnSequence,
+                        trigger: trigger,
+                        triggeredAt: observedAt,
+                        completedAt: completedAt,
+                        outcome: .timedOut,
+                        preserveBridge: true
+                    )
+                    return
+                }
                 let outcome: CompanionInferenceOutcome =
                     liveError == .invalidGrounding
                         ? .invalidGrounding
@@ -3933,21 +4070,84 @@ final class MeetingController: ObservableObject {
         return nil
     }
 
-    private static func sessionContext(
-        _ sessionContext: String,
-        continuingFromEarlyBridge earlyBridge: String?
-    ) -> String {
-        guard let earlyBridge, !earlyBridge.isEmpty else {
-            return sessionContext
+    private func recordAssistantSuggestion(
+        _ suggestion: CompanionAssistantSuggestion
+    ) {
+        recordInterviewSuggestion(suggestion)
+        if let story = AssistantRehearsalStoryContext(suggestion: suggestion) {
+            latestRehearsalStory = story
         }
-        return """
-        \(sessionContext)
+    }
 
-        EARLY SPEAKING BRIDGE THAT MAY ALREADY HAVE BEEN SAID
-        \(earlyBridge)
+    private func beginInterviewArchive(
+        id: UUID,
+        source: CompanionSessionSource,
+        startedAt: Date,
+        referenceRevision: String?
+    ) {
+        guard capturePurpose == .interview else { return }
+        activeInterviewArchive = InterviewSessionArchive(
+            id: id,
+            source: source,
+            startedAt: startedAt,
+            answerMode: activeAssistantAnswerMode,
+            earlyBridgeEnabled: activeAssistantEarlyBridgeEnabled,
+            sessionContext: contextPrompt(for: .interview),
+            referenceRevision: referenceRevision
+        )
+        interviewArchiveSaveErrorShown = false
+        persistActiveInterviewArchive()
+    }
 
-        If that sentence still fits the completed question, return it exactly as the preamble and make every beat continue from it. If a later qualifier made it incompatible, replace it with a corrected preamble instead of forcing the earlier frame.
-        """
+    private func recordInterviewTranscriptTurn(
+        _ turn: CompanionTranscriptTurn
+    ) {
+        guard activeInterviewArchive != nil else { return }
+        activeInterviewArchive?.upsertTranscriptTurn(turn)
+        persistActiveInterviewArchive()
+    }
+
+    private func recordInterviewBridge(_ bridge: CompanionAssistantBridge) {
+        guard activeInterviewArchive != nil else { return }
+        activeInterviewArchive?.appendBridge(bridge)
+        persistActiveInterviewArchive()
+    }
+
+    private func recordInterviewSuggestion(
+        _ suggestion: CompanionAssistantSuggestion
+    ) {
+        guard activeInterviewArchive != nil else { return }
+        activeInterviewArchive?.appendSuggestion(suggestion)
+        persistActiveInterviewArchive()
+    }
+
+    private func finishActiveInterviewArchive(at date: Date = Date()) {
+        guard activeInterviewArchive != nil else { return }
+        activeInterviewArchive?.finish(at: date)
+        persistActiveInterviewArchive()
+    }
+
+    private func closeActiveInterviewArchive(at date: Date = Date()) {
+        finishActiveInterviewArchive(at: date)
+        activeInterviewArchive = nil
+    }
+
+    private func persistActiveInterviewArchive() {
+        guard let activeInterviewArchive else { return }
+        do {
+            latestInterviewArchiveURL = try interviewSessionArchiveStore.save(
+                activeInterviewArchive
+            )
+            interviewArchiveSaveErrorShown = false
+        } catch {
+            Self.liveAssistantLogger.error(
+                "interview_archive_save_failed error=\(error.localizedDescription, privacy: .public)"
+            )
+            guard !interviewArchiveSaveErrorShown else { return }
+            interviewArchiveSaveErrorShown = true
+            errorMessage =
+                "The interview session archive could not be saved: \(error.localizedDescription)"
+        }
     }
 
     private func allowAssistantRetry(requestID: UUID) {
@@ -4477,6 +4677,7 @@ final class MeetingController: ObservableObject {
     }
 
     private func stopImmediately() {
+        closeActiveInterviewArchive()
         assistantGenerationTask?.cancel()
         assistantGenerationTask = nil
         assistantBridgeTask?.cancel()
@@ -4488,6 +4689,8 @@ final class MeetingController: ObservableObject {
         assistantBridgePauseAttemptCount = 0
         assistantBridgeFinalAttempted = false
         activeAssistantBridge = nil
+        recentAssistantBridgeTexts = []
+        latestRehearsalStory = nil
         microphoneRestartWorkItem?.cancel()
         microphoneRestartWorkItem = nil
         microphoneCaptureGeneration = nil

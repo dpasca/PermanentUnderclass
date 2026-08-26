@@ -272,6 +272,35 @@ final class CompanionTests: XCTestCase {
         XCTAssertNil(snapshot.assistant.bridge)
     }
 
+    func testUsefulnessTimeoutKeepsEarlyBridgeForFinalizedTurn() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        let bridge = CompanionAssistantBridge(
+            id: "bridge-1",
+            topicID: "other-turn-1",
+            sourceText: "What changed after you found the bottleneck?",
+            text: "Let me recall the clearest result for a moment.",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generationMilliseconds: 900
+        )
+
+        _ = await hub.assistantBridged(bridge)
+        _ = await hub.assistantWorking(
+            basedOnSequence: 4,
+            trigger: .finalizedTurn
+        )
+        _ = await hub.assistantFinishedWithoutSuggestion(
+            basedOnSequence: 4,
+            trigger: .finalizedTurn,
+            outcome: .timedOut,
+            preserveBridge: true
+        )
+
+        let snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.bridge, bridge)
+        XCTAssertEqual(snapshot.assistant.phase, .idle)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .timedOut)
+    }
+
     func testNewInterviewerTurnSupersedesStaleBridgeAndWorkingState() async {
         let hub = CompanionEventHub(streamID: "test-stream")
         _ = await hub.assistantBridged(
@@ -470,6 +499,27 @@ final class CompanionTests: XCTestCase {
                 .earlyBridgePauseSilenceChunkCount * 20,
             400
         )
+        XCTAssertEqual(
+            LiveAssistantUsefulnessPolicy.maximumInterviewLatencyMilliseconds,
+            6_000
+        )
+        let observedAt = Date(timeIntervalSince1970: 100)
+        XCTAssertEqual(
+            LiveAssistantUsefulnessPolicy
+                .remainingInterviewLatencyMilliseconds(
+                    observedAt: observedAt,
+                    now: observedAt.addingTimeInterval(1)
+                ),
+            5_000
+        )
+        XCTAssertEqual(
+            LiveAssistantUsefulnessPolicy
+                .remainingInterviewLatencyMilliseconds(
+                    observedAt: observedAt,
+                    now: observedAt.addingTimeInterval(6.5)
+                ),
+            0
+        )
         XCTAssertLessThan(
             RealtimeTranscriptionClient.earlyBridgePauseSilenceChunkCount,
             RealtimeTranscriptionClient.assistantPauseSilenceChunkCount
@@ -552,6 +602,18 @@ final class CompanionTests: XCTestCase {
             ),
             0
         )
+        XCTAssertTrue(
+            LiveAssistantUsefulnessPolicy.isInterviewCueUseful(
+                observedAt: observedAt,
+                completedAt: observedAt.addingTimeInterval(5.999)
+            )
+        )
+        XCTAssertFalse(
+            LiveAssistantUsefulnessPolicy.isInterviewCueUseful(
+                observedAt: observedAt,
+                completedAt: observedAt.addingTimeInterval(6)
+            )
+        )
         XCTAssertEqual(
             EarlyInterviewBridgeEvaluationPolicy.delayMilliseconds(
                 for: .finalizedTurn
@@ -565,6 +627,9 @@ final class CompanionTests: XCTestCase {
             currentPartial:
                 "How did you verify that you found the right bottleneck?",
             recentTranscript: "You: I changed the upload path.",
+            recentBridges: [
+                "Give me a second to think that through."
+            ],
             sessionContext: "Rendering systems interview.",
             opportunity: .speechPause
         )
@@ -588,11 +653,11 @@ final class CompanionTests: XCTestCase {
         let developerPrompt = try XCTUnwrap(
             developerContent[0]["text"] as? String
         )
-        XCTAssertTrue(developerPrompt.contains("actual first sentence"))
-        XCTAssertTrue(developerPrompt.contains("Never invent a named project"))
-        XCTAssertTrue(developerPrompt.contains("short clauses, contractions"))
-        XCTAssertTrue(developerPrompt.contains("Never say what example"))
-        XCTAssertFalse(developerPrompt.contains("I'd use one example and"))
+        XCTAssertTrue(developerPrompt.contains("brief thinking bridge"))
+        XCTAssertTrue(developerPrompt.contains("full answer is independent"))
+        XCTAssertTrue(developerPrompt.contains("without answering the question"))
+        XCTAssertTrue(developerPrompt.contains("avoid every recent bridge"))
+        XCTAssertTrue(developerPrompt.contains("Never state a conclusion"))
         let userContent = try XCTUnwrap(
             input[1]["content"] as? [[String: Any]]
         )
@@ -600,6 +665,12 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(userPrompt.contains("Meaningful speech pause"))
         XCTAssertTrue(userPrompt.contains("CURRENT PARTIAL INTERVIEWER SPEECH"))
         XCTAssertTrue(userPrompt.contains("right bottleneck"))
+        XCTAssertTrue(
+            userPrompt.contains("RECENT THINKING BRIDGES TO AVOID REPEATING")
+        )
+        XCTAssertTrue(
+            userPrompt.contains("Give me a second to think that through.")
+        )
 
         let text = try XCTUnwrap(root["text"] as? [String: Any])
         let format = try XCTUnwrap(text["format"] as? [String: Any])
@@ -613,14 +684,13 @@ final class CompanionTests: XCTestCase {
     func testEarlyInterviewBridgeParsesSafeBridgeAndNoShow() throws {
         let shown = try EarlyInterviewBridgeClient.parseResponse(
             try earlyBridgeResponseData(
-                bridge:
-                    "I'd first check where the time is going, then narrow it down."
+                bridge: "Let me think of the clearest example for a moment."
             ),
             generationMilliseconds: 1_420
         )
         XCTAssertEqual(
             shown.bridge,
-            "I'd first check where the time is going, then narrow it down."
+            "Let me think of the clearest example for a moment."
         )
         XCTAssertEqual(shown.generationMilliseconds, 1_420)
         XCTAssertEqual(shown.serviceTier, "priority")
@@ -636,7 +706,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertThrowsError(
             try EarlyInterviewBridgeClient.parseResponse(
                 try earlyBridgeResponseData(
-                    bridge: Array(repeating: "word", count: 21)
+                    bridge: Array(repeating: "word", count: 13)
                         .joined(separator: " ")
                 ),
                 generationMilliseconds: 900
@@ -906,7 +976,22 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertTrue(
             LiveAssistantClient.interviewBehaviorInstructions.contains(
-                "match its usual sentence length and level of formality"
+                "broad sentence length and level of formality"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "apply this priority order"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "authoritative conversation context"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.interviewBehaviorInstructions.contains(
+                "Never reuse its generic framing"
             )
         )
         XCTAssertTrue(
@@ -932,6 +1017,46 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(
             LiveAssistantClient.plausibleRehearsalInstructions.contains(
                 "five non-empty fields"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "one coherent internal mini-story"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "all three beats must advance that same scene"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "most recent assistant-created rehearsal story"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "continuity context, not factual evidence"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "overrides the corresponding story field"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "do not request a separate continuity"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "Never invent a number"
+            )
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.plausibleRehearsalInstructions.contains(
+                "under about 50 words"
             )
         )
         XCTAssertTrue(
@@ -1199,6 +1324,48 @@ final class CompanionTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    func testPlausibleRehearsalStorySerializesForLaterFollowUps() throws {
+        var suggestion = answerSuggestion(
+            id: "story-1",
+            sequence: 14,
+            topicID: "interviewer-14"
+        )
+        suggestion.preamble = "On the checkout path, one cache miss stood out."
+        suggestion.answerMode = .plausibleRehearsal
+        suggestion.plausibleAssumptions = [
+            "The cache experiment is a rehearsal detail."
+        ]
+        suggestion.plausibleRehearsalPlan = CompanionPlausibleRehearsalPlan(
+            projectAnchor: "Checkout path",
+            observedSignal: "Repeated lookups raised p95 latency",
+            mechanismChange: "Batched lookups by request",
+            discriminatingCheck: "Replayed one recorded load before and after",
+            boundedOutcome: "Lookups stopped dominating the slow requests"
+        )
+
+        let story = try XCTUnwrap(
+            AssistantRehearsalStoryContext(suggestion: suggestion)
+        )
+        let json = try story.promptJSON()
+        let prompt = AssistantPromptBuilder.plan(
+            cachedPrefix: "stable",
+            recentTranscript: "Other: How did you know that was the cause?",
+            currentPartial: "",
+            rehearsalStory: json,
+            focusSpeaker: "Interviewer",
+            focusText: "How did you know that was the cause?"
+        ).volatileSuffix
+
+        XCTAssertTrue(json.contains("Checkout path"))
+        XCTAssertTrue(json.contains("Batched lookups by request"))
+        XCTAssertTrue(json.contains("cache experiment is a rehearsal detail"))
+        XCTAssertTrue(
+            prompt.contains("MOST RECENT PLAUSIBLE REHEARSAL STORY")
+        )
+        XCTAssertTrue(prompt.contains(json))
+        XCTAssertFalse(prompt.contains("EARLY SPEAKING BRIDGE"))
     }
 
     func testLiveAssistantResponseParsesUsageAndRejectsUnknownCitationPaths() throws {

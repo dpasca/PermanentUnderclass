@@ -891,7 +891,7 @@ struct ReferenceMaterialView: View {
                             Text("Early speaking bridge (experimental)")
                                 .font(.body.weight(.semibold))
                             Text(
-                                "Uses fast Priority requests while the interviewer is speaking and again at the first stable pause. It shows one short answer opening, then the complete Answer Mirror cue replaces it. In this danger mode the opening may sketch a restrained incident from the question before the evidence pack is available, and it may misread an unfinished question."
+                                "Uses fast Priority requests while the interviewer is speaking and again at the first stable pause. It shows a short, varied thinking phrase such as “Let me choose the clearest example for a moment,” then the complete Answer Mirror cue replaces it. The phrase contains no answer substance and never influences the complete cue, though it may still appear too early if the question is unfinished."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)

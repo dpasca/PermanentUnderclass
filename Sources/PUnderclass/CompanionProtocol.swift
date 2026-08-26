@@ -250,6 +250,7 @@ enum CompanionInferenceOutcome: String, Codable, Equatable, Sendable {
     case notAnswerable
     case repairedGrounding
     case invalidGrounding
+    case timedOut
     case cancelled
     case failed
 }
@@ -618,13 +619,14 @@ actor CompanionEventHub {
         trigger: CompanionAssistantTrigger? = nil,
         triggeredAt: Date? = nil,
         completedAt: Date = Date(),
-        outcome: CompanionInferenceOutcome = .notAnswerable
+        outcome: CompanionInferenceOutcome = .notAnswerable,
+        preserveBridge: Bool = false
     ) -> CompanionEvent {
         let evaluationTrigger = trigger ?? state.assistant.evaluatingTrigger
         let evaluationTriggeredAt = triggeredAt
             ?? state.assistant.evaluationTriggeredAt
         state.assistant.phase = .idle
-        if evaluationTrigger != .partialTranscript {
+        if !preserveBridge, evaluationTrigger != .partialTranscript {
             state.assistant.bridge = nil
         }
         state.assistant.lastError = nil

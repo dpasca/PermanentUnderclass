@@ -1181,6 +1181,15 @@ struct ContentView: View {
                     .disabled(turns.isEmpty)
                 Button("Export…") { controller.exportTranscript(for: purpose) }
                     .disabled(turns.isEmpty)
+                if purpose == .interview {
+                    Button("Show Archive") {
+                        controller.revealLatestInterviewArchive()
+                    }
+                    .disabled(controller.latestInterviewArchiveURL == nil)
+                    .help(
+                        "Reveal the locally saved interview transcript and complete suggestion history"
+                    )
+                }
                 Button("Clear") { controller.clearTranscript(for: purpose) }
                     .disabled(turns.isEmpty)
             }

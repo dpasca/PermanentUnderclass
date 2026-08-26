@@ -83,8 +83,17 @@ interview answer outline. Its explicitly confirmed **Plausible Rehearsal** mode
 may attach a draft to a relevant project and extrapolate a
 modest incident. Before writing, it maps that incident to one project, an
 observed signal, a before-to-after mechanism change, a discriminating check,
-and a bounded outcome. A follow-up preserves that story and adds the requested
-depth instead of restating it. The preparation UI and assistant display mark
+and a bounded outcome. Those fields form one causal mini-story across the
+preamble and all three beats rather than three unrelated examples. The most
+recent assistant-created story is sent to the next full request as continuity
+context; the model decides in that same call whether a new question is a
+follow-up. A follow-up therefore preserves the project and causal details even
+when the candidate did not say the prior cue aloud, while an unrelated question
+starts a new story without another model call. Clearly different details the
+candidate actually says take precedence over the retained draft. The current
+question comes first, followed by concrete candidate speech, reference evidence,
+the retained story, and finally broad speaking style. The preparation UI and
+assistant display mark
 the result as a rehearsal to verify, and the structured result carries the
 material assumptions separately. Extreme financial, popularity, and
 performance claims remain forbidden.
@@ -98,13 +107,15 @@ the candidate should choose.
 Inside Plausible Rehearsal, **Early speaking bridge (experimental)** is a
 separate opt-in switch. It does not wait for the 800
 ms end-of-speech pause. After a short 600 ms partial-transcript collection
-window, a Priority `gpt-5.6-luna` request can show one structural opening such
-as “I'd first check where the time is going, then narrow it down.” It
-never receives résumé documents and is instructed not to claim personal facts.
-The normal `gpt-5.6-terra` cue continues independently and replaces the bridge;
-when the completed question still fits, its preamble repeats the bridge so the
-spoken answer continues naturally. An unclear fragment produces no bridge, and
-the host makes at most two early attempts per interviewer turn. This option can
+window, a Priority `gpt-5.6-luna` request can show one thinking phrase such
+as “Let me choose the clearest example for a moment.” It asks for time without
+answering, receives no résumé documents, and is forbidden from introducing a
+conclusion, action, project, result, or other answer substance. The normal
+`gpt-5.6-terra` cue is generated independently: the bridge text is never
+included in its request, and the completed cue simply replaces it. Recent
+bridge wording is supplied only to Luna so repeated fillers are less likely.
+An unclear fragment produces no bridge, and the host makes at most two early
+attempts per interviewer turn. This option can
 therefore add model calls and Priority-processing cost, and the UI labels its
 output as partial and experimental. Both preferences remain enabled across
 interviews and app relaunches until the user explicitly turns them off.
@@ -118,16 +129,21 @@ its cited URL is present in the response's hosted-search source metadata, and
 the display makes that source visible and clickable.
 
 In either mode, an 800 ms pause in the other speaker's audio can trigger a
-structured `gpt-5.6-terra` Responses API outline at low reasoning effort from the current partial
-transcript before the 3 second final-turn boundary. The finalized turn remains
-a fallback, and an exact partial/final duplicate is coalesced rather than billed
-twice. The user's speech stays visible in the transcript but does not replace
-the model outline. Explicit speaker and capture-purpose state provides this
-routing; there is no keyword or regex gate.
+structured `gpt-5.6-terra` Responses API outline at medium reasoning effort from
+the current partial transcript before the 3 second final-turn boundary. The
+finalized turn remains a fallback, and an exact partial/final duplicate is
+coalesced rather than billed twice. The user's speech stays visible in the
+transcript and its concrete details override a conflicting retained draft;
+generic wording affects only the final style pass. Explicit speaker and
+capture-purpose state provides this routing; there is no keyword or regex gate.
 The experimental early bridge is the only pre-pause path. It is available only
 when both Plausible Rehearsal and its own switch are active. A new interviewer
 turn cancels work for the previous turn, while the early opener and full answer
 use independent requests so the fast lane cannot reduce the full cue's quality.
+The full interview cue has a six-second usefulness deadline measured from the
+end of the interviewer's speech. A late first response or grounding repair is
+silently withheld as stale, while an early bridge already on screen remains
+available to fill the pause.
 Each Answer Mirror result starts with a brief spoken preamble and follows with
 two or three labeled beats rather than polished prose; Plausible Rehearsal uses
 exactly three. The preamble gives the direct answer or qualifies an important
@@ -135,8 +151,10 @@ version, assumption, scope, or contrast; the beats then preserve concrete
 evidence, mechanics, caveats, and checks. The wording uses ordinary vocabulary,
 short clauses, contractions, and precise technical nouns only where they add
 real meaning. When recent candidate speech provides a useful sample, the cue
-matches its sentence length and formality without copying hesitation, errors,
-or filler.
+uses only its broad sentence length and formality as a final style check. It is
+explicitly told not to reuse generic framing, slogans, self-description, or a
+topic merely because the candidate said it recently, and it still excludes
+hesitation, errors, and filler.
 Meeting Assistant retains its direct three-to-five beat response outline. This
 makes it possible to compare substance without reading a script. The
 newest card appears first and the host retains three previous cards in the
@@ -436,9 +454,10 @@ The proof of concept includes:
   Privacy-safe lifecycle logs include trigger-to-start, model, and total
   transcript-to-result timings.
 - Plausible Rehearsal can optionally run a Priority Luna early bridge from the
-  still-forming interviewer partial. It shows one fact-free opening while Terra
-  drafts the complete cue, limits itself to two attempts per turn, and records
-  separate `assistant_bridge_*` lifecycle timings.
+  still-forming interviewer partial. It shows one non-substantive thinking
+  phrase while Terra independently drafts the complete cue, varies against the
+  last few accepted bridges, limits itself to two attempts per turn, and
+  records separate `assistant_bridge_*` lifecycle timings.
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt
@@ -490,8 +509,16 @@ The proof of concept includes:
   modifier-only Command-Option monitoring, and automatic paste into the app,
   window, and control that were focused when recording began.
 
-Meeting and interview audio and transcripts remain in memory. Quick Dictation final text is
-stored locally for the history tab until the user erases it. Quick Dictation WAV
+Meeting audio and transcripts remain in memory. Each interview is incrementally
+saved as a plain JSON archive under
+`~/Library/Application Support/com.newtypekk.punderclass/InterviewSessions/`.
+The archive contains session metadata, finalized and revised transcript turns,
+every accepted thinking bridge, and every assistant suggestion that was
+published—including an interim cue later replaced by a finalized one. **Show
+Archive** beside the interview transcript reveals the latest file. Clearing the
+visible transcript does not silently erase this analysis record. Interview
+audio is not included. Quick Dictation final text is stored locally for the
+history tab until the user erases it. Quick Dictation WAV
 audio is also stored temporarily while transcription is pending or recoverable;
 it is removed after text is safely saved or the user explicitly deletes it.
 Continuous meeting, interview, or diagnostic audio recording is not implemented.

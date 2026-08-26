@@ -305,6 +305,7 @@ private struct PrivacySettings: View {
                 VStack(alignment: .leading, spacing: 5) {
                     bullet("Recordings are never written anywhere except this Mac, and are deleted once the text is saved.")
                     bullet("Dictation history lives in this Mac's Application Support folder.")
+                    bullet("Interview transcripts and every displayed assistant cue are saved as local JSON archives in Application Support.")
                     bullet("Meeting and interview audio can be split by speaker and transcribed with Whisper or Parakeet without leaving this Mac.")
                     bullet("Local reference documents stay on this Mac until you explicitly prepare evidence or use a cloud assistant.")
                 }

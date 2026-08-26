@@ -17,13 +17,13 @@ struct EarlyInterviewBridgeClient: Sendable {
     static let maximumOutputTokens = 60
 
     static let behaviorInstructions = """
-    You create the actual first sentence of an answer in a live job interview. It appears early and the substantive answer will continue from it. The supplied speech state says whether the transcript is still forming, has reached a meaningful pause, or is finalized. This feature runs only in visibly labeled plausible-rehearsal mode.
+    You create a brief thinking bridge in a live job interview. It appears early to buy the candidate a moment while a separate model prepares the substantive answer. The full answer is independent and will not continue from this wording. The supplied speech state says whether the transcript is still forming, has reached a meaningful pause, or is finalized. This feature runs only in visibly labeled plausible-rehearsal mode.
 
-    If the partial speech already reveals a stable request, return one natural first-person sentence of 7 to 16 words that the candidate could begin saying immediately. Start answering rather than describing an answer plan. For a technical question, state the first real distinction, mechanism, or check. For a clearly completed experience request, you may begin one restrained, plausible incident using only the topic already present—for example, "Yeah—one case started with frame time spiking in a repeatable scene." For a behavioral request, a form such as "Yeah—one case was a disagreement about which constraint mattered most" can fit. The later answer must be able to continue naturally from the bridge.
+    If the partial speech already reveals a stable request, return one natural first-person sentence of 5 to 12 words that asks for a brief moment without answering the question. Useful shapes include "Let me think of the clearest example for a moment," "Give me a second to think that through," and "Let me choose the most relevant case." Adapt lightly to whether the request asks for an example, explanation, comparison, or decision, but do not introduce any answer substance. Vary the wording and avoid every recent bridge listed in the request.
 
-    Use short clauses, contractions, and common words. Never say what example the candidate should use or how they should structure the answer. Avoid coaching language such as "I'd use one example," "I'd walk through," "I'd frame this around," "I'd separate," "I'll anchor that in," "diagnostic frame," or "measurement boundary." Keep a technical term only when the partial question needs it.
+    Use short clauses and common words. It should sound like spontaneous speech, not like coaching or an announced answer framework. Do not praise or repeat the question. Do not use filler such as "um," "you know," "that's a great question," or "I guess." Do not mention the assistant, a model, a draft, sources, or waiting for another answer.
 
-    Never invent a named project, employer, result, metric, achievement, title, or responsibility. Do not add a specific action beyond what the stable request already supports. Never guess the missing end of a question. Do not praise or repeat the question, and do not use empty filler such as "well," "I guess," "that's a great question," or "let me think." If the request could still change materially, return an empty bridge.
+    Never state a conclusion, approach, mechanism, action, fact, opinion, project, employer, result, metric, achievement, title, or responsibility. Never guess the missing end of a question. If the request could still change materially, return an empty bridge.
     """
 
     private let responseLoader: @Sendable (String, Data) async throws -> Data
@@ -48,6 +48,7 @@ struct EarlyInterviewBridgeClient: Sendable {
         apiKey: String,
         currentPartial: String,
         recentTranscript: String = "",
+        recentBridges: [String] = [],
         sessionContext: String = "",
         opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
             .formingTranscript
@@ -58,6 +59,7 @@ struct EarlyInterviewBridgeClient: Sendable {
             try Self.requestBody(
                 currentPartial: currentPartial,
                 recentTranscript: recentTranscript,
+                recentBridges: recentBridges,
                 sessionContext: sessionContext,
                 opportunity: opportunity
             )
@@ -73,6 +75,7 @@ struct EarlyInterviewBridgeClient: Sendable {
     static func requestBody(
         currentPartial: String,
         recentTranscript: String = "",
+        recentBridges: [String] = [],
         sessionContext: String = "",
         opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
             .formingTranscript
@@ -103,6 +106,7 @@ struct EarlyInterviewBridgeClient: Sendable {
                             "text": volatilePrompt(
                                 currentPartial: currentPartial,
                                 recentTranscript: recentTranscript,
+                                recentBridges: recentBridges,
                                 sessionContext: sessionContext,
                                 opportunity: opportunity
                             )
@@ -184,7 +188,7 @@ struct EarlyInterviewBridgeClient: Sendable {
         let words = normalized.split(whereSeparator: \Character.isWhitespace)
         guard
             normalized.isEmpty
-                || (normalized.count <= 180 && (5...20).contains(words.count))
+                || (normalized.count <= 120 && (5...12).contains(words.count))
         else {
             throw LiveAssistantError.invalidResponse
         }
@@ -199,6 +203,7 @@ struct EarlyInterviewBridgeClient: Sendable {
     private static func volatilePrompt(
         currentPartial: String,
         recentTranscript: String,
+        recentBridges: [String],
         sessionContext: String,
         opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity
     ) -> String {
@@ -208,6 +213,12 @@ struct EarlyInterviewBridgeClient: Sendable {
         let context = sessionContext.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
+        let bridges = recentBridges
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .suffix(4)
+            .map { "- \($0)" }
+            .joined(separator: "\n")
         let speechState: String
         switch opportunity {
         case .formingTranscript:
@@ -215,7 +226,7 @@ struct EarlyInterviewBridgeClient: Sendable {
                 "Still forming. Return an empty bridge if the request can still change materially."
         case .speechPause:
             speechState =
-                "Meaningful speech pause. If the text contains a clear request, provide the opening now; do not wait for formal turn finalization."
+                "Meaningful speech pause. If the text contains a clear request, provide the thinking bridge now; do not wait for formal turn finalization."
         case .finalizedTurn:
             speechState =
                 "Finalized interviewer turn. Return an empty bridge only when there is no clear request to answer."
@@ -229,6 +240,9 @@ struct EarlyInterviewBridgeClient: Sendable {
 
         MOST RECENT COMPLETED EXCHANGE
         \(recent.isEmpty ? "None." : recent)
+
+        RECENT THINKING BRIDGES TO AVOID REPEATING
+        \(bridges.isEmpty ? "None." : bridges)
 
         CURRENT PARTIAL INTERVIEWER SPEECH
         \(currentPartial)

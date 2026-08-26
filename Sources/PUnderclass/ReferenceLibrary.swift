@@ -436,6 +436,7 @@ enum AssistantPromptBuilder {
         cachedPrefix: String,
         recentTranscript: String,
         currentPartial: String,
+        rehearsalStory: String = "",
         sessionContext: String = "",
         focusSpeaker: String = "",
         focusText: String = "",
@@ -450,6 +451,9 @@ enum AssistantPromptBuilder {
 
         CURRENT PARTIAL TRANSCRIPT
         \(currentPartial)
+
+        MOST RECENT PLAUSIBLE REHEARSAL STORY
+        \(rehearsalStory.isEmpty ? "None." : rehearsalStory)
 
         CURRENT RESPONSE TARGET
         Speaker: \(focusSpeaker)

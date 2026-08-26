@@ -3,6 +3,62 @@ import XCTest
 @testable import PUnderclass
 
 final class LiveAssistantClientRetryTests: XCTestCase {
+    func testGenerateStopsAtTheSharedUsefulnessDeadline() async throws {
+        let client = LiveAssistantClient { _, _ in
+            try await Task.sleep(for: .seconds(1))
+            return Data()
+        }
+
+        do {
+            _ = try await client.generate(
+                apiKey: "test-key",
+                references: nil,
+                recentTranscript: "",
+                currentPartial: "",
+                otherSpeakerText: "What did you change?",
+                purpose: .interview,
+                basedOnSequence: 40,
+                usefulnessDeadline: ContinuousClock.now + .milliseconds(20)
+            )
+            XCTFail("Expected the live usefulness deadline to stop generation")
+        } catch let error as LiveAssistantError {
+            XCTAssertEqual(error, .usefulnessDeadlineExceeded)
+        }
+    }
+
+    func testGroundingRepairSharesTheOriginalUsefulnessDeadline() async throws {
+        let responses = LiveAssistantDelayedRepairQueue(
+            firstResponse: try responseData(
+                grounding: .localReferences,
+                citations: [],
+                inputTokens: 85,
+                outputTokens: 20
+            )
+        )
+        let client = LiveAssistantClient { apiKey, body in
+            try await responses.load(apiKey: apiKey, body: body)
+        }
+
+        do {
+            _ = try await client.generate(
+                apiKey: "test-key",
+                references: nil,
+                recentTranscript: "",
+                currentPartial: "",
+                otherSpeakerText: "What did you change?",
+                purpose: .interview,
+                basedOnSequence: 40,
+                usefulnessDeadline: ContinuousClock.now + .milliseconds(30)
+            )
+            XCTFail("Expected repair to stop at the original deadline")
+        } catch let failure as LiveAssistantFailure {
+            XCTAssertEqual(failure.cause, .usefulnessDeadlineExceeded)
+            XCTAssertEqual(failure.usage.inputTokens, 85)
+            XCTAssertEqual(failure.usage.groundingRepairAttempts, 1)
+            XCTAssertEqual(failure.usage.groundingRepairSuccesses, 0)
+        }
+    }
+
     func testGenerateRepairsSpokenMetaCommentary() async throws {
         let responses = LiveAssistantResponseQueue(
             responses: [
@@ -315,5 +371,23 @@ private actor LiveAssistantResponseQueue {
 
     func recordedRequests() -> [Request] {
         requests
+    }
+}
+
+private actor LiveAssistantDelayedRepairQueue {
+    private let firstResponse: Data
+    private var requestCount = 0
+
+    init(firstResponse: Data) {
+        self.firstResponse = firstResponse
+    }
+
+    func load(apiKey _: String, body _: Data) async throws -> Data {
+        requestCount += 1
+        if requestCount == 1 {
+            return firstResponse
+        }
+        try await Task.sleep(for: .seconds(1))
+        return Data()
     }
 }

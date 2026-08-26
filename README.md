@@ -32,8 +32,9 @@ folders, audio devices, or running-process names.
 - **Interview:** use the same two-track capture with an Answer Mirror that
   suggests concise answer beats without inventing personal experience. An
   explicit Plausible Rehearsal mode can draft project-specific examples to
-  verify, with an optional experimental early bridge while the question is
-  still being spoken.
+  verify, with an optional fact-free thinking bridge while the question is
+  still being spoken. Each interview is also archived locally as JSON with its
+  final transcript and every displayed assistant cue.
 
 ## Download
 
@@ -57,7 +58,7 @@ checksum. Intel Macs and non-macOS systems are not supported.
 | Feature | On this Mac | Network use |
 | --- | --- | --- |
 | 🎙️ **Quick Dictation** | 🟢 `LOCAL DEFAULT`<br>Local-model audio processing, saved final-text history, and temporary recoverable audio | 🟡 `OPTIONAL CLOUD`<br>Audio only when OpenAI GPT-Transcribe is selected |
-| 👥 **Meeting and interview** | 🟢 `LOCAL CAPTURE`<br>Separate microphone/system tracks, on-device turn detection, and Whisper or Parakeet transcription after each completed turn | 🟡 `OPTIONAL CLOUD`<br>Word-by-word partial text when an OpenAI key is configured |
+| 👥 **Meeting and interview** | 🟢 `LOCAL CAPTURE`<br>Separate microphone/system tracks, on-device turn detection, Whisper or Parakeet transcription after each completed turn, and local JSON archives for interviews | 🟡 `OPTIONAL CLOUD`<br>Word-by-word partial text when an OpenAI key is configured |
 | ✨ **Final transcript pass** | 🟢 `ON-DEVICE OPTION`<br>Whisper or Parakeet | 🟡 `OPTIONAL CLOUD`<br>Audio only when the OpenAI finalizer is selected |
 | 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>Relevant reference text and transcript context used to generate cues; presentation-ready session state can also be viewed over a trusted LAN |
 
@@ -69,7 +70,8 @@ the API key or full reference corpus. Its manual LAN-address mode is currently
 plain HTTP without pairing, so use it only on a trusted local network. Meeting
 and interview audio is not continuously recorded to disk;
 Quick Dictation retains audio only while a transcription is pending or
-recoverable.
+recoverable. Interview archives contain text and assistant output, not audio,
+under `~/Library/Application Support/com.newtypekk.punderclass/InterviewSessions/`.
 
 ## Requirements
 
