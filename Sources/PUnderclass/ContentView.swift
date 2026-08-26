@@ -94,33 +94,56 @@ struct ContentView: View {
 
     private func captureTab(for purpose: CapturePurpose) -> some View {
         let isTranscriptExpanded = expandedTranscriptPurpose == purpose
+        let isLiveCaptureActive = controller.isListening
+            && controller.capturePurpose == purpose
 
-        return VStack(spacing: 0) {
-            if !isTranscriptExpanded {
-                ScrollView {
-                    captureWidgets(for: purpose)
-                        .padding(16)
+        return GeometryReader { geometry in
+            VStack(spacing: 0) {
+                if !isTranscriptExpanded {
+                    ScrollView {
+                        captureWidgets(for: purpose)
+                            .padding(16)
+                    }
+                    .frame(
+                        height: captureDashboardHeight(
+                            availableHeight: geometry.size.height,
+                            isLiveCaptureActive: isLiveCaptureActive
+                        )
+                    )
+
+                    Divider()
                 }
 
-                Divider()
-            }
-
-            transcriptPanel(
-                for: purpose,
-                isExpanded: isTranscriptExpanded
-            ) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    expandedTranscriptPurpose = isTranscriptExpanded
-                        ? nil
-                        : purpose
+                transcriptPanel(
+                    for: purpose,
+                    isExpanded: isTranscriptExpanded
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        expandedTranscriptPurpose = isTranscriptExpanded
+                            ? nil
+                            : purpose
+                    }
                 }
+                .frame(
+                    minHeight: isTranscriptExpanded ? 0 : 240,
+                    maxHeight: .infinity
+                )
+                .padding(16)
             }
-            .frame(
-                minHeight: isTranscriptExpanded ? 0 : 240,
-                maxHeight: isTranscriptExpanded ? .infinity : 240
-            )
-            .padding(16)
         }
+    }
+
+    private func captureDashboardHeight(
+        availableHeight: CGFloat,
+        isLiveCaptureActive: Bool
+    ) -> CGFloat {
+        let minimumHeight: CGFloat = isLiveCaptureActive ? 300 : 310
+        let maximumHeight: CGFloat = isLiveCaptureActive ? 400 : 460
+        let transcriptReserve: CGFloat = isLiveCaptureActive ? 340 : 305
+        return min(
+            maximumHeight,
+            max(minimumHeight, availableHeight - transcriptReserve)
+        )
     }
 
     private func captureWidgets(for purpose: CapturePurpose) -> some View {
@@ -129,42 +152,26 @@ struct ContentView: View {
                 localCaptureNotice(for: purpose)
             }
 
-            companionConnectionPanel
-
-            VStack(spacing: 12) {
-                captureControlPanel(for: purpose)
-                audioRoutePanel(for: purpose)
-            }
-
-            preparationAccessPanel(for: purpose)
-
-            generatedReplayPanel(for: purpose)
-                .locked(
-                    replayFeature(for: purpose),
-                    access: purpose == .interview
-                        && controller.isLiveAssistantAvailable
-                        ? .available
-                        : controller.access(to: replayFeature(for: purpose)),
-                    onResolve: showSettings
-                )
+            captureControlPanel(for: purpose)
 
             if let error = controller.errorMessage {
                 errorBanner(error)
             }
 
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                HStack(spacing: 16) {
+                HStack(alignment: .top, spacing: 12) {
                     TrackCard(
                         title: "MICROPHONE INPUT",
                         systemImage: "mic.fill",
-                        subtitle: controller.microphoneName,
                         color: .blue,
                         state: controller.localTrack(for: purpose),
                         health: controller.captureMicrophoneHealth(
                             for: purpose,
                             at: timeline.date
                         )
-                    )
+                    ) {
+                        microphoneSourceControl
+                    }
                     TrackCard(
                         title: purpose == .meeting
                             ? "MEETING AUDIO"
@@ -172,14 +179,37 @@ struct ContentView: View {
                         systemImage: controller.selectedProcessID == nil
                             ? "speaker.wave.2.fill"
                             : "macwindow.on.rectangle",
-                        subtitle: selectedSystemAudioName,
                         color: .purple,
                         state: controller.remoteTrack(for: purpose),
                         health: controller.captureSystemAudioHealth(
                             for: purpose,
                             at: timeline.date
                         )
-                    )
+                    ) {
+                        systemAudioSourceControl
+                    }
+                }
+            }
+
+            if controller.isListening && controller.capturePurpose == purpose {
+                activeSessionResourcesBar(for: purpose)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    preparationAccessPanel(for: purpose)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    generatedReplayPanel(for: purpose)
+                        .locked(
+                            replayFeature(for: purpose),
+                            access: purpose == .interview
+                                && controller.isLiveAssistantAvailable
+                                ? .available
+                                : controller.access(
+                                    to: replayFeature(for: purpose)
+                                ),
+                            onResolve: showSettings
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
@@ -338,77 +368,91 @@ struct ContentView: View {
         let isActive = controller.isListening
             && controller.capturePurpose == purpose
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label(
-                    purpose == .meeting ? "Meeting capture" : "Live interview",
-                    systemImage: purpose == .meeting
-                        ? "person.2.fill"
-                        : "person.crop.rectangle"
+        return HStack(alignment: .center, spacing: 12) {
+            Image(
+                systemName: purpose == .meeting
+                    ? "person.2.fill"
+                    : "person.crop.rectangle"
+            )
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isActive ? .red : Color.accentColor)
+                .frame(width: 36, height: 36)
+                .background(
+                    (isActive ? Color.red : Color.accentColor).opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 9)
                 )
-                    .font(.headline)
-                Circle()
-                    .fill(captureStatusColor(for: purpose))
-                    .frame(width: 8, height: 8)
-                Text(captureStatusLabel(for: purpose))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                if isActive {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Spacer()
-                Button(
-                    controller.isLiveAssistantAvailable
-                        ? "Open \(purpose.assistantTitle)"
-                        : "Open Transcript Display",
-                    action: controller.openCompanionDisplay
-                )
-                .disabled(controller.companionGatewayEndpoint == nil)
-                Label("Headphones required", systemImage: "headphones")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Button("Settings…") { showSettings(.general) }
-                Button("Finish My Turn", action: controller.finalizeLocalTurn)
-                    .disabled(!isActive)
-                Button {
-                    handlePrimaryCaptureAction(for: purpose)
-                } label: {
-                    Label(
-                        primaryCaptureActionTitle(for: purpose),
-                        systemImage: isActive ? "stop.fill" : "waveform"
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(
+                        purpose == .meeting
+                            ? "Meeting capture"
+                            : "Live interview"
                     )
-                    .frame(minWidth: 108)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(isActive ? .red : .accentColor)
-                .disabled(
-                    controller.syntheticInterviewState.isActive
-                        && controller.syntheticInterviewState.purpose == purpose
-                )
-            }
+                        .font(.headline)
 
-            HStack(spacing: 8) {
+                    Circle()
+                        .fill(captureStatusColor(for: purpose))
+                        .frame(width: 8, height: 8)
+                    Text(captureStatusLabel(for: purpose))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    if isActive {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(
+                        controller.usesHostedLiveTranscription(for: purpose)
+                            ? "Final pass"
+                            : "Local transcriber"
+                    )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    SocketBadge(
+                        state: controller.capturePurpose == purpose
+                            ? controller.refinementState
+                            : .idle,
+                        color: .green
+                    )
+                }
+
                 Text(captureDescription(for: purpose))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 12)
-                // Kept from the removed pipeline panel: when turns stop being
-                // refined, this is the only place that says why.
-                Text(
-                    controller.usesHostedLiveTranscription(for: purpose)
-                        ? "Final pass"
-                        : "Local transcriber"
-                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                SocketBadge(
-                    state: controller.capturePurpose == purpose
-                        ? controller.refinementState
-                        : .idle,
-                    color: .green
-                )
+                    .lineLimit(1)
             }
+
+            Spacer(minLength: 8)
+
+            companionDisplayControls(for: purpose)
+
+            Image(systemName: "headphones")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+                .help("Headphones are required to keep speaker tracks separate")
+                .accessibilityLabel("Headphones required")
+
+            if isActive {
+                Button("Finish My Turn", action: controller.finalizeLocalTurn)
+            }
+
+            Button {
+                handlePrimaryCaptureAction(for: purpose)
+            } label: {
+                Label(
+                    primaryCaptureActionTitle(for: purpose),
+                    systemImage: isActive ? "stop.fill" : "waveform"
+                )
+                .frame(minWidth: 108)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(isActive ? .red : .accentColor)
+            .disabled(
+                controller.syntheticInterviewState.isActive
+                    && controller.syntheticInterviewState.purpose == purpose
+            )
         }
         .padding(12)
         .background(
@@ -444,66 +488,49 @@ struct ContentView: View {
             : "Local transcript ready"
     }
 
-    private var companionConnectionPanel: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "server.rack")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(companionGatewayColor)
-                .frame(width: 36, height: 36)
-                .background(
-                    companionGatewayColor.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 9)
-                )
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
+    private func companionDisplayControls(
+        for purpose: CapturePurpose
+    ) -> some View {
+        HStack(spacing: 4) {
+            Button(action: controller.openCompanionDisplay) {
+                HStack(spacing: 6) {
                     Circle()
                         .fill(companionGatewayColor)
                         .frame(width: 7, height: 7)
-                    Text(controller.companionGatewayStatus)
-                        .font(.callout.weight(.semibold))
+                    Text(
+                        controller.usesHostedLiveTranscription(for: purpose)
+                            ? purpose.assistantTitle
+                            : "Transcript Display"
+                    )
                 }
+            }
+            .disabled(controller.companionGatewayEndpoint == nil)
+            .help(companionGatewayDetail)
+
+            Menu {
+                Text(controller.companionGatewayStatus)
                 Text(companionGatewayDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
 
-            Spacer(minLength: 12)
-
-            if let lanURL = controller.companionGatewayEndpoint?.preferredLANURL {
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("OPEN FROM ANOTHER COMPUTER")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 7) {
-                        Text(lanURL.absoluteString)
-                            .font(.system(.callout, design: .monospaced).weight(.medium))
-                            .textSelection(.enabled)
-                        Button("Copy", action: controller.copyCompanionLANAddress)
-                            .controlSize(.small)
-                    }
-                    Text("Same Wi-Fi or Ethernet · use a trusted network")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                if let lanURL = controller.companionGatewayEndpoint?.preferredLANURL {
+                    Divider()
+                    Text(lanURL.absoluteString)
+                    Button(
+                        "Copy LAN Address",
+                        action: controller.copyCompanionLANAddress
+                    )
                 }
-            }
 
-            if controller.companionGatewayError != nil {
-                Button("Try Again", action: controller.restartCompanionGateway)
-            } else {
-                Button("Open on This Mac", action: controller.openCompanionDisplay)
-                    .disabled(controller.companionGatewayEndpoint == nil)
+                if controller.companionGatewayError != nil {
+                    Divider()
+                    Button("Try Again", action: controller.restartCompanionGateway)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .frame(width: 18, height: 18)
             }
-        }
-        .padding(11)
-        .background(
-            companionGatewayColor.opacity(0.06),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(companionGatewayColor.opacity(0.24), lineWidth: 1)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Assistant display connection details")
         }
     }
 
@@ -833,66 +860,74 @@ struct ContentView: View {
             controller.preparationPurpose = purpose
             openWindow(id: PUnderclassWindow.preparation)
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "checklist")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 42, height: 42)
-                    .background(
-                        Color.accentColor.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 10)
-                    )
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Color.accentColor.opacity(0.12),
+                            in: RoundedRectangle(cornerRadius: 9)
+                        )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Prepare " + purpose.title)
-                        .font(.title3.weight(.semibold))
-                    Text(
-                        purpose == .meeting
-                            ? "Add a brief, exact terms, languages, and reference documents for transcription and Meeting Assistant."
-                            : "Choose the resume, confirm the target role, and prepare evidence for Answer Mirror."
-                    )
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Prepare " + purpose.title)
+                            .font(.headline)
+                        Text(
+                            purpose == .meeting
+                                ? "Add guidance, exact terms, languages, and references."
+                                : "Choose the resume, target role, and evidence for Answer Mirror."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 6)
+
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
                 }
 
-                Spacer(minLength: 16)
+                Divider()
 
-                if purpose == .interview {
-                    interviewPreparationAccessStatus
-                } else {
-                    VStack(alignment: .trailing, spacing: 5) {
-                        Text("Session guidance + references")
-                            .font(.callout.weight(.medium))
-                        if let folderURL = state.folderURL {
-                            Text(
-                                referenceSummary(
-                                    snapshot: snapshot,
-                                    folderURL: folderURL
+                HStack(alignment: .center, spacing: 10) {
+                    if purpose == .interview {
+                        interviewPreparationAccessStatus
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Session guidance + references")
+                                .font(.caption.weight(.semibold))
+                            if let folderURL = state.folderURL {
+                                Text(
+                                    referenceSummary(
+                                        snapshot: snapshot,
+                                        folderURL: folderURL
+                                    )
                                 )
-                            )
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        } else {
-                            Text("No folder selected")
-                                .font(.callout)
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            } else {
+                                Text("No folder selected")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
-                }
 
-                Label("Open Setup…", systemImage: "arrow.up.right.square")
-                    .font(.body.weight(.semibold))
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
-                    .background(
-                        Color.accentColor,
-                        in: RoundedRectangle(cornerRadius: 9)
-                    )
-                    .foregroundStyle(.white)
+                    Spacer(minLength: 6)
+
+                    Text("Open Setup…")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
             }
-            .padding(14)
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -909,12 +944,12 @@ struct ContentView: View {
 
     private var interviewPreparationAccessStatus: some View {
         let copy = interviewPreparationAccessCopy
-        return VStack(alignment: .trailing, spacing: 5) {
+        return VStack(alignment: .leading, spacing: 2) {
             Label(copy.title, systemImage: copy.icon)
-                .font(.callout.weight(.semibold))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(copy.color)
             Text(copy.detail)
-                .font(.callout)
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -1011,98 +1046,97 @@ struct ContentView: View {
             ? controller.syntheticInterviewState.purpose
             : nil
 
-        return HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "waveform")
-                .font(.title2)
-                .foregroundStyle(.indigo)
-                .frame(width: 34)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.indigo)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        .indigo.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 9)
+                    )
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(state.title)
-                        .font(.callout.weight(.semibold))
+                        .font(.headline)
+                        .lineLimit(1)
                     Text("GENERATED \(purpose.title.uppercased()) REPLAY")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.indigo)
                 }
-                Text(state.detail)
-                    .font(.caption)
+
+                Spacer(minLength: 6)
+
+                Text("5 GROUNDED EXCHANGES")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                if state.isActive {
-                    if state.isGenerating {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: 360)
-                    } else {
-                        ProgressView(value: state.progress)
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: 360)
-                    }
-                } else {
-                    Text(
-                        otherReplayPurpose.map {
-                            "A generated \($0.title.lowercased()) replay is already running."
-                        } ?? controller.generatedReplayReadinessDetail(
-                            for: purpose
-                        )
-                    )
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                    .lineLimit(1)
             }
 
-            Spacer()
+            Text(state.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
 
-            VStack(alignment: .trailing, spacing: 5) {
+            if state.isActive {
+                if state.isGenerating {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView(value: state.progress)
+                        .progressViewStyle(.linear)
+                }
+            } else {
+                Text(
+                    otherReplayPurpose.map {
+                        "A generated \($0.title.lowercased()) replay is already running."
+                    } ?? controller.generatedReplayReadinessDetail(for: purpose)
+                )
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+            Divider()
+
+            HStack(spacing: 8) {
                 Text(
                     purpose == .interview
-                        ? "5 GROUNDED EXCHANGES · 1 LIVE WEB CHECK"
-                        : "5 GROUNDED EXCHANGES · ASSISTANT PAUSE 800 ms"
+                        ? "1 LIVE WEB CHECK"
+                        : "ASSISTANT PAUSE 800 ms"
                 )
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Button("Open Assistant", action: controller.openCompanionDisplay)
-                        .disabled(controller.companionGatewayEndpoint == nil)
-                    if let otherReplayPurpose {
-                        Button("Open \(otherReplayPurpose.title)") {
-                            selectedTab = otherReplayPurpose == .meeting
-                                ? .meeting
-                                : .interview
-                        }
-                    } else if state.isActive {
-                        Button("Stop Replay", action: controller.stopGeneratedReplay)
-                            .tint(.red)
-                    } else {
-                        if purpose == .interview {
-                            Button {
-                                controller.startWebSearchTest()
-                            } label: {
-                                Label("Test Web Search", systemImage: "globe")
-                            }
-                            .disabled(!controller.canStartWebSearchTest())
-                            .help(controller.webSearchTestReadinessDetail())
-                        }
-                        Button(purpose == .meeting ? "New Scenario" : "New Questions") {
-                            controller.openCompanionDisplay()
-                            controller.regenerateGeneratedReplay(for: purpose)
-                        }
-                        .disabled(!controller.canStartGeneratedReplay(for: purpose))
-                        Button {
-                            controller.openCompanionDisplay()
-                            controller.startGeneratedReplay(for: purpose)
-                        } label: {
-                            Label("Run Replay", systemImage: "play.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.indigo)
-                        .disabled(!controller.canStartGeneratedReplay(for: purpose))
+
+                Spacer(minLength: 4)
+
+                if let otherReplayPurpose {
+                    Button("Open \(otherReplayPurpose.title)") {
+                        selectedTab = otherReplayPurpose == .meeting
+                            ? .meeting
+                            : .interview
                     }
+                } else if state.isActive {
+                    Button("Stop Replay", action: controller.stopGeneratedReplay)
+                        .tint(.red)
+                } else {
+                    generatedReplayMenu(for: purpose)
+                    Button {
+                        controller.openCompanionDisplay()
+                        controller.startGeneratedReplay(for: purpose)
+                    } label: {
+                        Label("Run Replay", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.indigo)
+                    .disabled(!controller.canStartGeneratedReplay(for: purpose))
                 }
             }
         }
-        .padding(11)
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
         .background(.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
@@ -1110,56 +1144,147 @@ struct ContentView: View {
         }
     }
 
-    private func audioRoutePanel(for purpose: CapturePurpose) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("\(purpose.title) audio route", systemImage: "waveform")
-                .font(.headline)
+    private func generatedReplayMenu(for purpose: CapturePurpose) -> some View {
+        Menu {
+            Button("Open Assistant", action: controller.openCompanionDisplay)
+                .disabled(controller.companionGatewayEndpoint == nil)
 
-            AudioDeviceRow(
+            if purpose == .interview {
+                Button {
+                    controller.startWebSearchTest()
+                } label: {
+                    Label("Test Web Search", systemImage: "globe")
+                }
+                .disabled(!controller.canStartWebSearchTest())
+                .help(controller.webSearchTestReadinessDetail())
+            }
+
+            Divider()
+
+            Button(purpose == .meeting ? "New Scenario" : "New Questions") {
+                controller.openCompanionDisplay()
+                controller.regenerateGeneratedReplay(for: purpose)
+            }
+            .disabled(!controller.canStartGeneratedReplay(for: purpose))
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+        }
+    }
+
+    private var microphoneSourceControl: some View {
+        HStack(spacing: 8) {
+            CompactAudioDeviceSelector(
+                title: "INPUT DEVICE",
+                name: controller.microphoneName,
+                systemImage: "mic.fill",
+                color: .blue,
+                devices: controller.inputDevices,
+                selectedDeviceID: controller.selectedInputDeviceID,
+                onSelect: controller.selectInputDevice
+            )
+
+            Spacer(minLength: 6)
+
+            Text("Shared with Quick Dictation")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var systemAudioSourceControl: some View {
+        HStack(spacing: 10) {
+            CompactAudioDeviceSelector(
                 title: "SYSTEM OUTPUT",
                 name: controller.audioOutputName,
                 systemImage: "speaker.wave.2.fill",
-                isConnected: controller.audioOutputAvailable,
+                color: .indigo,
                 devices: controller.outputDevices,
                 selectedDeviceID: controller.selectedOutputDeviceID,
                 onSelect: controller.selectOutputDevice
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Divider()
+                .frame(height: 30)
 
-            HStack(spacing: 8) {
-                Image(
-                    systemName: controller.selectedProcessID == nil
-                        ? "speaker.wave.2.fill"
-                        : "macwindow.on.rectangle"
-                )
-                    .foregroundStyle(.purple)
-                    .frame(width: 20)
-                Picker("Audio to transcribe", selection: $controller.selectedProcessID) {
-                    Text("All system audio (default)").tag(Optional<UInt32>.none)
-                    ForEach(controller.processes) { process in
-                        Text(process.displayName).tag(Optional(process.id))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("AUDIO TO TRANSCRIBE")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Picker(
+                        "Audio to transcribe",
+                        selection: $controller.selectedProcessID
+                    ) {
+                        Text("All system audio").tag(Optional<UInt32>.none)
+                        ForEach(controller.processes) { process in
+                            Text(process.displayName).tag(Optional(process.id))
+                        }
                     }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity)
-                .disabled(controller.isListening)
-                .help("Capture all system audio, or limit transcription to one app")
+                    .labelsHidden()
+                    .disabled(controller.isListening)
+                    .help("Capture all system audio, or limit transcription to one app")
 
-                Button {
-                    controller.refreshProcesses()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Button {
+                        controller.refreshProcesses()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh app-specific audio sources")
+                    .disabled(controller.isListening)
                 }
-                .buttonStyle(.borderless)
-                .help("Refresh app-specific audio sources")
-                .disabled(controller.isListening)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func activeSessionResourcesBar(
+        for purpose: CapturePurpose
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checklist")
+                .foregroundStyle(Color.accentColor)
+
+            if purpose == .interview {
+                let copy = interviewPreparationAccessCopy
+                Text(copy.title)
+                    .font(.caption.weight(.semibold))
+                Text(copy.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("Meeting preparation is locked during capture")
+                    .font(.caption.weight(.semibold))
+                Text("Stop the meeting before changing guidance or references.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Divider()
+                .frame(height: 18)
+
+            Label("Practice replay available after capture", systemImage: "waveform")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
         .overlay {
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 10)
                 .stroke(.separator.opacity(0.45), lineWidth: 1)
         }
     }
@@ -1294,13 +1419,6 @@ struct ContentView: View {
         return String(count)
     }
 
-    private var selectedSystemAudioName: String {
-        guard let selectedProcessID = controller.selectedProcessID else {
-            return "All system audio"
-        }
-        return controller.processes.first(where: { $0.id == selectedProcessID })?.name
-            ?? "Selected app unavailable"
-    }
 }
 
 struct AudioDeviceRow: View {
@@ -1425,6 +1543,40 @@ private struct AudioDeviceMenu: View {
     }
 }
 
+private struct CompactAudioDeviceSelector: View {
+    let title: String
+    let name: String
+    let systemImage: String
+    let color: Color
+    let devices: [AudioDeviceOption]
+    let selectedDeviceID: AudioObjectID?
+    let onSelect: (AudioObjectID) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            AudioDeviceMenu(
+                title: title,
+                name: name,
+                systemImage: systemImage,
+                color: color,
+                devices: devices,
+                selectedDeviceID: selectedDeviceID,
+                onSelect: onSelect
+            )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .help(name)
+            }
+        }
+    }
+}
+
 private struct ConnectionBadge: View {
     let isConnected: Bool
 
@@ -1474,39 +1626,53 @@ private struct AudioHealthBadge: View {
     }
 }
 
-private struct TrackCard: View {
+private struct TrackCard<SourceControls: View>: View {
     let title: String
     let systemImage: String
-    let subtitle: String
     let color: Color
     let state: TrackViewState
     let health: AudioStreamHealth
+    let sourceControls: SourceControls
+    @State private var showsDiagnostics = false
+
+    init(
+        title: String,
+        systemImage: String,
+        color: Color,
+        state: TrackViewState,
+        health: AudioStreamHealth,
+        @ViewBuilder sourceControls: () -> SourceControls
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.color = color
+        self.state = state
+        self.health = health
+        self.sourceControls = sourceControls()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(title, systemImage: systemImage)
-                        .font(.callout.bold())
-                        .foregroundStyle(color)
-                    Text(subtitle)
-                        .font(.headline)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Label(title, systemImage: systemImage)
+                    .font(.callout.bold())
+                    .foregroundStyle(color)
+
+                Spacer(minLength: 6)
+
+                AudioHealthBadge(health: health)
+                HStack(spacing: 4) {
+                    Text("Transcription")
+                    SocketBadge(state: state.socket, color: color)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    AudioHealthBadge(health: health)
-                    HStack(spacing: 4) {
-                        Text("Transcription")
-                        SocketBadge(state: state.socket, color: color)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
+            sourceControls
+
             WaveformView(samples: state.telemetry.waveform, color: color)
-                .frame(height: 44)
+                .frame(height: 32)
 
             HStack(spacing: 10) {
                 LevelBar(label: "RMS", value: state.telemetry.rms, color: color)
@@ -1514,34 +1680,59 @@ private struct TrackCard: View {
             }
 
             Text(state.partialTranscript.isEmpty ? "Waiting for speech…" : state.partialTranscript)
-                .font(.body)
+                .font(.callout)
                 .foregroundStyle(state.partialTranscript.isEmpty ? .secondary : .primary)
                 .lineLimit(2)
-                .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
                 .textSelection(.enabled)
 
-            HStack {
-                Text(state.telemetry.sourceFormat)
-                    .lineLimit(1)
-                Spacer()
-                Text("Signal \(signalLevel)")
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    showsDiagnostics.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Label("Diagnostics", systemImage: "stethoscope")
+                    Spacer(minLength: 4)
+                    Text("Signal \(signalLevel)")
+                    Text("·")
+                    Text("\(state.telemetry.packets) packets")
+                    Text("·")
+                    Text("\(state.telemetry.droppedBuffers) dropped")
+                        .foregroundStyle(
+                            state.telemetry.droppedBuffers > 0
+                                ? .orange
+                                : .secondary
+                        )
+                    Image(
+                        systemName: showsDiagnostics
+                            ? "chevron.up"
+                            : "chevron.down"
+                    )
+                        .font(.caption2.bold())
+                }
             }
+            .buttonStyle(.plain)
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
 
-            HStack {
-                Text(health.detail)
-                    .lineLimit(1)
-                Spacer()
-                Text("\(state.telemetry.packets) packets")
-                Text("·")
-                Text("\(state.telemetry.droppedBuffers) dropped")
-                    .foregroundStyle(state.telemetry.droppedBuffers > 0 ? .orange : .secondary)
+            if showsDiagnostics {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(state.telemetry.sourceFormat)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text("Signal \(signalLevel)")
+                    }
+                    Text(health.detail)
+                        .lineLimit(2)
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
         }
-        .padding(12)
+        .padding(10)
         .background(color.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
