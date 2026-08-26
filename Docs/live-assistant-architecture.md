@@ -530,9 +530,10 @@ behavior's model makes that structured decision.
 
 ### Measured model selection
 
-The user can select either `gpt-5.6-terra` at `reasoning.effort: medium` through
-OpenAI's Responses API or `gemini-3.7-flash` at `thinking_level: high` through
-Google's Interactions API. Both adapters feed the same structured schema,
+The user can select either Priority `gpt-5.6-luna` at
+`reasoning.effort: none` through OpenAI's Responses API or
+`gemini-3.7-flash` at `thinking_level: medium` through Google's Interactions
+API. Both adapters feed the same structured schema,
 grounding validator, retry policy, and display model. OpenAI remains the stored
 default for existing installs; selecting Gemini changes only the substantive
 full-cue provider. The speculative early bridge still requires OpenAI and Luna.
@@ -541,11 +542,37 @@ Gemini 3.7 Flash is a stable model with configurable thinking levels, and the
 Interactions API is Google's recommended agentic interface. See Google's
 [Gemini 3.7 Flash model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash)
 and [Interactions API overview](https://ai.google.dev/gemini-api/docs/interactions-overview).
-The claimed speed advantage still needs an app-specific, same-fixture benchmark;
-do not treat a cross-vendor headline ratio as the product's measured latency.
-The external-fixture benchmark records structured quality, generation latency,
+Cross-vendor headline ratios are not used as product latency measurements. The
+repository includes both a non-personal, same-fixture provider matrix and an
+external-fixture benchmark that records structured quality, generation latency,
 timeouts, incomplete responses, and grounding retries without committing
 personal interview material.
+
+On August 26, 2026, the public matrix used five synthetic interview cases, the
+same reference snapshot, product prompt, structured schema, 4,096-token cap,
+and disabled web search. Each confirmed contender received 15 candidate calls
+across the broad and focused runs; 12 substantive answers per contender were
+scored by the same 13-dimension judge. `Acceptable` requires the structural case
+expectation and, for substantive answers, at least 4/5 on every judge dimension.
+The timings include generation after request start and use the service setting
+shown, so this is a deployed-configuration comparison rather than a
+price-normalized service-tier comparison.
+
+| Configuration | Calls | Mean | p95 | Maximum | Mean quality | Acceptable |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Luna, no reasoning, Priority | 15 | 2.13 s | 2.80 s | 3.01 s | 4.72/5 | 14/15 |
+| Luna, low reasoning, Priority | 15 | 2.62 s | 3.68 s | 3.73 s | 4.71/5 | 14/15 |
+| Terra, medium reasoning, Priority | 15 | 2.91 s | 4.50 s | 4.81 s | 4.76/5 | 14/15 |
+| Gemini 3.7 Flash, medium thinking | 15 | 4.01 s | 6.05 s | 7.56 s | 4.63/5 | 11/15 |
+
+All 60 confirmed candidate requests succeeded and matched their structural
+expectation without a grounding repair. A one-repetition sweep also measured
+Gemini Low at 4.47 seconds mean and 7.07 seconds maximum, and Gemini High at
+6.79 seconds mean and 11.53 seconds maximum. Medium is therefore the practical
+Gemini setting for this workload, but Luna without reasoning is the measured
+latency/quality sweet spot and remains the default. The suite is intentionally
+small and synthetic, so it should be rerun after material prompt, model, or
+provider changes rather than treated as a universal model ranking.
 
 An August 2026 model-routing run used two plausible-rehearsal performance
 questions. Terra/low averaged 4.43/5 quality at roughly 3.54 seconds; Luna/low
@@ -591,8 +618,8 @@ The initial meter covers:
   enabled; local-only capture uses on-device turn buffering instead;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` scenario generation and experimental Priority early-bridge
-  calls, plus selected-provider full-assistant calls (`gpt-5.6-terra` or
+- `gpt-5.6-luna` scenario generation, experimental Priority early-bridge calls,
+  and selected-provider full-assistant calls (`gpt-5.6-luna` or
   `gemini-3.7-flash`), from each model response's own token usage (tracked
   separately until a dollar rate is configured).
 

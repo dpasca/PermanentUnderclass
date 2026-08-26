@@ -1120,7 +1120,7 @@ final class CompanionTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
         XCTAssertEqual(root["service_tier"] as? String, "priority")
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
@@ -1129,7 +1129,7 @@ final class CompanionTests: XCTestCase {
         XCTAssertNil(root["tools"])
         XCTAssertNil(root["include"])
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
-        XCTAssertEqual(reasoning["effort"], "medium")
+        XCTAssertEqual(reasoning["effort"], "none")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]

@@ -61,7 +61,7 @@ checksum. Intel Macs and non-macOS systems are not supported.
 | 🎙️ **Quick Dictation** | 🟢 `LOCAL DEFAULT`<br>Local-model audio processing, saved final-text history, and temporary recoverable audio | 🟡 `OPTIONAL CLOUD`<br>Audio only when OpenAI GPT-Transcribe is selected |
 | 👥 **Meeting and interview** | 🟢 `LOCAL CAPTURE`<br>Separate microphone/system tracks, on-device turn detection, Whisper or Parakeet transcription after each completed turn, and local JSON archives for interviews | 🟡 `OPTIONAL CLOUD`<br>Word-by-word partial text when an OpenAI key is configured |
 | ✨ **Final transcript pass** | 🟢 `ON-DEVICE OPTION`<br>Whisper or Parakeet | 🟡 `OPTIONAL CLOUD`<br>Audio only when the OpenAI finalizer is selected |
-| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>OpenAI `gpt-5.6-terra` or Google `gemini-3.7-flash` generates cues from relevant reference text and transcript context; presentation-ready session state can also be viewed over a trusted LAN |
+| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>OpenAI `gpt-5.6-luna` or Google `gemini-3.7-flash` generates cues from relevant reference text and transcript context; presentation-ready session state can also be viewed over a trusted LAN |
 
 > 🔒 `PRIVACY LOCK` **Never contact cloud services** disables every hosted path while
 > keeping local Quick Dictation and local meeting/interview transcripts available.
@@ -84,7 +84,7 @@ under `~/Library/Application Support/com.newtypekk.punderclass/InterviewSessions
   assistant cues, generated replay scenarios, source preparation, or
   GPT-Transcribe. A generated replay also needs the selected cue provider's key.
 - A Gemini API key only when `gemini-3.7-flash` is selected for Meeting
-  Assistant and Answer Mirror. Gemini uses high thinking and can ground cues
+  Assistant and Answer Mirror. Gemini uses medium thinking and can ground cues
   with Google Search; grounded cues display Google's associated Search
   Suggestions while the session is live. Local Quick Dictation and
   completed-turn meeting/interview transcripts require neither key.
@@ -114,12 +114,12 @@ requires Developer ID signing and Apple notarization before publishing.
 ### Gemini live-assistant smoke test
 
 The normal suite uses local fixtures. To exercise the complete Gemini adapter,
-including high thinking, structured output, required Google Search, citations,
+including medium thinking, structured output, required Google Search, citations,
 and Search Suggestions:
 
 ```sh
 GEMINI_API_KEY="..." RUN_GEMINI_LIVE_ASSISTANT_SMOKE=1 \
-  swift test --filter GeminiLiveAssistantAPITests/testHostedGemini37FlashHighThinkingAndSearchSmoke
+  swift test --filter GeminiLiveAssistantAPITests/testHostedGemini37FlashMediumThinkingAndSearchSmoke
 ```
 
 This opt-in test makes a hosted request and may incur Gemini API charges.
@@ -164,6 +164,21 @@ OPENAI_API_KEY="..." RUN_EARLY_BRIDGE_EVAL=1 \
 It incurs hosted Priority-processing usage. The deterministic suite still
 verifies its strict schema, speculative-attempt limit, independent pause/final
 opportunities, and replacement state without making network calls.
+
+The non-personal cross-provider matrix sends the same five interview cases,
+reference snapshot, structured schema, and output limit to every candidate with
+hosted search disabled. The OpenAI key also powers the separate quality judge:
+
+```sh
+OPENAI_API_KEY="..." GEMINI_API_KEY="..." \
+  RUN_LIVE_ASSISTANT_MODEL_MATRIX=1 \
+  swift test --filter \
+  LiveAssistantModelMatrixTests/testHostedCrossProviderSweetSpotMatrix
+```
+
+Use `LIVE_ASSISTANT_MATRIX_CONFIGS` for a comma-separated subset and
+`LIVE_ASSISTANT_MATRIX_REPETITIONS` to repeat every cell. This opt-in test makes
+hosted requests to both providers and may incur API charges.
 
 For model, reasoning-effort, and prompt selection against private interview
 material, keep the fixture outside the repository and run:

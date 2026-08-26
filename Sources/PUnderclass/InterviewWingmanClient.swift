@@ -228,14 +228,14 @@ struct LiveAssistantConfiguration: Equatable, Sendable {
     }
 
     static let production = LiveAssistantConfiguration(
-        model: "gpt-5.6-terra",
-        reasoningEffort: .medium,
+        model: "gpt-5.6-luna",
+        reasoningEffort: .none,
         serviceTier: "priority"
     )
 
     static let gemini37Flash = LiveAssistantConfiguration(
         model: "gemini-3.7-flash",
-        reasoningEffort: .high
+        reasoningEffort: .medium
     )
 }
 
@@ -435,8 +435,10 @@ struct LiveAssistantClient: Sendable {
         self.responseLoader = responseLoader
     }
 
-    static func gemini(session: URLSession = .shared) -> LiveAssistantClient {
-        let configuration = LiveAssistantConfiguration.gemini37Flash
+    static func gemini(
+        configuration: LiveAssistantConfiguration = .gemini37Flash,
+        session: URLSession = .shared
+    ) -> LiveAssistantClient {
         return LiveAssistantClient(
             configuration: configuration,
             requestBuilder: { plan, purpose, webSearchMode, answerMode in

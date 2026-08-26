@@ -27,9 +27,9 @@ enum LiveAssistantProvider: String, CaseIterable, Identifiable, Sendable {
     var reasoningDescription: String {
         switch self {
         case .openAI:
-            "medium reasoning"
+            "no reasoning · Priority"
         case .gemini:
-            "high thinking"
+            "medium thinking"
         }
     }
 

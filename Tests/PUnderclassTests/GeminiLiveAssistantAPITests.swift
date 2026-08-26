@@ -3,7 +3,7 @@ import XCTest
 @testable import PUnderclass
 
 final class GeminiLiveAssistantAPITests: XCTestCase {
-    func testHostedGemini37FlashHighThinkingAndSearchSmoke() async throws {
+    func testHostedGemini37FlashMediumThinkingAndSearchSmoke() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["RUN_GEMINI_LIVE_ASSISTANT_SMOKE"] == "1" else {
             throw XCTSkip(
@@ -34,11 +34,11 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         XCTAssertGreaterThan(generation.usage.inputTokens, 0)
         XCTAssertGreaterThan(generation.usage.outputTokens, 0)
         print(
-            "GEMINI_SMOKE model=gemini-3.7-flash thinking=high generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) citations=\(suggestion.citations.count)"
+            "GEMINI_SMOKE model=gemini-3.7-flash thinking=medium generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) citations=\(suggestion.citations.count)"
         )
     }
 
-    func testHostedGemini37FlashHighThinkingUsesResumeWithoutSearch() async throws {
+    func testHostedGemini37FlashMediumThinkingUsesResumeWithoutSearch() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["RUN_GEMINI_LIVE_ASSISTANT_SMOKE"] == "1" else {
             throw XCTSkip(
@@ -84,11 +84,11 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         XCTAssertGreaterThan(generation.usage.inputTokens, 0)
         XCTAssertGreaterThan(generation.usage.outputTokens, 0)
         print(
-            "GEMINI_NO_SEARCH_SMOKE model=gemini-3.7-flash thinking=high generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) grounding=\(suggestion.grounding.rawValue) citations=\(suggestion.citations.count)"
+            "GEMINI_NO_SEARCH_SMOKE model=gemini-3.7-flash thinking=medium generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) grounding=\(suggestion.grounding.rawValue) citations=\(suggestion.citations.count)"
         )
     }
 
-    func testRequestUsesGemini37FlashWithHighThinkingAndStructuredOutput()
+    func testRequestUsesGemini37FlashWithMediumThinkingAndStructuredOutput()
         throws
     {
         let plan = AssistantPromptPlan(
@@ -121,7 +121,7 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         let generationConfig = try XCTUnwrap(
             root["generation_config"] as? [String: Any]
         )
-        XCTAssertEqual(generationConfig["thinking_level"] as? String, "high")
+        XCTAssertEqual(generationConfig["thinking_level"] as? String, "medium")
         XCTAssertEqual(generationConfig["max_output_tokens"] as? Int, 2_048)
         XCTAssertNil(generationConfig["tool_choice"])
 
@@ -423,11 +423,21 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         }
     }
 
-    func testGeminiClientReportsConfiguredProductionModel() {
+    func testGeminiClientReportsDefaultAndCustomConfiguration() {
         let client = LiveAssistantClient.gemini()
 
         XCTAssertEqual(client.configuredModel, "gemini-3.7-flash")
-        XCTAssertEqual(client.configuredReasoningEffort, .high)
+        XCTAssertEqual(client.configuredReasoningEffort, .medium)
+
+        let highClient = LiveAssistantClient.gemini(
+            configuration: LiveAssistantConfiguration(
+                model: "gemini-3.7-flash",
+                reasoningEffort: .high,
+                maximumOutputTokens: 4_096
+            )
+        )
+        XCTAssertEqual(highClient.configuredModel, "gemini-3.7-flash")
+        XCTAssertEqual(highClient.configuredReasoningEffort, .high)
     }
 
     func testAssistantProviderPreferenceDefaultsSafelyAndRestoresGemini() {

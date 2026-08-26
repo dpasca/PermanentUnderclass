@@ -143,9 +143,9 @@ interview session archives.
 
 With OpenAI live transcription active, an 800 ms pause in the other speaker's
 audio can trigger the selected provider from the current partial transcript
-before the 3 second final-turn boundary. The OpenAI option uses
-`gpt-5.6-terra` at medium reasoning through the Responses API. The Gemini
-option uses `gemini-3.7-flash` at high thinking through the Interactions API.
+before the 3 second final-turn boundary. The OpenAI option uses Priority
+`gpt-5.6-luna` without reasoning through the Responses API. The Gemini option
+uses `gemini-3.7-flash` at medium thinking through the Interactions API.
 With a Gemini key but no OpenAI key, capture and transcription remain local and
 the Gemini request starts when the completed turn's local transcript is ready.
 The finalized turn remains a fallback, and an exact partial/final duplicate is
