@@ -220,9 +220,21 @@ struct LiveAssistantConfiguration: Equatable, Sendable {
         reasoningEffort: .medium,
         serviceTier: "priority"
     )
+
+    static let gemini37Flash = LiveAssistantConfiguration(
+        model: "gemini-3.7-flash",
+        reasoningEffort: .high
+    )
 }
 
 struct LiveAssistantClient: Sendable {
+    private typealias RequestBuilder = @Sendable (
+        AssistantPromptPlan,
+        CapturePurpose,
+        LiveAssistantWebSearchMode,
+        AssistantAnswerMode
+    ) throws -> Data
+
     static var model: String { LiveAssistantConfiguration.production.model }
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
     static let webSearchToolType = "web_search"
@@ -323,13 +335,28 @@ struct LiveAssistantClient: Sendable {
     """
 
     private let configuration: LiveAssistantConfiguration
+    private let requestBuilder: RequestBuilder
     private let responseLoader: @Sendable (String, Data) async throws -> Data
+
+    var configuredModel: String { configuration.model }
+    var configuredReasoningEffort: LiveAssistantReasoningEffort {
+        configuration.reasoningEffort
+    }
 
     init(
         configuration: LiveAssistantConfiguration = .production,
         session: URLSession = .shared
     ) {
         self.configuration = configuration
+        requestBuilder = { plan, purpose, webSearchMode, answerMode in
+            try Self.requestBody(
+                for: plan,
+                purpose: purpose,
+                webSearchMode: webSearchMode,
+                answerMode: answerMode,
+                configuration: configuration
+            )
+        }
         responseLoader = { apiKey, body in
             try await Self.responseData(
                 session: session,
@@ -344,7 +371,50 @@ struct LiveAssistantClient: Sendable {
         responseLoader: @escaping @Sendable (String, Data) async throws -> Data
     ) {
         self.configuration = configuration
+        requestBuilder = { plan, purpose, webSearchMode, answerMode in
+            try Self.requestBody(
+                for: plan,
+                purpose: purpose,
+                webSearchMode: webSearchMode,
+                answerMode: answerMode,
+                configuration: configuration
+            )
+        }
         self.responseLoader = responseLoader
+    }
+
+    private init(
+        configuration: LiveAssistantConfiguration,
+        requestBuilder: @escaping RequestBuilder,
+        responseLoader: @escaping @Sendable (String, Data) async throws -> Data
+    ) {
+        self.configuration = configuration
+        self.requestBuilder = requestBuilder
+        self.responseLoader = responseLoader
+    }
+
+    static func gemini(session: URLSession = .shared) -> LiveAssistantClient {
+        let configuration = LiveAssistantConfiguration.gemini37Flash
+        return LiveAssistantClient(
+            configuration: configuration,
+            requestBuilder: { plan, purpose, webSearchMode, answerMode in
+                try GeminiLiveAssistantAPI.requestBody(
+                    for: plan,
+                    purpose: purpose,
+                    webSearchMode: webSearchMode,
+                    answerMode: answerMode,
+                    configuration: configuration
+                )
+            },
+            responseLoader: { apiKey, body in
+                let data = try await GeminiLiveAssistantAPI.responseData(
+                    session: session,
+                    apiKey: apiKey,
+                    body: body
+                )
+                return try GeminiLiveAssistantAPI.normalizedResponse(data)
+            }
+        )
     }
 
     func generate(
@@ -390,12 +460,11 @@ struct LiveAssistantClient: Sendable {
         let startedAt = ContinuousClock.now
         let data = try await loadResponse(
             apiKey: apiKey,
-            body: try Self.requestBody(
-                for: plan,
-                purpose: purpose,
-                webSearchMode: webSearchMode,
-                answerMode: answerMode,
-                configuration: configuration
+            body: try requestBuilder(
+                plan,
+                purpose,
+                webSearchMode,
+                answerMode
             ),
             usefulnessDeadline: usefulnessDeadline
         )
@@ -420,15 +489,14 @@ struct LiveAssistantClient: Sendable {
             do {
                 let responseData = try await loadResponse(
                     apiKey: apiKey,
-                    body: try Self.requestBody(
-                        for: Self.groundingCorrectionPlan(
+                    body: try requestBuilder(
+                        Self.groundingCorrectionPlan(
                             from: plan,
                             answerMode: answerMode
                         ),
-                        purpose: purpose,
-                        webSearchMode: webSearchMode,
-                        answerMode: answerMode,
-                        configuration: configuration
+                        purpose,
+                        webSearchMode,
+                        answerMode
                     ),
                     usefulnessDeadline: usefulnessDeadline
                 )
@@ -713,6 +781,11 @@ struct LiveAssistantClient: Sendable {
         }
         let output = try JSONDecoder().decode(LiveAssistantOutput.self, from: outputData)
         let usage = usage(from: root)
+        let googleSearchSuggestionsHTML = (
+            root["google_search_suggestions_html"] as? [String] ?? []
+        ).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         if
             purpose == .interview,
             output.spokenCueContainsMetaCommentary == true
@@ -833,9 +906,25 @@ struct LiveAssistantClient: Sendable {
         else {
             throw LiveAssistantError.invalidGrounding
         }
+        if
+            output.grounding == .webSearch,
+            root["google_search_attribution_required"] as? Bool == true,
+            googleSearchSuggestionsHTML.isEmpty
+        {
+            throw LiveAssistantError.invalidGrounding
+        }
         let citations = output.grounding == .generalKnowledge
             ? []
             : allowedCitations
+        let visibleGoogleSearchSuggestionsHTML: [String]?
+        if
+            output.grounding == .webSearch,
+            !googleSearchSuggestionsHTML.isEmpty
+        {
+            visibleGoogleSearchSuggestionsHTML = googleSearchSuggestionsHTML
+        } else {
+            visibleGoogleSearchSuggestionsHTML = nil
+        }
         let suggestion = CompanionAssistantSuggestion(
             id: UUID().uuidString.lowercased(),
             basedOnSequence: basedOnSequence,
@@ -855,7 +944,8 @@ struct LiveAssistantClient: Sendable {
                 : [],
             plausibleRehearsalPlan: answerMode == .plausibleRehearsal
                 ? rehearsalPlan
-                : nil
+                : nil,
+            googleSearchSuggestionsHTML: visibleGoogleSearchSuggestionsHTML
         )
         return LiveAssistantGeneration(
             suggestion: suggestion,
@@ -965,7 +1055,7 @@ struct LiveAssistantClient: Sendable {
         )
     }
 
-    private static func outputSchema(
+    static func outputSchema(
         for purpose: CapturePurpose,
         answerMode: AssistantAnswerMode
     ) -> [String: Any] {

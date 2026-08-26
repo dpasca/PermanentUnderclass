@@ -28,7 +28,8 @@ folders, audio devices, or running-process names.
   this works without an account or API key.
 - **Meeting:** capture the microphone and system audio as separate speakers,
   transcribe completed turns locally with Whisper or Parakeet, and optionally
-  add word-by-word live text plus grounded response cues with an OpenAI key.
+  add grounded response cues with either OpenAI or Gemini. An OpenAI key also
+  adds word-by-word live text.
 - **Interview:** use the same two-track capture with an Answer Mirror that
   suggests concise answer beats without inventing personal experience. An
   explicit Plausible Rehearsal mode can draft project-specific examples to
@@ -60,13 +61,13 @@ checksum. Intel Macs and non-macOS systems are not supported.
 | 🎙️ **Quick Dictation** | 🟢 `LOCAL DEFAULT`<br>Local-model audio processing, saved final-text history, and temporary recoverable audio | 🟡 `OPTIONAL CLOUD`<br>Audio only when OpenAI GPT-Transcribe is selected |
 | 👥 **Meeting and interview** | 🟢 `LOCAL CAPTURE`<br>Separate microphone/system tracks, on-device turn detection, Whisper or Parakeet transcription after each completed turn, and local JSON archives for interviews | 🟡 `OPTIONAL CLOUD`<br>Word-by-word partial text when an OpenAI key is configured |
 | ✨ **Final transcript pass** | 🟢 `ON-DEVICE OPTION`<br>Whisper or Parakeet | 🟡 `OPTIONAL CLOUD`<br>Audio only when the OpenAI finalizer is selected |
-| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>Relevant reference text and transcript context used to generate cues; presentation-ready session state can also be viewed over a trusted LAN |
+| 📚 **Meeting Assistant and Answer Mirror** | 🟢 `LOCAL RETRIEVAL`<br>Reference indexing and the embedded browser gateway | 🟡 `ON-DEMAND CLOUD`<br>OpenAI `gpt-5.6-terra` or Google `gemini-3.7-flash` generates cues from relevant reference text and transcript context; presentation-ready session state can also be viewed over a trusted LAN |
 
-> 🔒 `PRIVACY LOCK` **Never contact OpenAI** disables every hosted path while
+> 🔒 `PRIVACY LOCK` **Never contact cloud services** disables every hosted path while
 > keeping local Quick Dictation and local meeting/interview transcripts available.
 
-The API key is stored in macOS Keychain. The companion display never receives
-the API key or full reference corpus. Its manual LAN-address mode is currently
+API keys are stored in macOS Keychain. The companion display never receives
+an API key or the full reference corpus. Its manual LAN-address mode is currently
 plain HTTP without pairing, so use it only on a trusted local network. Meeting
 and interview audio is not continuously recorded to disk;
 Quick Dictation retains audio only while a transcription is pending or
@@ -79,9 +80,14 @@ under `~/Library/Application Support/com.newtypekk.punderclass/InterviewSessions
 - Apple Silicon for the local Whisper and Parakeet engines.
 - Headphones for meeting or interview capture, to avoid feedback and speaker
   leakage.
-- An OpenAI API key only for word-by-word meeting/interview text, assistant
-  cues, hosted web search, generated replays, or GPT-Transcribe. Local Quick
-  Dictation and completed-turn meeting/interview transcripts do not require it.
+- An OpenAI API key for word-by-word meeting/interview text, OpenAI-backed
+  assistant cues, generated replay scenarios, source preparation, or
+  GPT-Transcribe. A generated replay also needs the selected cue provider's key.
+- A Gemini API key only when `gemini-3.7-flash` is selected for Meeting
+  Assistant and Answer Mirror. Gemini uses high thinking and can ground cues
+  with Google Search; grounded cues display Google's associated Search
+  Suggestions while the session is live. Local Quick Dictation and
+  completed-turn meeting/interview transcripts require neither key.
 
 ## Build and run
 
@@ -104,6 +110,19 @@ The app bundle is written to `.build/PermanentUnderclass.app`. The script uses a
 installed Developer ID Application certificate when available and otherwise
 falls back to ad hoc signing. Tagged releases use a separate workflow that
 requires Developer ID signing and Apple notarization before publishing.
+
+### Gemini live-assistant smoke test
+
+The normal suite uses local fixtures. To exercise the complete Gemini adapter,
+including high thinking, structured output, required Google Search, citations,
+and Search Suggestions:
+
+```sh
+GEMINI_API_KEY="..." RUN_GEMINI_LIVE_ASSISTANT_SMOKE=1 \
+  swift test --filter GeminiLiveAssistantAPITests/testHostedGemini37FlashHighThinkingAndSearchSmoke
+```
+
+This opt-in test makes a hosted request and may incur Gemini API charges.
 
 ### Answer Mirror quality eval
 

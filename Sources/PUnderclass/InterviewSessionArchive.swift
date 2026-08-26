@@ -71,8 +71,15 @@ struct InterviewSessionArchive: Codable, Equatable, Identifiable, Sendable {
         _ suggestion: CompanionAssistantSuggestion,
         updatedAt: Date = Date()
     ) {
+        var archivedSuggestion = suggestion
+        if !(archivedSuggestion.googleSearchSuggestionsHTML ?? []).isEmpty {
+            // Google's search suggestion widgets and associated links are
+            // transient display attribution, not session-archive data.
+            archivedSuggestion.googleSearchSuggestionsHTML = nil
+            archivedSuggestion.citations = []
+        }
         suggestions.removeAll { $0.id == suggestion.id }
-        suggestions.append(suggestion)
+        suggestions.append(archivedSuggestion)
         suggestions.sort {
             if $0.generatedAt == $1.generatedAt { return $0.id < $1.id }
             return $0.generatedAt < $1.generatedAt

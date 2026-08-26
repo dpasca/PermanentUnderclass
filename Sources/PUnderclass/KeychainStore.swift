@@ -4,6 +4,7 @@ import Security
 enum KeychainStore {
     private static let service = "com.newtypekk.punderclass"
     private static let openAIAccount = "openai-api-key"
+    private static let geminiAccount = "gemini-api-key"
     private static let exaAccount = "exa-api-key"
 
     static func loadAPIKey() -> String? {
@@ -12,6 +13,10 @@ enum KeychainStore {
 
     static func loadExaAPIKey() -> String? {
         loadKey(account: exaAccount)
+    }
+
+    static func loadGeminiAPIKey() -> String? {
+        loadKey(account: geminiAccount)
     }
 
     private static func loadKey(account: String) -> String? {
@@ -38,6 +43,10 @@ enum KeychainStore {
 
     static func saveExaAPIKey(_ key: String) throws {
         try saveKey(key, account: exaAccount)
+    }
+
+    static func saveGeminiAPIKey(_ key: String) throws {
+        try saveKey(key, account: geminiAccount)
     }
 
     private static func saveKey(_ key: String, account: String) throws {

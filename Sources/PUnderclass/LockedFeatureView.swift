@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// One treatment for every capability that needs an OpenAI key, so a locked
+/// One treatment for every capability that needs a cloud API key, so a locked
 /// feature reads as "this needs setting up" rather than "this is broken".
 /// The action always leads to the exact place that fixes it.
 struct LockedFeatureCard: View {
@@ -63,7 +63,12 @@ struct LockedFeatureCard: View {
         case .available:
             nil
         case .needsAPIKey:
-            "Set Up OpenAI…"
+            switch feature {
+            case .meetingCapture, .answerMirror:
+                "Set Up API Keys…"
+            case .mockMeeting, .mockInterview, .bestAccuracyDictation:
+                "Set Up OpenAI…"
+            }
         case .blockedByPrivacyLock:
             "Open Settings…"
         }

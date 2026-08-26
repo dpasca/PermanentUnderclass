@@ -24,9 +24,12 @@ process, settings, microphone handling, or database.
 - Apple Silicon when using either local finalizer.
 - Xcode command-line tools.
 - Wired or USB headphones during the proof of concept.
-- An OpenAI API key is optional. It is required for `gpt-live-transcribe`, the
-  assistant features, generated replays, hosted web search, and the optional
-  `gpt-transcribe` finalizer—not for local two-track transcripts.
+- API keys are optional. OpenAI is required for `gpt-live-transcribe`, OpenAI
+  assistant generation, generated replay scenarios, source preparation, and
+  the optional `gpt-transcribe` finalizer. A Gemini key can instead power
+  Meeting Assistant and Answer Mirror—not local two-track transcripts. A
+  generated replay needs OpenAI for its scenario and the selected provider for
+  its live response cues.
 
 ## Run
 
@@ -52,8 +55,9 @@ script falls back to ad-hoc signing and warns that consent may not persist.
 Start a meeting or interview immediately for a local transcript. Both capture
 modes use all system audio by default. To limit capture to one app, choose it
 from **Audio to transcribe**; it may appear under a helper-process name. To add
-live partial words and the Meeting Assistant or Answer Mirror, open OpenAI
-settings from the prominent status card, paste an API key, and save it.
+live partial words, save an OpenAI key. To add Meeting Assistant or Answer
+Mirror, open **API Keys**, choose OpenAI or Google Gemini as the live suggestion
+provider, save that provider's key, and start capture.
 
 ## Live Assistant companion
 
@@ -66,7 +70,7 @@ shows the exact LAN IP and selected port, and copies that address for use on
 another computer on the same Wi-Fi or Ethernet network. Port `4173` is preferred;
 if it is already in use, the gateway automatically publishes another available
 port. The Mac owns the selected
-behavior, local references, OpenAI request, usage tracking, event ordering, and
+behavior, local references, provider request, usage tracking, event ordering, and
 replay; the browser receives only transcript text, reference status, citations,
 and a presentation-ready response outline.
 
@@ -110,9 +114,9 @@ ms end-of-speech pause. After a short 600 ms partial-transcript collection
 window, a Priority `gpt-5.6-luna` request can show one thinking phrase such
 as “Let me choose the clearest example for a moment.” It asks for time without
 answering, receives no résumé documents, and is forbidden from introducing a
-conclusion, action, project, result, or other answer substance. The normal
-`gpt-5.6-terra` cue is generated independently: the bridge text is never
-included in its request, and the completed cue simply replaces it. Recent
+conclusion, action, project, result, or other answer substance. The substantive
+cue from the selected provider is generated independently: the bridge text is
+never included in its request, and the completed cue simply replaces it. Recent
 bridge wording is supplied only to Luna so repeated fillers are less likely.
 An unclear fragment produces no bridge, and the host makes at most two early
 attempts per interviewer turn. This option can
@@ -120,18 +124,27 @@ therefore add model calls and Priority-processing cost, and the UI labels its
 output as partial and experimental. Both preferences remain enabled across
 interviews and app relaunches until the user explicitly turns them off.
 
-Both behaviors give the same Responses API call access to OpenAI's hosted web
-search when current or public facts would materially improve a cue. Search is
-model-selected rather than keyword-triggered, uses the existing OpenAI key, and
-needs no separate search account or API key. The request uses the low search
-context for the live latency budget. A web-grounded cue is published only when
-its cited URL is present in the response's hosted-search source metadata, and
-the display makes that source visible and clickable.
+Both behaviors expose their selected provider's hosted web search when current
+or public facts would materially improve a cue: OpenAI uses `web_search`, while
+Gemini uses `google_search`. Search is model-selected rather than
+keyword-triggered and needs no separate search account. A web-grounded cue is
+published only when its cited URL is present in the provider's returned search
+results or URL annotations, and the display makes that source visible and
+clickable. For Gemini's structured-output response shape, the host additionally
+requires a successful Google Search timeline step and a Google grounding
+redirect; a model-authored arbitrary URL is rejected. The live display renders
+Google's associated Search Suggestions widget in a script-disabled sandbox.
+Those widgets and Gemini grounding links are transient and are not written to
+interview session archives.
 
-In either mode, an 800 ms pause in the other speaker's audio can trigger a
-structured `gpt-5.6-terra` Responses API outline at medium reasoning effort from
-the current partial transcript before the 3 second final-turn boundary. The
-finalized turn remains a fallback, and an exact partial/final duplicate is
+With OpenAI live transcription active, an 800 ms pause in the other speaker's
+audio can trigger the selected provider from the current partial transcript
+before the 3 second final-turn boundary. The OpenAI option uses
+`gpt-5.6-terra` at medium reasoning through the Responses API. The Gemini
+option uses `gemini-3.7-flash` at high thinking through the Interactions API.
+With a Gemini key but no OpenAI key, capture and transcription remain local and
+the Gemini request starts when the completed turn's local transcript is ready.
+The finalized turn remains a fallback, and an exact partial/final duplicate is
 coalesced rather than billed twice. The user's speech stays visible in the
 transcript and its concrete details override a conflicting retained draft;
 generic wording affects only the final style pass. Explicit speaker and
@@ -164,11 +177,13 @@ not, the model may still draft an approach-oriented outline from the live
 discussion and general model knowledge without claiming unverified personal
 experience. The display prefixes it with **NO LOCAL SUPPORTING MATERIAL**.
 Public web results are treated as untrusted data and never as instructions.
-The stable behavior/reference prefix uses an explicit prompt-cache breakpoint
-and cache key, while recent transcript stays in the volatile suffix. Assistant
-token and cache usage is counted separately; it is not folded into the dollar
-estimate until a model rate is configured. Hosted web-search tool-call fees are
-also not yet folded into that estimate.
+The stable behavior/reference prefix remains separate from the volatile recent
+transcript. OpenAI uses an explicit prompt-cache breakpoint and cache key;
+Gemini sends the stable prefix as `system_instruction` so its implicit cache can
+reuse the same leading content. Assistant input, cached input, output, and
+reasoning/thought usage is counted separately; it is not folded into the dollar
+estimate until provider model rates are configured. Hosted web-search tool-call
+fees are also not yet folded into that estimate.
 
 To view the same client without starting the native host, run the standalone
 preview:
@@ -203,6 +218,8 @@ while the host streams their known words as partial transcript events. After
 every question, the active Meeting Assistant or Answer Mirror independently
 drafts the response outline shown beside the generated reply. The companion
 reports both assistant-generation time and end-to-end `transcript → card` time.
+Scenario generation requires OpenAI. Each independent assistant outline uses
+the selected live-suggestion provider, so a Gemini replay needs both keys.
 
 Meeting and interview scenarios have separate local caches in Application
 Support. Each is reused while the reference revision and scenario format match,
@@ -447,17 +464,21 @@ The proof of concept includes:
   appears after the completed turn is transcribed. A **Finish My Turn** button
   supplies a manual boundary for controlled comparisons.
 - Meeting Assistant and Answer Mirror check an other-speaker partial after an
-  800 ms audio pause, immediately check a new finalized turn, and coalesce an
-  unchanged partial/final pair. The selected capture purpose chooses the
-  model-backed behavior explicitly; the user's turns never replace the current
-  response outline.
+  800 ms audio pause when OpenAI live transcription supplies partial text,
+  immediately check a new finalized turn, and coalesce an unchanged
+  partial/final pair. In Gemini-only mode, the check starts after local
+  transcription returns the completed turn. The selected capture purpose
+  chooses the model-backed behavior explicitly; the user's turns never replace
+  the current response outline.
   Privacy-safe lifecycle logs include trigger-to-start, model, and total
   transcript-to-result timings.
 - Plausible Rehearsal can optionally run a Priority Luna early bridge from the
   still-forming interviewer partial. It shows one non-substantive thinking
-  phrase while Terra independently drafts the complete cue, varies against the
-  last few accepted bridges, limits itself to two attempts per turn, and
-  records separate `assistant_bridge_*` lifecycle timings.
+  phrase while the selected full-cue provider independently drafts the complete
+  cue, varies against the last few accepted bridges, limits itself to two
+  attempts per turn, and records separate `assistant_bridge_*` lifecycle
+  timings. This lane requires OpenAI live partial text even when Gemini is
+  selected for the full cue.
 - Context prompt, literal terminology hints, language hints, and delay control.
   The default live pass uses the balanced `medium` accuracy/latency setting.
   Local Parakeet currently uses the first supported language hint; the prompt
@@ -481,17 +502,18 @@ The proof of concept includes:
 - **Local-first onboarding.** A fresh install needs no account, no API key, and
   no configuration: Quick Dictation and completed-turn meeting/interview
   transcripts run on this Mac with Whisper out of the box. The app opens on the
-  Quick Dictation tab while no key is saved. An OpenAI key is presented as an
-  optional enhancement, not a prerequisite.
-- **Capability-based gating.** What works is derived from whether a key exists,
-  not from a mode the user has to find. The features that genuinely cannot run
-  on-device — live partial words, Meeting Assistant, Answer Mirror, hosted web
-  search, and both generated replays — show a prominent explanation and a
-  button that opens Settings at the API-key field. Meeting and Interview Start
-  controls remain enabled for local two-track transcripts.
-- A **Never contact OpenAI** switch in Settings › Privacy for someone who has a
-  key but wants a hard guarantee. It is an override, not the primary gate.
-- Settings live in one standard ⌘, window (General, Dictation, OpenAI, Privacy,
+  Quick Dictation tab while no key is saved. OpenAI and Gemini keys are
+  presented as optional enhancements, not prerequisites.
+- **Capability-based gating.** Live partial words and generated replay scenarios
+  require OpenAI. Meeting Assistant, Answer Mirror, and their hosted search use
+  the selected assistant provider's key; a replay therefore also requires that
+  provider for its live cues. Each unavailable surface opens Settings at the
+  API-key section, while Meeting and Interview Start controls remain enabled for
+  local two-track transcripts.
+- A **Never contact cloud services** switch in Settings › Privacy provides a
+  hard guarantee even when one or more keys are saved. It is an override, not
+  the primary gate.
+- Settings live in one standard ⌘, window (General, Dictation, API Keys, Privacy,
   How It Works) rather than three header popovers, so each control has exactly
   one home. Model choices are presented by outcome — **Fast**, **Accurate**,
   **Best** — with the underlying model identifier shown but not shouted.
@@ -530,10 +552,10 @@ Distribution attribution is recorded in
 
 ## Security note
 
-For this local proof, the API key is stored in the macOS Keychain and used
+For this local proof, API keys are stored in the macOS Keychain and used
 directly by the app. A deployed company version should obtain short-lived
 credentials from an authenticated internal broker rather than distribute a
-long-lived OpenAI API key to client Macs.
+long-lived provider API key to client Macs.
 
 ## Build and test
 

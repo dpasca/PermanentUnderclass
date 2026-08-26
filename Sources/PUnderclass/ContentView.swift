@@ -141,7 +141,10 @@ struct ContentView: View {
             generatedReplayPanel(for: purpose)
                 .locked(
                     replayFeature(for: purpose),
-                    access: controller.access(to: replayFeature(for: purpose)),
+                    access: purpose == .interview
+                        && controller.isLiveAssistantAvailable
+                        ? .available
+                        : controller.access(to: replayFeature(for: purpose)),
                     onResolve: showSettings
                 )
 
@@ -193,7 +196,8 @@ struct ContentView: View {
     private func localCaptureNotice(for purpose: CapturePurpose) -> some View {
         let access = controller.access(to: liveFeature(for: purpose))
         let privacyLocked = access == .blockedByPrivacyLock
-        let keyBecameAvailable = access == .available
+        let assistantAvailable = controller.isLiveAssistantAvailable
+        let openAIKeyBecameAvailable = access == .available
         let model = controller.resolvedDictationEngine.shortLabel
 
         return HStack(alignment: .top, spacing: 14) {
@@ -209,9 +213,11 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Text(privacyLocked
                         ? "Local-only mode is on"
-                        : keyBecameAvailable
+                        : assistantAvailable
+                            ? "Local transcript · AI suggestions on"
+                        : openAIKeyBecameAvailable
                             ? "This capture is running locally"
-                            : "OpenAI API key not set")
+                            : "Cloud API key not set")
                         .font(.headline)
                     Text("LOCAL TRANSCRIPT")
                         .font(.system(size: 9, weight: .bold))
@@ -235,8 +241,17 @@ struct ContentView: View {
 
             Spacer(minLength: 12)
 
-            if keyBecameAvailable {
-                Text("OpenAI will be used for the next capture")
+            if assistantAvailable {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(controller.liveAssistantProvider.title)
+                        .font(.caption.weight(.semibold))
+                    Text(controller.liveAssistantModel)
+                        .font(.caption2.monospaced())
+                }
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+            } else if openAIKeyBecameAvailable {
+                Text("OpenAI live text starts with the next capture")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
@@ -244,7 +259,7 @@ struct ContentView: View {
                 Button(
                     privacyLocked
                         ? "Open Privacy Settings…"
-                        : "Add OpenAI API Key…"
+                        : "Set Up API Keys…"
                 ) {
                     showSettings(privacyLocked ? .privacy : .openAI)
                 }
@@ -262,11 +277,14 @@ struct ContentView: View {
     }
 
     private func localCaptureLimitations(for purpose: CapturePurpose) -> String {
+        if controller.isLiveAssistantAvailable {
+            return "\(purpose.assistantTitle) uses \(controller.liveAssistantModel) after each completed turn. Word-by-word live text and generated replays still require OpenAI."
+        }
         return switch purpose {
         case .meeting:
-            "Unavailable without OpenAI: word-by-word live text, Meeting Assistant cues, hosted web search, and generated meeting replays."
+            "Unavailable without a selected assistant key: Meeting Assistant cues and hosted web search. Word-by-word live text and generated meeting replays require OpenAI."
         case .interview:
-            "Unavailable without OpenAI: word-by-word live text, Answer Mirror suggestions, hosted web search, and generated interview replays."
+            "Unavailable without a selected assistant key: Answer Mirror suggestions and hosted web search. Word-by-word live text and generated interview replays require OpenAI."
         }
     }
 
@@ -341,7 +359,7 @@ struct ContentView: View {
                 }
                 Spacer()
                 Button(
-                    controller.usesHostedLiveTranscription(for: purpose)
+                    controller.isLiveAssistantAvailable
                         ? "Open \(purpose.assistantTitle)"
                         : "Open Transcript Display",
                     action: controller.openCompanionDisplay
@@ -525,13 +543,19 @@ struct ContentView: View {
 
     private func captureDescription(for purpose: CapturePurpose) -> String {
         if !controller.usesHostedLiveTranscription(for: purpose) {
+            if controller.isLiveAssistantAvailable {
+                return "Captures both sides locally. Text appears after each completed turn, followed by \(controller.liveAssistantProvider.title) suggestions."
+            }
             return "Captures both sides locally. Text appears after each completed turn; AI suggestions are off."
+        }
+        guard controller.isLiveAssistantAvailable else {
+            return "Captures word-by-word live text with OpenAI. \(purpose.assistantTitle) stays off until the selected provider's key is saved."
         }
         return switch purpose {
         case .meeting:
-            "Captures both sides and grounds Meeting Assistant response cues in your reference material."
+            "Captures both sides with OpenAI live text and grounds Meeting Assistant cues with \(controller.liveAssistantProvider.title)."
         case .interview:
-            "Captures both sides and sends interviewer moments to Answer Mirror for concise response cues."
+            "Captures both sides with OpenAI live text and sends interviewer moments to \(controller.liveAssistantProvider.title) for concise cues."
         }
     }
 
@@ -733,8 +757,8 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help(
                 controller.privacyLockEnabled
-                    ? "OpenAI features are disabled by local-only mode"
-                    : "Add an OpenAI API key to enable live text and AI features"
+                    ? "Cloud features are disabled by local-only mode"
+                    : "Add an OpenAI API key to enable live text, generated replays, and OpenAI model options"
             )
         } else {
             Button {
@@ -904,6 +928,14 @@ struct ContentView: View {
     ) {
         switch controller.interviewPreparationReadiness {
         case .unavailable:
+            if controller.isLiveAssistantAvailable {
+                return (
+                    "Evidence prep needs OpenAI",
+                    "Live Answer Mirror suggestions are available",
+                    "sparkles",
+                    .accentColor
+                )
+            }
             return (
                 "Answer Mirror needs setup",
                 "Local interview transcription still works",

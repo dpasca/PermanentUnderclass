@@ -211,10 +211,10 @@ struct ModelUsageSummary: View {
             )
             row(
                 workflow: "Live assistants · cues",
-                model: LiveAssistantClient.model,
+                model: controller.liveAssistantModel,
                 isCloud: true,
-                note: controller.capability.isCloudEnabled
-                    ? "meeting + interview"
+                note: controller.isLiveAssistantAvailable
+                    ? controller.liveAssistantProvider.title
                     : "needs a key"
             )
         }
@@ -259,8 +259,12 @@ struct TranscriptionPipelineDiagram: View {
             workflowTitle(
                     "Meetings and interviews",
                     detail: controller.capability.isCloudEnabled
-                        ? "Both use two-track capture, live partial text, and a purpose-specific response assistant."
-                        : "Both use local two-track capture. Each completed speaker turn is transcribed on this Mac; AI response features are off."
+                        ? controller.isLiveAssistantAvailable
+                            ? "Both use two-track capture, OpenAI live partial text, and the selected response assistant."
+                            : "Both use two-track capture and OpenAI live partial text. The selected response assistant still needs its API key."
+                        : controller.isLiveAssistantAvailable
+                            ? "Both use local two-track capture. Each completed speaker turn is transcribed on this Mac, then sent to the selected response assistant."
+                            : "Both use local two-track capture. Each completed speaker turn is transcribed on this Mac; AI response features are off."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(

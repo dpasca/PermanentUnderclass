@@ -220,7 +220,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     let question: String
     var preamble: String? = nil
     let beats: [CompanionAnswerBeat]
-    let citations: [CompanionCitation]
+    var citations: [CompanionCitation]
     let grounding: CompanionSuggestionGrounding
     let confidence: CompanionSuggestionConfidence
     let generatedAt: Date
@@ -235,6 +235,9 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var answerMode: AssistantAnswerMode = .grounded
     var plausibleAssumptions: [String] = []
     var plausibleRehearsalPlan: CompanionPlausibleRehearsalPlan? = nil
+    /// Provider-rendered Google Search suggestion widgets. These are kept only
+    /// in the live companion state and must not be written to session archives.
+    var googleSearchSuggestionsHTML: [String]? = nil
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {

@@ -86,6 +86,40 @@ final class InterviewSessionArchiveTests: XCTestCase {
         )
     }
 
+    func testArchiveDoesNotPersistGoogleSearchAttributionOrLinks() {
+        var archive = InterviewSessionArchive(
+            id: UUID(),
+            source: .liveCapture,
+            startedAt: Date(timeIntervalSince1970: 100),
+            answerMode: .grounded,
+            earlyBridgeEnabled: false,
+            sessionContext: "",
+            referenceRevision: nil
+        )
+        var groundedSuggestion = suggestion(
+            id: "gemini-grounded",
+            generatedAt: 105
+        )
+        groundedSuggestion.citations = [
+            CompanionCitation(
+                label: "Gemini documentation",
+                path: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/signed"
+            )
+        ]
+        groundedSuggestion.googleSearchSuggestionsHTML = [
+            "<a href='https://google.com/search'>Search</a>"
+        ]
+
+        archive.appendSuggestion(groundedSuggestion)
+
+        XCTAssertEqual(archive.suggestions.count, 1)
+        XCTAssertTrue(archive.suggestions[0].citations.isEmpty)
+        XCTAssertTrue(
+            archive.suggestions[0].googleSearchSuggestionsHTML?.isEmpty
+                ?? true
+        )
+    }
+
     private func suggestion(
         id: String,
         generatedAt: TimeInterval

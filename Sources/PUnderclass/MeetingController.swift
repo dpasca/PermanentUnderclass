@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 final class MeetingController: ObservableObject {
     @Published var apiKeyDraft = ""
+    @Published var geminiAPIKeyDraft = ""
     @Published var exaAPIKeyDraft = ""
     @Published var webReferenceURLDraft = ""
     @Published var meetingContextPrompt =
@@ -20,6 +21,7 @@ final class MeetingController: ObservableObject {
     @Published var preparationPurpose: CapturePurpose = .meeting
     @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
     @Published var assistantEarlyBridgeEnabled = false
+    @Published var liveAssistantProvider: LiveAssistantProvider = .openAI
     @Published private(set) var activeAssistantAnswerMode:
         AssistantAnswerMode = .grounded
     @Published private(set) var activeAssistantEarlyBridgeEnabled = false
@@ -37,6 +39,7 @@ final class MeetingController: ObservableObject {
     @Published var statusMessage = "Ready"
     @Published var errorMessage: String?
     @Published var keyStatus = ""
+    @Published var geminiKeyStatus = ""
     @Published var exaKeyStatus = ""
     @Published var microphoneName = "System default microphone"
     @Published private(set) var microphoneAvailable = false
@@ -108,7 +111,8 @@ final class MeetingController: ObservableObject {
     private var referencePreparationPersistenceTask: Task<Void, Never>?
     private let companionGateway = CompanionGateway()
     private var companionGatewayAttemptID: UUID?
-    private let liveAssistantClient = LiveAssistantClient()
+    private let openAILiveAssistantClient = LiveAssistantClient()
+    private let geminiLiveAssistantClient = LiveAssistantClient.gemini()
     private let earlyInterviewBridgeClient = EarlyInterviewBridgeClient()
     private let syntheticInterviewGeneratorClient =
         SyntheticInterviewGeneratorClient()
@@ -163,6 +167,8 @@ final class MeetingController: ObservableObject {
         "PUnderclass.AssistantAnswerMode"
     static let assistantEarlyBridgeDefaultsKey =
         "PUnderclass.AssistantEarlyBridgeEnabled"
+    static let liveAssistantProviderDefaultsKey =
+        "PUnderclass.LiveAssistantProvider"
     /// Renamed when local-only stopped being the primary gate and became a
     /// privacy override.
     static let legacyLocalOnlyModeDefaultsKey =
@@ -207,6 +213,9 @@ final class MeetingController: ObservableObject {
         apiKeyDraft = KeychainStore.loadAPIKey()
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
+        geminiAPIKeyDraft = KeychainStore.loadGeminiAPIKey()
+            ?? ProcessInfo.processInfo.environment["GEMINI_API_KEY"]
+            ?? ""
         exaAPIKeyDraft = KeychainStore.loadExaAPIKey()
             ?? ProcessInfo.processInfo.environment["EXA_API_KEY"]
             ?? ""
@@ -242,6 +251,7 @@ final class MeetingController: ObservableObject {
         assistantAnswerMode = Self.storedAssistantAnswerMode()
         assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
             && Self.storedAssistantEarlyBridgeEnabled()
+        liveAssistantProvider = Self.storedLiveAssistantProvider()
         // A cloud choice left over from before the key was removed must not
         // break dictation on the next launch.
         refinementEngine = capability.resolvedEngine(preferring: refinementEngine)
@@ -519,6 +529,24 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    func saveGeminiAPIKey() {
+        let key = geminiAPIKeyDraft.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !key.isEmpty else {
+            geminiKeyStatus = "Enter a Gemini API key before saving."
+            return
+        }
+        do {
+            try KeychainStore.saveGeminiAPIKey(key)
+            geminiAPIKeyDraft = key
+            geminiKeyStatus = "Saved in Keychain"
+            publishCompanionSession()
+        } catch {
+            present(error)
+        }
+    }
+
     func saveExaAPIKey() {
         let key = exaAPIKeyDraft.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -761,8 +789,12 @@ final class MeetingController: ObservableObject {
             startMicrophoneCapture(sessionID: sessionID, isSwitch: false)
 
             if !usesHostedLiveTranscription {
-                statusMessage =
-                    "Listening locally with \(capability.resolvedEngine(preferring: refinementEngine).shortLabel) — AI features are off"
+                let localModel = capability.resolvedEngine(
+                    preferring: refinementEngine
+                ).shortLabel
+                statusMessage = isLiveAssistantAvailable
+                    ? "Listening locally with \(localModel) — suggestions appear after each completed turn"
+                    : "Listening locally with \(localModel) — AI suggestions are off"
                 publishCompanionSession()
             }
         } catch {
@@ -892,6 +924,20 @@ final class MeetingController: ObservableObject {
             ?? false
     }
 
+    static func storedLiveAssistantProvider(
+        defaults: UserDefaults = .standard
+    ) -> LiveAssistantProvider {
+        guard
+            let rawValue = defaults.string(
+                forKey: liveAssistantProviderDefaultsKey
+            ),
+            let provider = LiveAssistantProvider(rawValue: rawValue)
+        else {
+            return .openAI
+        }
+        return provider
+    }
+
     static func storeAssistantPreferences(
         answerMode: AssistantAnswerMode,
         earlyBridgeEnabled: Bool,
@@ -927,6 +973,68 @@ final class MeetingController: ObservableObject {
         )
     }
 
+    func setLiveAssistantProvider(_ provider: LiveAssistantProvider) {
+        guard liveAssistantProvider != provider else { return }
+        liveAssistantProvider = provider
+        UserDefaults.standard.set(
+            provider.rawValue,
+            forKey: Self.liveAssistantProviderDefaultsKey
+        )
+        statusMessage = "Live suggestions will use \(provider.model)"
+        publishCompanionSession()
+    }
+
+    var hasLiveAssistantAPIKey: Bool {
+        !liveAssistantAPIKey.isEmpty
+    }
+
+    var isLiveAssistantAvailable: Bool {
+        hasLiveAssistantAPIKey && !privacyLockEnabled
+    }
+
+    var liveAssistantAccess: FeatureAccess {
+        if privacyLockEnabled { return .blockedByPrivacyLock }
+        return hasLiveAssistantAPIKey ? .available : .needsAPIKey
+    }
+
+    var liveAssistantModel: String {
+        liveAssistantProvider.model
+    }
+
+    var liveAssistantAPIKeyName: String {
+        liveAssistantProvider.keyName
+    }
+
+    func liveAssistantLockMessage(for purpose: CapturePurpose) -> String? {
+        switch liveAssistantAccess {
+        case .available:
+            nil
+        case .needsAPIKey:
+            "Add \(liveAssistantAPIKeyName) to turn on \(purpose.assistantTitle)."
+        case .blockedByPrivacyLock:
+            "\(purpose.assistantTitle) is off because everything is set to stay on this Mac."
+        }
+    }
+
+    private var liveAssistantAPIKey: String {
+        let draft = switch liveAssistantProvider {
+        case .openAI:
+            apiKeyDraft
+        case .gemini:
+            geminiAPIKeyDraft
+        }
+        return draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var selectedLiveAssistantClient: LiveAssistantClient {
+        switch liveAssistantProvider {
+        case .openAI:
+            openAILiveAssistantClient
+        case .gemini:
+            geminiLiveAssistantClient
+        }
+    }
+
     /// What works right now. Derived from the key rather than from a mode the
     /// user has to find and understand.
     var capability: CloudCapability {
@@ -949,7 +1057,7 @@ final class MeetingController: ObservableObject {
         privacyLockEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.privacyLockDefaultsKey)
         guard enabled else {
-            statusMessage = "OpenAI features are available again"
+            statusMessage = "Cloud features are available again"
             publishCompanionSession()
             return
         }
@@ -1886,6 +1994,7 @@ final class MeetingController: ObservableObject {
             !isListening,
             !isDictationBusy,
             capability.isCloudEnabled,
+            isLiveAssistantAvailable,
             replaySourceStateRevision(for: purpose) != nil
         else {
             return false
@@ -1897,11 +2006,11 @@ final class MeetingController: ObservableObject {
         !syntheticInterviewState.isActive
             && !isListening
             && !isDictationBusy
-            && capability.isAvailable(.answerMirror)
+            && isLiveAssistantAvailable
     }
 
     func webSearchTestReadinessDetail() -> String {
-        if let message = capability.lockMessage(for: .answerMirror) {
+        if let message = liveAssistantLockMessage(for: .interview) {
             return message
         }
         if syntheticInterviewState.isActive {
@@ -1924,6 +2033,9 @@ final class MeetingController: ObservableObject {
             : .mockInterview
         if let message = capability.lockMessage(for: feature) {
             return message
+        }
+        if let message = liveAssistantLockMessage(for: purpose) {
+            return "\(message) Generated replays use the selected provider for their response cues."
         }
         if purpose == .interview,
            referencePreparationState.resumeSource == nil
@@ -2042,6 +2154,10 @@ final class MeetingController: ObservableObject {
             ? .mockMeeting
             : .mockInterview
         if let message = capability.lockMessage(for: feature) {
+            present(PUnderclassError.audio(message))
+            return
+        }
+        if let message = liveAssistantLockMessage(for: purpose) {
             present(PUnderclassError.audio(message))
             return
         }
@@ -2203,7 +2319,7 @@ final class MeetingController: ObservableObject {
             )
             return
         }
-        if let message = capability.lockMessage(for: .answerMirror) {
+        if let message = liveAssistantLockMessage(for: .interview) {
             present(PUnderclassError.audio(message))
             return
         }
@@ -2902,7 +3018,24 @@ final class MeetingController: ObservableObject {
         if hadLiveText {
             publishCompanionRevision(transcript[index])
         } else {
-            publishCompanionFinal(transcript[index])
+            let completedTurn = transcript[index]
+            publishCompanionFinal(completedTurn)
+            if
+                isLiveAssistantAvailable,
+                AssistantEvaluationPolicy.shouldEvaluate(
+                    speaker: completedTurn.speaker,
+                    purpose: purpose
+                )
+            {
+                scheduleLiveAssistant(
+                    trigger: .finalizedTurn,
+                    turnID: transcriptID,
+                    sourceText: text,
+                    speaker: completedTurn.speaker,
+                    purpose: purpose,
+                    observedAt: Date()
+                )
+            }
         }
     }
 
@@ -3255,9 +3388,7 @@ final class MeetingController: ObservableObject {
             : .grounded
         let earlyBridgeEnabled = activeAssistantEarlyBridgeEnabled
         let assistantAvailable = isSyntheticSession
-            || (isListening
-                ? activeCaptureUsesHostedTranscription
-                : capability.isCloudEnabled)
+            || isLiveAssistantAvailable
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
@@ -3710,15 +3841,12 @@ final class MeetingController: ObservableObject {
         let requestID = UUID()
         assistantGenerationRequestID = requestID
         assistantGenerationIdentity = identity
-        // The assistant is a hosted model; local-only mode withholds the key
-        // rather than sending the transcript off the Mac.
+        // The assistant is a hosted model; local-only mode withholds the
+        // selected provider's key rather than sending the transcript off-Mac.
         let isLocalOnly = privacyLockEnabled
-        let assistantFeature: CloudFeature = purpose == .meeting
-            ? .meetingCapture
-            : .answerMirror
-        let apiKey = capability.isAvailable(assistantFeature)
-            ? apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            : ""
+        let apiKey = isLocalOnly ? "" : liveAssistantAPIKey
+        let assistantProvider = liveAssistantProvider
+        let assistantAPIKeyName = liveAssistantAPIKeyName
         let usesSyntheticReferences = syntheticInterviewState.isRunning
         let references = assistantReferences(
             usesSyntheticReferences: usesSyntheticReferences,
@@ -3752,7 +3880,7 @@ final class MeetingController: ObservableObject {
             : nil
         let pendingCompanionUpdates = companionUpdateTail
         let hub = companionGateway.hub
-        let client = liveAssistantClient
+        let client = selectedLiveAssistantClient
         let controller = WeakMeetingController(self)
         let delayMilliseconds = AssistantEvaluationPolicy.delayMilliseconds(
             for: trigger
@@ -3789,7 +3917,7 @@ final class MeetingController: ObservableObject {
                     await hub.assistantFailed(
                         isLocalOnly
                             ? "\(purpose.assistantTitle) is off because everything is set to stay on this Mac."
-                            : "Add an OpenAI API key to turn on \(purpose.assistantTitle).",
+                            : "Add \(assistantAPIKeyName) to turn on \(purpose.assistantTitle).",
                         unavailable: true
                     )
                     return
@@ -3912,7 +4040,7 @@ final class MeetingController: ObservableObject {
                 let grounding = generation.suggestion?.grounding.rawValue
                     ?? "none"
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) model=\(LiveAssistantClient.model, privacy: .public) reasoning_effort=\(LiveAssistantConfiguration.production.reasoningEffort.rawValue, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) provider=\(assistantProvider.rawValue, privacy: .public) model=\(client.configuredModel, privacy: .public) reasoning_effort=\(client.configuredReasoningEffort.rawValue, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {

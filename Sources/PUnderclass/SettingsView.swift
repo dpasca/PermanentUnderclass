@@ -171,8 +171,83 @@ private struct OpenAISettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
+                "Live meeting and interview suggestions",
+                detail: "Choose the provider for Meeting Assistant and Answer Mirror. Transcription and replay scenario generation keep their existing OpenAI models; replay response cues use this selection."
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker(
+                        "Suggestion provider",
+                        selection: Binding(
+                            get: { controller.liveAssistantProvider },
+                            set: controller.setLiveAssistantProvider
+                        )
+                    ) {
+                        ForEach(LiveAssistantProvider.allCases) { provider in
+                            Text(provider.title).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(
+                        controller.isListening
+                            || controller.syntheticInterviewState.isActive
+                    )
+
+                    Text(
+                        "\(controller.liveAssistantModel) · \(controller.liveAssistantProvider.reasoningDescription)"
+                    )
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+
+                    if !controller.hasLiveAssistantAPIKey {
+                        Label(
+                            "Add \(controller.liveAssistantAPIKeyName) below to enable suggestions.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            SettingsGroup(
+                "Gemini API key",
+                detail: "Optional. Used only when Google Gemini is selected for live meeting and interview suggestions."
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        SecureField(
+                            "Gemini API key",
+                            text: $controller.geminiAPIKeyDraft
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(controller.saveGeminiAPIKey)
+                        Button("Save", action: controller.saveGeminiAPIKey)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if !controller.geminiKeyStatus.isEmpty {
+                        Text(controller.geminiKeyStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Link(
+                        "Create a key in Google AI Studio",
+                        destination: URL(
+                            string: "https://aistudio.google.com/apikey"
+                        )!
+                    )
+                    .font(.caption)
+                    Text(
+                        "The key is stored in this Mac's Keychain and is sent only to Google's Gemini API. Suggestion prompts can include the live transcript and selected reference text; Google Search grounding may also be used."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SettingsGroup(
                 "OpenAI API key",
-                detail: "Optional. Dictation and two-speaker meeting/interview transcripts already work locally. A key adds live partial text, AI suggestions, source preparation with hosted web search, generated replays, and the best-accuracy transcription option."
+                detail: "Optional. Dictation and two-speaker meeting/interview transcripts already work locally. A key adds live partial text, OpenAI-backed suggestions when selected above, source preparation, generated replays, and the best-accuracy transcription option."
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !controller.capability.hasAPIKey {
@@ -203,7 +278,7 @@ private struct OpenAISettings: View {
                     )
                     .font(.caption)
                     Text(
-                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. Suggested answers may use OpenAI's built-in web search with this same key; no separate search account is needed. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
+                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. When OpenAI is selected for suggestions, answers may use its built-in web search with this same key. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -279,7 +354,7 @@ private struct PrivacySettings: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsGroup(
                 "Keep everything on this Mac",
-                detail: "Turns off every feature that would send audio, text, or a source URL to OpenAI, Jina, or Exa, even if keys are saved."
+                detail: "Turns off every feature that would send audio, text, or a source URL to OpenAI, Google Gemini, Jina, or Exa, even if keys are saved."
             ) {
                 VStack(alignment: .leading, spacing: 9) {
                     Toggle(
@@ -293,7 +368,7 @@ private struct PrivacySettings: View {
                     Text(
                         controller.privacyLockEnabled
                             ? "Dictation, meeting transcripts, and interview transcripts stay available on this Mac. Live partials, AI suggestions, web search, and generated replays are turned off."
-                            : "Turning this on keeps local dictation and two-speaker transcripts available, while disabling every OpenAI enhancement."
+                            : "Turning this on keeps local dictation and two-speaker transcripts available, while disabling every cloud enhancement."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

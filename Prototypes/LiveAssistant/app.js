@@ -848,6 +848,48 @@ function createWebCitationLinks(suggestion, className) {
   return container;
 }
 
+function createGoogleSearchSuggestions(suggestion, className) {
+  const widgets = (suggestion?.googleSearchSuggestionsHTML || []).filter((html) => (
+    typeof html === "string" && html.trim()
+  ));
+  if (!widgets.length) return null;
+
+  const container = document.createElement("div");
+  container.className = className;
+  container.setAttribute("aria-label", "Google Search suggestions");
+  widgets.forEach((html, index) => {
+    const frame = document.createElement("iframe");
+    frame.className = "google-search-suggestion-frame";
+    frame.title = `Google Search suggestions ${index + 1}`;
+    frame.setAttribute(
+      "sandbox",
+      "allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    );
+    frame.setAttribute("scrolling", "no");
+    frame.srcdoc = html;
+    frame.addEventListener("load", () => {
+      const resize = () => {
+        try {
+          const documentElement = frame.contentDocument?.documentElement;
+          const body = frame.contentDocument?.body;
+          const height = Math.max(
+            documentElement?.scrollHeight || 0,
+            body?.scrollHeight || 0,
+            40
+          );
+          frame.style.height = `${Math.min(height, 160)}px`;
+        } catch {
+          frame.style.height = "48px";
+        }
+      };
+      resize();
+      window.setTimeout(resize, 100);
+    });
+    container.append(frame);
+  });
+  return container;
+}
+
 function createHistoryRound(suggestion, index) {
   const round = document.createElement("article");
   round.className = "history-round";
@@ -885,6 +927,11 @@ function createHistoryRound(suggestion, index) {
     "history-web-citations"
   );
   if (citations) round.append(citations);
+  const searchSuggestions = createGoogleSearchSuggestions(
+    suggestion,
+    "history-google-search-suggestions"
+  );
+  if (searchSuggestions) round.append(searchSuggestions);
   return round;
 }
 
@@ -948,6 +995,8 @@ function renderSuggestionStack(assistant) {
     $("#answerHistory").hidden = true;
     $("#webCitations").hidden = true;
     $("#webCitations").replaceChildren();
+    $("#googleSearchSuggestions").hidden = true;
+    $("#googleSearchSuggestions").replaceChildren();
     scheduleCurrentStageFit();
     return null;
   }
@@ -967,6 +1016,14 @@ function renderSuggestionStack(assistant) {
   const webCitations = createWebCitationLinks(current, "web-citations");
   $("#webCitations").replaceChildren(...(webCitations?.children || []));
   $("#webCitations").hidden = !webCitations;
+  const searchSuggestions = createGoogleSearchSuggestions(
+    current,
+    "google-search-suggestions"
+  );
+  $("#googleSearchSuggestions").replaceChildren(
+    ...(searchSuggestions?.children || [])
+  );
+  $("#googleSearchSuggestions").hidden = !searchSuggestions;
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
   const plausibleRehearsal = current.answerMode === "plausibleRehearsal";
