@@ -308,13 +308,18 @@ struct ContentView: View {
 
     private func localCaptureLimitations(for purpose: CapturePurpose) -> String {
         if controller.isLiveAssistantAvailable {
-            return "\(purpose.assistantTitle) uses \(controller.liveAssistantModel) after each completed turn. Word-by-word live text and generated replays still require OpenAI."
+            return switch purpose {
+            case .meeting:
+                "Meeting Assistant uses \(controller.liveAssistantModel) after each completed turn and may search the web when useful. Word-by-word live text and generated replays still require OpenAI."
+            case .interview:
+                "Answer Mirror uses \(controller.liveAssistantModel) after each completed turn without web search, prioritizing your interview references. Word-by-word live text and generated replays still require OpenAI."
+            }
         }
         return switch purpose {
         case .meeting:
             "Unavailable without a selected assistant key: Meeting Assistant cues and hosted web search. Word-by-word live text and generated meeting replays require OpenAI."
         case .interview:
-            "Unavailable without a selected assistant key: Answer Mirror suggestions and hosted web search. Word-by-word live text and generated interview replays require OpenAI."
+            "Unavailable without a selected assistant key: Answer Mirror suggestions and the explicit web-search test. Word-by-word live text and generated interview replays require OpenAI."
         }
     }
 

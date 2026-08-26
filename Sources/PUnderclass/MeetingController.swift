@@ -2276,7 +2276,10 @@ final class MeetingController: ObservableObject {
                 self.publishCompanionSession()
                 try await self.runSyntheticInterview(
                     scenario,
-                    runID: runID
+                    runID: runID,
+                    webSearchMode: LiveAssistantWebSearchMode.defaultMode(
+                        for: purpose
+                    )
                 )
             } catch is CancellationError {
                 self.finishSyntheticInterview(
@@ -2401,7 +2404,7 @@ final class MeetingController: ObservableObject {
     private func runSyntheticInterview(
         _ scenario: SyntheticInterviewScenario,
         runID: UUID,
-        webSearchMode: LiveAssistantWebSearchMode = .automatic
+        webSearchMode: LiveAssistantWebSearchMode
     ) async throws {
         for (index, turn) in scenario.turns.enumerated() {
             try Task.checkCancellation()
@@ -2566,7 +2569,7 @@ final class MeetingController: ObservableObject {
         startedAt: Date,
         endedAt: Date,
         purpose: CapturePurpose,
-        webSearchMode: LiveAssistantWebSearchMode = .automatic
+        webSearchMode: LiveAssistantWebSearchMode
     ) {
         if speaker == .you {
             localTrack.partialTranscript = ""
@@ -3813,7 +3816,7 @@ final class MeetingController: ObservableObject {
         speaker: SpeakerTag,
         purpose: CapturePurpose,
         observedAt: Date = Date(),
-        webSearchMode: LiveAssistantWebSearchMode = .automatic
+        webSearchMode: LiveAssistantWebSearchMode? = nil
     ) {
         guard AssistantEvaluationPolicy.shouldEvaluate(
             speaker: speaker,

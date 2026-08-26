@@ -237,7 +237,7 @@ private struct OpenAISettings: View {
                     )
                     .font(.caption)
                     Text(
-                        "The key is stored in this Mac's Keychain and is sent only to Google's Gemini API. Suggestion prompts can include the live transcript and selected reference text; Google Search grounding may also be used."
+                        "The key is stored in this Mac's Keychain and is sent only to Google's Gemini API. Suggestion prompts can include the live transcript and selected reference text. Meeting Assistant may use Google Search grounding automatically; ordinary interview cues do not, while Test Web Search enables it explicitly."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -278,7 +278,7 @@ private struct OpenAISettings: View {
                     )
                     .font(.caption)
                     Text(
-                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. When OpenAI is selected for suggestions, answers may use its built-in web search with this same key. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
+                        "You pay OpenAI directly for what you use. Dictation costs roughly a few cents per hour of speech. When OpenAI is selected for suggestions, Meeting Assistant may use built-in web search; ordinary interview cues do not, while Test Web Search enables it explicitly. The key is stored in this Mac's Keychain and is never sent anywhere except OpenAI."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

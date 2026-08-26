@@ -302,10 +302,14 @@ Realtime response to reproduce the full citation and rehearsal-plan contract.
 
 The structured decision labels every displayed outline as `localReferences`,
 `webSearch`, or `generalKnowledge`. Local grounding requires at least one
-validated citation path from the current indexed snapshot. The selected
-provider exposes its hosted search tool with automatic tool choice: OpenAI uses
-`web_search` with low search context, while Gemini uses `google_search` through
-the Interactions API. Web grounding requires at least one HTTP(S) citation whose
+validated citation path from the current indexed snapshot. Meeting Assistant
+exposes the selected provider's hosted search tool with automatic tool choice:
+OpenAI uses `web_search` with low search context, while Gemini uses
+`google_search` through the Interactions API. Ordinary Answer Mirror requests
+omit tools, tool choice, and search-source inclusion so the fast path uses local
+references and general model knowledge. The explicit web-search test temporarily
+requires the selected provider's search tool. Web grounding requires at least
+one HTTP(S) citation whose
 URL appears in that provider's response annotations or complete hosted-search
 result list; the display presents the source as a visible, clickable link.
 Gemini structured output can put citations in the JSON answer without repeating
@@ -511,9 +515,10 @@ Each behavior defines:
 
 The host passes the stable reference prefix, recent finalized turns, the current
 partial, and an explicit other-speaker response target to the selected assistant
-model, exposes that provider's hosted web search with automatic tool choice,
-and requires structured output. The visible Interview **Test Web Search**
-harness is the single exception: it runs one audible, time-sensitive question with search
+model and requires structured output. Meeting Assistant also exposes that
+provider's hosted web search with automatic tool choice. Ordinary Answer Mirror
+requests explicitly disable and omit hosted search. The visible Interview
+**Test Web Search** harness runs one audible, time-sensitive question with search
 required so the end-to-end tool and citation path can be verified on demand.
 It converts the model result into three
 to five concise, first-person speaking cues in plain, conversational language

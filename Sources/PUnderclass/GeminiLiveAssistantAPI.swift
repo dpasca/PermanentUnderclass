@@ -11,29 +11,32 @@ enum GeminiLiveAssistantAPI {
     static func requestBody(
         for plan: AssistantPromptPlan,
         purpose: CapturePurpose,
-        webSearchMode: LiveAssistantWebSearchMode = .automatic,
+        webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
         configuration: LiveAssistantConfiguration = .gemini37Flash
     ) throws -> Data {
+        let resolvedWebSearchMode = webSearchMode
+            ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let defaultMaximumOutputTokens: Int
-        if webSearchMode == .required || answerMode == .plausibleRehearsal {
+        if resolvedWebSearchMode == .required
+            || answerMode == .plausibleRehearsal
+        {
             defaultMaximumOutputTokens = 4_096
         } else {
             defaultMaximumOutputTokens = 2_048
         }
 
-        let request: [String: Any] = [
+        var generationConfiguration: [String: Any] = [
+            "thinking_level": configuration.reasoningEffort.rawValue,
+            "max_output_tokens": configuration.maximumOutputTokens
+                ?? defaultMaximumOutputTokens
+        ]
+        var request: [String: Any] = [
             "model": configuration.model,
             "store": false,
             "system_instruction": plan.cachedPrefix,
             "input": plan.volatileSuffix,
-            "tools": [["type": webSearchToolType]],
-            "generation_config": [
-                "thinking_level": configuration.reasoningEffort.rawValue,
-                "max_output_tokens": configuration.maximumOutputTokens
-                    ?? defaultMaximumOutputTokens,
-                "tool_choice": webSearchMode == .required ? "any" : "auto"
-            ],
+            "generation_config": generationConfiguration,
             "response_format": [
                 "type": "text",
                 "mime_type": "application/json",
@@ -43,6 +46,12 @@ enum GeminiLiveAssistantAPI {
                 )
             ]
         ]
+        if resolvedWebSearchMode != .disabled {
+            generationConfiguration["tool_choice"] =
+                resolvedWebSearchMode == .required ? "any" : "auto"
+            request["generation_config"] = generationConfiguration
+            request["tools"] = [["type": webSearchToolType]]
+        }
         return try JSONSerialization.data(
             withJSONObject: request,
             options: [.sortedKeys, .withoutEscapingSlashes]

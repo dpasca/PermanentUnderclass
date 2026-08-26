@@ -170,11 +170,23 @@ struct LiveAssistantWebSource: Equatable, Sendable {
 }
 
 enum LiveAssistantWebSearchMode: Equatable, Sendable {
+    case disabled
     case automatic
     case required
 
-    var toolChoice: String {
+    static func defaultMode(for purpose: CapturePurpose) -> Self {
+        switch purpose {
+        case .meeting:
+            .automatic
+        case .interview:
+            .disabled
+        }
+    }
+
+    var toolChoice: String? {
         switch self {
+        case .disabled:
+            nil
         case .automatic:
             "auto"
         case .required:
@@ -285,8 +297,11 @@ struct LiveAssistantClient: Sendable {
     static func behaviorInstructions(
         for purpose: CapturePurpose,
         answerMode: AssistantAnswerMode,
+        webSearchMode: LiveAssistantWebSearchMode? = nil,
         additionalInstructions: String = ""
     ) -> String {
+        let resolvedWebSearchMode = webSearchMode
+            ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let modeInstructions: String
         switch (purpose, answerMode) {
         case (.interview, .plausibleRehearsal):
@@ -297,9 +312,36 @@ struct LiveAssistantClient: Sendable {
         let additional = additionalInstructions.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        return [behaviorInstructions(for: purpose), modeInstructions, additional]
+        return [
+            behaviorInstructions(for: purpose),
+            webSearchInstructions(for: resolvedWebSearchMode),
+            modeInstructions,
+            additional
+        ]
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
+    }
+
+    static func webSearchInstructions(
+        for mode: LiveAssistantWebSearchMode
+    ) -> String {
+        switch mode {
+        case .disabled:
+            """
+            WEB SEARCH: DISABLED
+            Answer quickly from the supplied local references, recent transcript, session context, and general model knowledge. Do not claim to search the public web, do not set grounding to webSearch, and do not return public-web citations. Prefer localReferences when the supplied documents support the cue; otherwise use generalKnowledge with no citations.
+            """
+        case .automatic:
+            """
+            WEB SEARCH: AVAILABLE
+            Prefer supplied local references for private or session-specific facts. Use hosted web search only when current or public information would materially improve the cue, and select webSearch grounding only when a returned source directly supports it.
+            """
+        case .required:
+            """
+            WEB SEARCH: REQUIRED FOR THIS TEST
+            Use the hosted web-search tool for the response target. Select webSearch grounding and cite the exact returned public source that directly supports the cue.
+            """
+        }
     }
 
     static let groundedAnswerInstructions = """
@@ -427,15 +469,18 @@ struct LiveAssistantClient: Sendable {
         purpose: CapturePurpose,
         basedOnSequence: Int,
         trigger: CompanionAssistantTrigger = .finalizedTurn,
-        webSearchMode: LiveAssistantWebSearchMode = .automatic,
+        webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
         previousRehearsalStory: AssistantRehearsalStoryContext? = nil,
         usefulnessDeadline: ContinuousClock.Instant? = nil
     ) async throws -> LiveAssistantGeneration {
+        let resolvedWebSearchMode = webSearchMode
+            ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let prefix = try AssistantPromptBuilder.cachedPrefix(
             behaviorInstructions: Self.behaviorInstructions(
                 for: purpose,
                 answerMode: answerMode,
+                webSearchMode: resolvedWebSearchMode,
                 additionalInstructions:
                     configuration.additionalBehaviorInstructions
             ),
@@ -463,7 +508,7 @@ struct LiveAssistantClient: Sendable {
             body: try requestBuilder(
                 plan,
                 purpose,
-                webSearchMode,
+                resolvedWebSearchMode,
                 answerMode
             ),
             usefulnessDeadline: usefulnessDeadline
@@ -492,10 +537,11 @@ struct LiveAssistantClient: Sendable {
                     body: try requestBuilder(
                         Self.groundingCorrectionPlan(
                             from: plan,
-                            answerMode: answerMode
+                            answerMode: answerMode,
+                            webSearchMode: resolvedWebSearchMode
                         ),
                         purpose,
-                        webSearchMode,
+                        resolvedWebSearchMode,
                         answerMode
                     ),
                     usefulnessDeadline: usefulnessDeadline
@@ -647,7 +693,8 @@ struct LiveAssistantClient: Sendable {
 
     private static func groundingCorrectionPlan(
         from plan: AssistantPromptPlan,
-        answerMode: AssistantAnswerMode
+        answerMode: AssistantAnswerMode,
+        webSearchMode: LiveAssistantWebSearchMode
     ) -> AssistantPromptPlan {
         let modeCorrection = answerMode == .plausibleRehearsal
             ? """
@@ -656,9 +703,12 @@ struct LiveAssistantClient: Sendable {
             : """
             Grounded mode remains enabled. Do not imply unsupported personal experience. Rewrite any meta-commentary about sources, invention, defensibility, or choosing a story into a compact worked "If" conditional with one symptom, leading cause, named alternative, controlled check, exact justified change, and verification replay. State the observation that confirms the cause and the different observation that sends me to the alternative. Name the actual value, buffer, state, counter, boundary, or controlled change instead of a placeholder. Do not return a generic checklist or coaching language such as "Say." The spoken cue must be immediately usable and spokenCueContainsMetaCommentary must be false. Return usedExtrapolation as false and plausibleAssumptions as an empty array.
             """
+        let webSearchCorrection = webSearchMode == .disabled
+            ? "Web search remains disabled. Do not use webSearch grounding or return public-web citations."
+            : "Use webSearch only when a returned search source directly supports the public claims and include at least one exact source URL."
         let correction = """
         GROUNDING CORRECTION
-        Reassess shouldShow from the original response target, especially when it is a partial or unfinished thought. Do not set shouldShow to false merely to avoid the citation requirement, but do set it to false when there is not yet a sufficiently clear question to answer. If a cue should be shown, use localReferences only when the cue uses a supported factual anchor and include at least one exact indexed document path. Use webSearch only when a returned search source directly supports the public claims and include at least one exact source URL. If neither condition applies, set grounding to generalKnowledge and return no citations.
+        Reassess shouldShow from the original response target, especially when it is a partial or unfinished thought. Do not set shouldShow to false merely to avoid the citation requirement, but do set it to false when there is not yet a sufficiently clear question to answer. If a cue should be shown, use localReferences only when the cue uses a supported factual anchor and include at least one exact indexed document path. \(webSearchCorrection) If neither condition applies, set grounding to generalKnowledge and return no citations.
 
         \(modeCorrection)
         """
@@ -672,12 +722,14 @@ struct LiveAssistantClient: Sendable {
     static func requestBody(
         for plan: AssistantPromptPlan,
         purpose: CapturePurpose,
-        webSearchMode: LiveAssistantWebSearchMode = .automatic,
+        webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
         configuration: LiveAssistantConfiguration = .production
     ) throws -> Data {
+        let resolvedWebSearchMode = webSearchMode
+            ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let defaultMaximumOutputTokens: Int
-        if webSearchMode == .required {
+        if resolvedWebSearchMode == .required {
             defaultMaximumOutputTokens = answerMode == .plausibleRehearsal
                 ? 900
                 : 800
@@ -714,9 +766,6 @@ struct LiveAssistantClient: Sendable {
             ],
             "prompt_cache_key": plan.promptCacheKey,
             "prompt_cache_options": ["mode": "explicit"],
-            "tool_choice": webSearchMode.toolChoice,
-            "tools": [webSearchTool(for: webSearchMode)],
-            "include": ["web_search_call.action.sources"],
             "text": [
                 "verbosity": "low",
                 "format": [
@@ -732,6 +781,11 @@ struct LiveAssistantClient: Sendable {
                 ]
             ]
         ]
+        if let toolChoice = resolvedWebSearchMode.toolChoice {
+            request["tool_choice"] = toolChoice
+            request["tools"] = [webSearchTool(for: resolvedWebSearchMode)]
+            request["include"] = ["web_search_call.action.sources"]
+        }
         if let serviceTier = configuration.serviceTier {
             request["service_tier"] = serviceTier
         }

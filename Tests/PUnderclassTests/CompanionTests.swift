@@ -1094,6 +1094,20 @@ final class CompanionTests: XCTestCase {
                 "question, request, or decision"
             )
         )
+        XCTAssertEqual(
+            LiveAssistantWebSearchMode.defaultMode(for: .interview),
+            .disabled
+        )
+        XCTAssertEqual(
+            LiveAssistantWebSearchMode.defaultMode(for: .meeting),
+            .automatic
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.behaviorInstructions(
+                for: .interview,
+                answerMode: .grounded
+            ).contains("WEB SEARCH: DISABLED")
+        )
         let plan = AssistantPromptPlan(
             cachedPrefix: "stable behavior and references",
             volatileSuffix: "Other: What did you build?",
@@ -1111,18 +1125,9 @@ final class CompanionTests: XCTestCase {
         XCTAssertEqual(root["store"] as? Bool, false)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
-        XCTAssertEqual(root["tool_choice"] as? String, "auto")
-        let tools = try XCTUnwrap(root["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(
-            tools[0]["type"] as? String,
-            LiveAssistantClient.webSearchToolType
-        )
-        XCTAssertEqual(tools[0]["search_context_size"] as? String, "low")
-        XCTAssertEqual(
-            root["include"] as? [String],
-            ["web_search_call.action.sources"]
-        )
+        XCTAssertNil(root["tool_choice"])
+        XCTAssertNil(root["tools"])
+        XCTAssertNil(root["include"])
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
         XCTAssertEqual(reasoning["effort"], "medium")
 
@@ -1255,6 +1260,22 @@ final class CompanionTests: XCTestCase {
         )
         let meetingRoot = try XCTUnwrap(
             JSONSerialization.jsonObject(with: meetingData) as? [String: Any]
+        )
+        XCTAssertEqual(meetingRoot["tool_choice"] as? String, "auto")
+        let meetingTools = try XCTUnwrap(
+            meetingRoot["tools"] as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            meetingTools[0]["type"] as? String,
+            LiveAssistantClient.webSearchToolType
+        )
+        XCTAssertEqual(
+            meetingTools[0]["search_context_size"] as? String,
+            "low"
+        )
+        XCTAssertEqual(
+            meetingRoot["include"] as? [String],
+            ["web_search_call.action.sources"]
         )
         let meetingText = try XCTUnwrap(
             meetingRoot["text"] as? [String: Any]

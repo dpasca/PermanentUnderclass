@@ -38,6 +38,56 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         )
     }
 
+    func testHostedGemini37FlashHighThinkingUsesResumeWithoutSearch() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RUN_GEMINI_LIVE_ASSISTANT_SMOKE"] == "1" else {
+            throw XCTSkip(
+                "Set RUN_GEMINI_LIVE_ASSISTANT_SMOKE=1 to run the hosted Gemini smoke test."
+            )
+        }
+        let apiKey = try XCTUnwrap(environment["GEMINI_API_KEY"])
+        let resumeText = """
+        Davide built a Metal renderer at Example Studio. To reduce CPU submission overhead, he batched draw calls by material and used indirect command buffers. On a fixed replay, CPU frame submission fell from 7 ms to 3 ms with matching rendered output.
+        """
+        let references = ReferenceLibrarySnapshot(
+            folderURL: URL(fileURLWithPath: "/tmp/gemini-resume-smoke"),
+            documents: [
+                ReferenceDocument(
+                    relativePath: "resume.md",
+                    kind: .markdown,
+                    content: resumeText,
+                    sourceByteCount: resumeText.utf8.count,
+                    isTruncated: false
+                )
+            ],
+            revision: "gemini-resume-smoke",
+            indexedAt: Date(),
+            ignoredFileCount: 0,
+            issues: []
+        )
+        let generation = try await LiveAssistantClient.gemini().generate(
+            apiKey: apiKey,
+            references: references,
+            recentTranscript: "",
+            currentPartial: "",
+            otherSpeakerText: "Tell me about a time you reduced CPU rendering overhead.",
+            sessionContext: "A rendering-engineer interview.",
+            purpose: .interview,
+            basedOnSequence: 1,
+            webSearchMode: .disabled
+        )
+
+        let suggestion = try XCTUnwrap(generation.suggestion)
+        XCTAssertEqual(suggestion.grounding, .localReferences)
+        XCTAssertEqual(suggestion.citations.map(\.path), ["resume.md"])
+        XCTAssertNil(suggestion.googleSearchSuggestionsHTML)
+        XCTAssertGreaterThan(generation.usage.inputTokens, 0)
+        XCTAssertGreaterThan(generation.usage.outputTokens, 0)
+        print(
+            "GEMINI_NO_SEARCH_SMOKE model=gemini-3.7-flash thinking=high generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) grounding=\(suggestion.grounding.rawValue) citations=\(suggestion.citations.count)"
+        )
+    }
+
     func testRequestUsesGemini37FlashWithHighThinkingAndStructuredOutput()
         throws
     {
@@ -66,16 +116,14 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         XCTAssertNil(root["top_p"])
         XCTAssertNil(root["top_k"])
 
-        let tools = try XCTUnwrap(root["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(tools[0]["type"] as? String, "google_search")
+        XCTAssertNil(root["tools"])
 
         let generationConfig = try XCTUnwrap(
             root["generation_config"] as? [String: Any]
         )
         XCTAssertEqual(generationConfig["thinking_level"] as? String, "high")
         XCTAssertEqual(generationConfig["max_output_tokens"] as? Int, 2_048)
-        XCTAssertEqual(generationConfig["tool_choice"] as? String, "auto")
+        XCTAssertNil(generationConfig["tool_choice"])
 
         let responseFormat = try XCTUnwrap(
             root["response_format"] as? [String: Any]
@@ -95,6 +143,29 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         XCTAssertNotNil(properties["preamble"])
         XCTAssertNotNil(properties["beats"])
         XCTAssertNotNil(properties["citations"])
+    }
+
+    func testAutomaticMeetingSearchUsesGoogleSearchTool() throws {
+        let plan = AssistantPromptPlan(
+            cachedPrefix: "Stable instructions",
+            volatileSuffix: "Other: What is the current release?",
+            promptCacheKey: "punderclass:test"
+        )
+
+        let data = try GeminiLiveAssistantAPI.requestBody(
+            for: plan,
+            purpose: .meeting
+        )
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let tools = try XCTUnwrap(root["tools"] as? [[String: Any]])
+        XCTAssertEqual(tools.count, 1)
+        XCTAssertEqual(tools[0]["type"] as? String, "google_search")
+        let generationConfig = try XCTUnwrap(
+            root["generation_config"] as? [String: Any]
+        )
+        XCTAssertEqual(generationConfig["tool_choice"] as? String, "auto")
     }
 
     func testRequiredSearchUsesAnyToolChoiceAndLargerThinkingBudget() throws {

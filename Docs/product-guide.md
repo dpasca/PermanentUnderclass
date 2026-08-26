@@ -124,10 +124,14 @@ therefore add model calls and Priority-processing cost, and the UI labels its
 output as partial and experimental. Both preferences remain enabled across
 interviews and app relaunches until the user explicitly turns them off.
 
-Both behaviors expose their selected provider's hosted web search when current
+Meeting Assistant exposes the selected provider's hosted web search when current
 or public facts would materially improve a cue: OpenAI uses `web_search`, while
 Gemini uses `google_search`. Search is model-selected rather than
-keyword-triggered and needs no separate search account. A web-grounded cue is
+keyword-triggered and needs no separate search account. Ordinary Answer Mirror
+requests omit the search tool entirely so interview cues prioritize the résumé,
+supporting documents, recent conversation, and the model's general knowledge.
+The explicit **Test Web Search** action temporarily requires search for its one
+test question. A web-grounded cue is
 published only when its cited URL is present in the provider's returned search
 results or URL annotations, and the display makes that source visible and
 clickable. For Gemini's structured-output response shape, the host additionally
@@ -198,8 +202,8 @@ without spending anything. For the real hosted path, open the native app's
 Interview tab and press **Test Web Search** in the generated replay panel. It
 opens Answer Mirror, speaks one deliberately time-sensitive question, requires
 one hosted search for that test run, and leaves the sourced cue on screen with
-clickable links. Ordinary meeting and interview requests still let the model
-decide whether searching is useful.
+clickable links. Ordinary meetings still let the model decide whether searching
+is useful; ordinary interviews do not send a search tool.
 The live host exposes an atomic snapshot, a replayable composite SSE cursor,
 and idempotent pause/pin/dismiss commands. The protocol, retry contract,
 pairing boundary, and follow-up durability work are in
