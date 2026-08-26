@@ -61,11 +61,11 @@ PermanentUnderclass embeds an HTTP/SSE gateway and serves the cross-platform
 thin display itself. Start the Mac app, open **Meeting** or
 **Interview**, choose **Open Setup…** on the prominent preparation card, and
 add the session guidance or shared reference folder you need. Then open the
-mode's assistant. A server-status panel confirms when the display is ready,
-shows the exact LAN IP and selected port, and copies that address for use on
-another computer on the same Wi-Fi or Ethernet network. Port `4173` is preferred;
-if it is already in use, the gateway automatically publishes another available
-port. The Mac owns the selected
+mode's assistant. Its status dot confirms when the display is ready. The
+details menu shows the exact LAN IP and selected port and copies that address
+for use on another computer on the same Wi-Fi or Ethernet network.
+Port `4173` is preferred; if it is already in use, the gateway automatically
+publishes another available port. The Mac owns the selected
 behavior, local references, OpenAI request, usage tracking, event ordering, and
 replay; the browser receives only transcript text, reference status, citations,
 and a presentation-ready response outline.
@@ -230,9 +230,9 @@ incur repeated synthesis calls.
 
 ## Meeting and interview preparation
 
-Use the large **Prepare Meeting** or **Prepare Interview** card near the top of
-either capture tab. It opens one full-size preparation window directly on the
-selected mode; a large segmented control switches modes without closing it.
+Use the **Prepare Meeting** or **Prepare Interview** card in the capture
+dashboard. It opens one full-size preparation window directly on the selected
+mode; a large segmented control switches modes without closing it.
 All setup controls live in this window instead of a collapsed control at the
 bottom of the capture tab.
 

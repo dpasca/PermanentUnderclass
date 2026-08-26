@@ -82,16 +82,19 @@ extension View {
         if access.isAvailable {
             self
         } else {
-            VStack(alignment: .leading, spacing: 9) {
+            ZStack {
+                self
+                    .disabled(true)
+                    .opacity(0.24)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
                 LockedFeatureCard(
                     feature: feature,
                     access: access,
                     onResolve: onResolve
                 )
-                self
-                    .disabled(true)
-                    .opacity(0.4)
-                    .allowsHitTesting(false)
+                .padding(10)
             }
         }
     }
