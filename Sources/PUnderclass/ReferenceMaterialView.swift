@@ -109,8 +109,11 @@ struct ReferenceMaterialView: View {
     }
 
     private var headerDetail: String {
+        if !controller.isLiveAssistantAvailable {
+            return "Set local transcription context before capture. Live suggestions need the selected provider's API key."
+        }
         if !controller.capability.isCloudEnabled {
-            return "Set local transcription context before capture. OpenAI assistant features are currently unavailable."
+            return "Transcription stays local; \(controller.liveAssistantModel) can suggest a response after each completed turn."
         }
         return purpose == .meeting
             ? "Give transcription and Meeting Assistant the context they need before the conversation starts."
@@ -122,10 +125,10 @@ struct ReferenceMaterialView: View {
         if purpose == .interview {
             interviewPreparationFlow
         } else {
-            if !controller.capability.isCloudEnabled {
+            if !controller.isLiveAssistantAvailable {
                 LockedFeatureCard(
                     feature: liveFeature,
-                    access: controller.access(to: liveFeature),
+                    access: controller.liveAssistantAccess,
                     onResolve: showSettings
                 )
             }
@@ -169,9 +172,9 @@ struct ReferenceMaterialView: View {
                 isExpanded: $showsAnswerSettings
             ) {
                 answerModeSection
-                    .disabled(!controller.capability.isCloudEnabled)
+                    .disabled(!controller.isLiveAssistantAvailable)
                     .opacity(
-                        controller.capability.isCloudEnabled ? 1 : 0.45
+                        controller.isLiveAssistantAvailable ? 1 : 0.45
                     )
                 recognitionHintsSection
             }
@@ -303,8 +306,12 @@ struct ReferenceMaterialView: View {
         case .unavailable:
             HStack {
                 Label(
-                    "You can still record a local two-speaker transcript.",
-                    systemImage: "waveform"
+                    controller.isLiveAssistantAvailable
+                        ? "Live suggestions work without prepared résumé evidence."
+                        : "You can still record a local two-speaker transcript.",
+                    systemImage: controller.isLiveAssistantAvailable
+                        ? "sparkles"
+                        : "waveform"
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -647,7 +654,9 @@ struct ReferenceMaterialView: View {
     private var interviewReadinessTitle: String {
         switch controller.interviewPreparationReadiness {
         case .unavailable:
-            "Turn on Answer Mirror"
+            controller.isLiveAssistantAvailable
+                ? "Add OpenAI for evidence preparation"
+                : "Set up Answer Mirror"
         case .activeSession:
             "Finish the current session first"
         case .preparing:
@@ -672,7 +681,9 @@ struct ReferenceMaterialView: View {
     private var interviewReadinessDetail: String {
         switch controller.interviewPreparationReadiness {
         case .unavailable:
-            "An OpenAI key is needed for live answer suggestions and evidence preparation."
+            controller.isLiveAssistantAvailable
+                ? "Live suggestions are available. Preparing résumé evidence and supporting web sources still needs an OpenAI key."
+                : "Live answer suggestions need the selected assistant provider's key. Preparing résumé evidence also needs OpenAI."
         case .activeSession:
             "Preparation cannot change while an interview or generated replay is active."
         case .preparing:
@@ -891,7 +902,7 @@ struct ReferenceMaterialView: View {
                             Text("Early speaking bridge (experimental)")
                                 .font(.body.weight(.semibold))
                             Text(
-                                "Uses fast Priority requests while the interviewer is speaking and again at the first stable pause. It shows a short, varied thinking phrase such as “Let me choose the clearest example for a moment,” then the complete Answer Mirror cue replaces it. The phrase contains no answer substance and never influences the complete cue, though it may still appear too early if the question is unfinished."
+                                "Uses fast OpenAI Priority requests while the interviewer is speaking and again at the first stable pause. It shows a short, varied thinking phrase such as “Let me choose the clearest example for a moment,” then the complete Answer Mirror cue from your selected provider replaces it. The phrase contains no answer substance and never influences the complete cue."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -902,6 +913,28 @@ struct ReferenceMaterialView: View {
                     .disabled(
                         controller.isListening
                             || controller.syntheticInterviewState.isActive
+                            || !controller.capability.isCloudEnabled
+                    )
+                } else {
+                    Divider()
+
+                    Toggle(isOn: instantTextBinding) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Instant text stream (experimental)")
+                                .font(.body.weight(.semibold))
+                            Text(
+                                "Shows an OpenAI plain-text draft as soon as usable words arrive, before structured grounding checks finish. It applies only to finalized grounded interview turns with web search off and is always labeled for verification. Gemini, partial turns, meetings, and web-search requests use the verified format automatically."
+                            )
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(
+                        controller.isListening
+                            || controller.syntheticInterviewState.isActive
+                            || controller.liveAssistantProvider != .openAI
                     )
                 }
 
@@ -1678,6 +1711,17 @@ struct ReferenceMaterialView: View {
         Binding(
             get: { controller.assistantEarlyBridgeEnabled },
             set: { controller.setAssistantEarlyBridgePreference($0) }
+        )
+    }
+
+    private var instantTextBinding: Binding<Bool> {
+        Binding(
+            get: { controller.assistantDeliveryMode == .instantText },
+            set: {
+                controller.setAssistantDeliveryModePreference(
+                    $0 ? .instantText : .verified
+                )
+            }
         )
     }
 

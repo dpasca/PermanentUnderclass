@@ -62,15 +62,16 @@ Reference folder ─┘      ├─ capture + transcription
                          ├─ local document ingestion + change monitoring
                          ├─ prompt assembly + assistant model calls
                          ├─ ordered event hub + replay buffer
-                         ├─ OpenAI usage/cost aggregation
+                         ├─ aggregate usage/cost tracking
                          └─ HTTP/SSE companion gateway
                                      │ presentation-ready events only
                                      └─> Thin browser display
                                           render + small UI commands
 ```
 
-The OpenAI key stays in the Mac Keychain. The browser never receives it, never
-receives the reference corpus, and does not call OpenAI directly. The host
+OpenAI and Gemini keys stay in the Mac Keychain. The browser never receives
+them, never receives the reference corpus, and does not call either provider
+directly. The host
 continues capture, indexing, and assistant work when no display is connected.
 
 ## HTTP surface
@@ -115,7 +116,12 @@ Initial event set:
   finalized-turn fallback. It is never added to the four-card display history,
   but every accepted bridge is retained in the local interview archive.
 - `assistant.working`: generation started for a transcript watermark.
-- `assistant.suggestion`: newest structured answer outline with citation labels.
+- `assistant.draft`: replaceable plain-text words from the opt-in Instant Text
+  stream. It exists only while the matching finalized-turn evaluation is active,
+  is never added to history, and is always presented as unverified.
+- `assistant.suggestion`: newest completed answer cue. Most payloads are
+  structured outlines with citation labels; Instant Text completions retain
+  their explicit `deliveryMode` and verification warning.
 - `assistant.state`: idle state after a completed model check, including whether
   the latest other-speaker moment produced no outline. This prevents silence from
   being confused with a disconnected assistant.
@@ -167,6 +173,23 @@ The display temporarily hides the previous answer, shows this thinking phrase,
 and then replaces it with `assistant.suggestion`. The bridge and full request
 run independently: bridge text is never inserted into the full prompt, so its
 early interpretation cannot steer or constrain the substantive cue.
+
+Grounded Interview mode also offers an independent **Instant Text** experiment.
+It applies only to OpenAI, finalized interviewer turns, and disabled web search.
+The Responses request uses SSE with ordinary text output rather than a JSON
+schema. The model itself decides whether to answer using an exact wire prefix:
+`SKIP`, or `SHOW` followed by one compact spoken paragraph. The host does no
+keyword-based language classification; it only decodes that model-authored
+control prefix. Once `SHOW` and the first answer characters have arrived, the
+host publishes replaceable `assistant.draft` events over the companion SSE
+stream. It never tries to parse incomplete JSON.
+
+The draft is visibly labeled `LIVE TEXT DRAFT · VERIFY`, cannot be pinned,
+copied, dismissed, or archived, and is cleared on cancellation, failure, a new
+turn, or final completion. The completed cue carries no inferred citations or
+grounding claim because those fields were intentionally not requested. Partial
+turns, Plausible Rehearsal, Meeting Assistant, Gemini, and any web-search request
+fall back automatically to the verified structured path.
 
 The host chooses the facts and concise first-person wording. For Answer Mirror,
 the teleprompter shows the spoken preamble first; labels remain internal
@@ -236,6 +259,11 @@ is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
 
+Instant Text does not change partial-turn behavior. It starts only from the
+finalized-turn opportunity and measures both first renderable text and completed
+cue latency. This keeps its speed claim tied to words the user can actually see,
+not to an early JSON fragment that the display cannot yet render.
+
 Plausible Rehearsal can optionally start an independent early-bridge lane 600
 ms after the first `Other` partial arrives, without waiting for silence. It
 uses `gpt-5.6-luna`, no reasoning, a strict one-string schema, and Priority
@@ -248,15 +276,16 @@ interviewer turn.
 
 Those speculative attempts do not consume the reliable opportunities. A
 separate 400 ms silence callback starts a zero-delay bridge request from the
-latest partial, while the structured Terra check retains its 800 ms threshold.
+latest partial, while the structured full-cue check retains its 800 ms
+threshold.
 Voice resumption can re-arm this opportunity for up to three distinct pauses,
 so a mid-question pause does not consume the end-of-question chance. If those
 pause requests return no bridge, the finalized transcript receives one
 independent zero-delay fallback. Each request is told whether its input is
 forming, paused, or finalized so the model can be conservative without
 treating a completed question as perpetually unfinished. An inconclusive
-partial Terra check does not erase a useful bridge; the finalized check or full
-suggestion retires it.
+partial full-cue check does not erase a useful bridge; the finalized check or
+full suggestion retires it.
 
 Interview cues have a six-second usefulness deadline measured from the end of
 the interviewer's speech, including host delay, the first request, and any
@@ -291,8 +320,8 @@ automatic response creation is disabled, and an out-of-band text response can
 be identified with metadata. See the official
 [Realtime conversations guide](https://developers.openai.com/api/docs/guides/realtime-conversations).
 
-The first experiment should replace only the Luna bridge, not the structured Terra
-cue. Feed the remote audio track to the Realtime conversation, keep its context
+The first experiment should replace only the Luna bridge, not the structured
+full cue. Feed the remote audio track to the Realtime conversation, keep its context
 small, stream one plain-text opening, and compare speech-end-to-first-text,
 answerability, acknowledgement false positives, and bridge/full independence
 against the existing lane. This isolates native audio latency without asking the
@@ -300,11 +329,25 @@ Realtime response to reproduce the full citation and rehearsal-plan contract.
 
 The structured decision labels every displayed outline as `localReferences`,
 `webSearch`, or `generalKnowledge`. Local grounding requires at least one
-validated citation path from the current indexed snapshot. The live Responses
-request also exposes OpenAI's hosted `web_search` tool with low search context
-and automatic tool choice. Web grounding requires at least one HTTP(S) citation
-whose URL appears in the response's URL annotations or complete hosted-search
-source list; the display presents the source as a visible, clickable link. If
+validated citation path from the current indexed snapshot. Meeting Assistant
+exposes the selected provider's hosted search tool with automatic tool choice:
+OpenAI uses `web_search` with low search context, while Gemini uses
+`google_search` through the Interactions API. Ordinary Answer Mirror requests
+omit tools, tool choice, and search-source inclusion so the fast path uses local
+references and general model knowledge. The explicit web-search test temporarily
+requires the selected provider's search tool. Web grounding requires at least
+one HTTP(S) citation whose
+URL appears in that provider's response annotations or complete hosted-search
+result list; the display presents the source as a visible, clickable link.
+Gemini structured output can put citations in the JSON answer without repeating
+them as text annotations. The adapter accepts that shape only when the timeline
+contains a matching successful `google_search_call` / `google_search_result` and
+the citation is a Google-issued HTTPS redirect under the
+`vertexaisearch.cloud.google.com/grounding-api-redirect/` path. Arbitrary URLs
+authored inside the JSON answer remain untrusted. The companion also renders the
+returned `search_suggestions` HTML in a script-disabled sandbox next to the
+grounded result. Search suggestion widgets and their associated Gemini links
+remain transient live-display data and are removed from interview archives. If
 neither an indexed file nor a web source supports a useful outline, the model
 may use the live discussion as context and general model knowledge with an
 empty citation list. Public results are untrusted data and cannot override the
@@ -398,8 +441,7 @@ good product flow.
 
 Only transcript text, complete answer-outline cards, citation metadata, health,
 reference status, and aggregate usage cross the companion boundary. Source
-documents, retrieval indexes, raw audio, prompts, model credentials, and the
-OpenAI key do not.
+documents, retrieval indexes, raw audio, prompts, and provider API keys do not.
 
 ## Reference folder and prompt assembly
 
@@ -434,10 +476,12 @@ For a reasonably small reference folder, build model input in this order:
 5. Current partial / immediate request                     changes constantly
 ```
 
-OpenAI prompt-cache hits require exact prefix matches, so durable material goes
-first and volatile transcript state goes last. The whole reference pack can be
-reused until its content revision changes. Do not insert a timestamp, scan
-time, or changing relevance score into the stable prefix.
+The provider adapters preserve the same durable-prefix/volatile-suffix split.
+OpenAI prompt-cache hits require exact prefix matches, while the Gemini request
+places the durable portion in `system_instruction` and the current turn in
+`input`. The whole reference pack can be reused until its content revision
+changes. Do not insert a timestamp, scan time, or changing relevance score into
+the stable prefix.
 
 For the proposed GPT-5.6 integration, ordering is necessary but not sufficient:
 
@@ -470,21 +514,22 @@ in a document cannot override the assistant behavior.
 Reference files stay off the display device. If the configured assistant uses
 a cloud model, the host necessarily sends the prompt's selected reference text
 to that model provider; the product must state that separately from the display
-privacy boundary. When hosted web search is selected, OpenAI derives and runs
-the public query inside the same Responses request. No additional credential is
-shared with a search provider. The privacy lock disables the assistant request
-and therefore disables hosted search as well.
+privacy boundary. When hosted web search is selected, OpenAI or Gemini derives
+and runs the public query inside the same model request. No additional search
+credential is stored by PermanentUnderclass. The privacy lock disables the
+assistant request and therefore disables hosted search as well.
 
 ## Assistant behavior boundary
 
 Behaviors are model-backed structured configurations, not keyword triggers.
 When cloud enhancements are available, the user selects the behavior boundary
 explicitly: Meeting capture enables Meeting Assistant, while Interview capture
-enables Answer Mirror. Without a key, the same selections produce only the
-local transcript. Meeting Assistant handles clear questions, requests, and
-decisions from the other participant using project-safe grounding rules;
-Answer Mirror handles interviewer questions using interview-safe grounding
-rules. The host never tries to infer one behavior from the transcript's words.
+enables Answer Mirror. Without the selected assistant provider's key, the same
+selections produce only the local transcript. Meeting Assistant handles clear
+questions, requests, and decisions from the other participant using project-safe
+grounding rules; Answer Mirror handles interviewer questions using interview-safe
+grounding rules. The host never tries to infer one behavior from the transcript's
+words.
 Each behavior defines:
 
 - goal and audience;
@@ -495,11 +540,12 @@ Each behavior defines:
 - expiry/replacement policy;
 - a model choice and per-session spend ceiling.
 
-The host passes the cached stable reference prefix, recent finalized turns,
-the current partial, and an explicit other-speaker response target to a fast
-model, exposes hosted web search with automatic tool choice, and requires
-structured output. The visible Interview **Test Web Search** harness is the
-single exception: it runs one audible, time-sensitive question with search
+The host passes the stable reference prefix, recent finalized turns, the current
+partial, and an explicit other-speaker response target to the selected assistant
+model and requires structured output. Meeting Assistant also exposes that
+provider's hosted web search with automatic tool choice. Ordinary Answer Mirror
+requests explicitly disable and omit hosted search. The visible Interview
+**Test Web Search** harness runs one audible, time-sensitive question with search
 required so the end-to-end tool and citation path can be verified on demand.
 It converts the model result into three
 to five concise, first-person speaking cues in plain, conversational language
@@ -511,12 +557,49 @@ behavior's model makes that structured decision.
 
 ### Measured model selection
 
-The live assistant uses `gpt-5.6-terra` at `reasoning.effort: medium`. Keep this as
-a measured default rather than a permanent routing assumption: compare
-representative private fixtures whenever the prompt or model family changes.
-The external-fixture benchmark records structured quality, generation latency,
+The user can select either Priority `gpt-5.6-luna` at
+`reasoning.effort: none` through OpenAI's Responses API or
+`gemini-3.7-flash` at `thinking_level: medium` through Google's Interactions
+API. Both adapters feed the same structured schema,
+grounding validator, retry policy, and display model. OpenAI remains the stored
+default for existing installs; selecting Gemini changes only the substantive
+full-cue provider. The speculative early bridge still requires OpenAI and Luna.
+
+Gemini 3.7 Flash is a stable model with configurable thinking levels, and the
+Interactions API is Google's recommended agentic interface. See Google's
+[Gemini 3.7 Flash model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash)
+and [Interactions API overview](https://ai.google.dev/gemini-api/docs/interactions-overview).
+Cross-vendor headline ratios are not used as product latency measurements. The
+repository includes both a non-personal, same-fixture provider matrix and an
+external-fixture benchmark that records structured quality, generation latency,
 timeouts, incomplete responses, and grounding retries without committing
 personal interview material.
+
+On August 26, 2026, the public matrix used five synthetic interview cases, the
+same reference snapshot, product prompt, structured schema, 4,096-token cap,
+and disabled web search. Each confirmed contender received 15 candidate calls
+across the broad and focused runs; 12 substantive answers per contender were
+scored by the same 13-dimension judge. `Acceptable` requires the structural case
+expectation and, for substantive answers, at least 4/5 on every judge dimension.
+The timings include generation after request start and use the service setting
+shown, so this is a deployed-configuration comparison rather than a
+price-normalized service-tier comparison.
+
+| Configuration | Calls | Mean | p95 | Maximum | Mean quality | Acceptable |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Luna, no reasoning, Priority | 15 | 2.13 s | 2.80 s | 3.01 s | 4.72/5 | 14/15 |
+| Luna, low reasoning, Priority | 15 | 2.62 s | 3.68 s | 3.73 s | 4.71/5 | 14/15 |
+| Terra, medium reasoning, Priority | 15 | 2.91 s | 4.50 s | 4.81 s | 4.76/5 | 14/15 |
+| Gemini 3.7 Flash, medium thinking | 15 | 4.01 s | 6.05 s | 7.56 s | 4.63/5 | 11/15 |
+
+All 60 confirmed candidate requests succeeded and matched their structural
+expectation without a grounding repair. A one-repetition sweep also measured
+Gemini Low at 4.47 seconds mean and 7.07 seconds maximum, and Gemini High at
+6.79 seconds mean and 11.53 seconds maximum. Medium is therefore the practical
+Gemini setting for this workload, but Luna without reasoning is the measured
+latency/quality sweet spot and remains the default. The suite is intentionally
+small and synthetic, so it should be rerun after material prompt, model, or
+provider changes rather than treated as a universal model ranking.
 
 An August 2026 model-routing run used two plausible-rehearsal performance
 questions. Terra/low averaged 4.43/5 quality at roughly 3.54 seconds; Luna/low
@@ -562,15 +645,18 @@ The initial meter covers:
   enabled; local-only capture uses on-device turn buffering instead;
 - `gpt-transcribe` for the optional final pass and cloud Quick Dictation;
 - Local Parakeet as `$0.00 API`;
-- `gpt-5.6-luna` scenario generation and experimental Priority early-bridge
-  calls, plus `gpt-5.6-terra` live-assistant calls, from each model response's
-  own token usage (tracked separately until a dollar rate is configured).
+- `gpt-5.6-luna` scenario generation, experimental Priority early-bridge calls,
+  and selected-provider full-assistant calls (`gpt-5.6-luna` or
+  `gemini-3.7-flash`), from each model response's own token usage (tracked
+  separately until a dollar rate is configured).
 
-For GPT-5.6 assistant calls, record uncached input, cached input, cache writes,
-output, and reasoning tokens separately. This makes a folder edit's one-time
-cache-write cost visible instead of hiding it inside the session total. Hosted
-web-search tool-call fees are not part of the current dollar estimate until a
-dated search-price configuration and a persisted search-call counter are added.
+For assistant calls, record uncached input, cached input, output, and reasoning
+tokens separately; OpenAI additionally reports cache writes. The Gemini adapter
+maps `total_cached_tokens` and `total_thought_tokens` into the same internal
+usage fields. This makes cache behavior and reasoning overhead visible instead
+of hiding them inside the session total. Hosted web-search tool-call fees are
+not part of the current dollar estimate until a dated search-price configuration
+and a persisted search-call counter are added.
 
 Price tables must carry an `effectiveAt` date and remain a replaceable
 configuration. The UI always says "estimate" and treats the provider invoice as

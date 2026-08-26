@@ -175,6 +175,29 @@ final class CompanionTests: XCTestCase {
         XCTAssertTrue(snapshot.session.behaviorDetail.contains("plausible"))
     }
 
+    func testSessionPublishesInstantTextOnlyForInterviews() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .interview,
+            deliveryMode: .instantText
+        )
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.session.deliveryMode, .instantText)
+        XCTAssertTrue(snapshot.session.behaviorDetail.contains("plain-text"))
+
+        _ = await hub.updateSession(
+            isListening: true,
+            status: "Listening",
+            purpose: .meeting,
+            deliveryMode: .instantText
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.session.deliveryMode, .verified)
+    }
+
     func testInterviewSessionOnlyPublishesEarlyBridgeForPlausibleMode() async {
         let hub = CompanionEventHub(streamID: "test-stream")
 
@@ -234,6 +257,90 @@ final class CompanionTests: XCTestCase {
         snapshot = await hub.snapshot()
         XCTAssertNil(snapshot.assistant.bridge)
         XCTAssertEqual(snapshot.assistant.suggestion?.id, "answer-1")
+    }
+
+    func testInstantDraftIsPublishedOnlyForItsActiveEvaluation() async throws {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        _ = await hub.assistantWorking(
+            basedOnSequence: 14,
+            trigger: .finalizedTurn
+        )
+        let draft = CompanionAssistantDraft(
+            id: "draft-1",
+            basedOnSequence: 14,
+            topicID: "other-turn-1",
+            question: "How did you isolate the regression?",
+            text: "I started by replaying one known-bad trace.",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generationMilliseconds: 480,
+            firstRenderableTextMilliseconds: 440,
+            trigger: .finalizedTurn
+        )
+
+        let publishedDraft = await hub.assistantDrafted(draft)
+        let event = try XCTUnwrap(publishedDraft)
+        XCTAssertEqual(event.name, "assistant.draft")
+        var snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.draft, draft)
+
+        let staleDraft = CompanionAssistantDraft(
+            id: "draft-stale",
+            basedOnSequence: 13,
+            topicID: "other-turn-old",
+            question: "Old question",
+            text: "Old text",
+            generatedAt: Date(timeIntervalSince1970: 90),
+            generationMilliseconds: 300,
+            firstRenderableTextMilliseconds: 280,
+            trigger: .finalizedTurn
+        )
+        let staleEvent = await hub.assistantDrafted(staleDraft)
+        XCTAssertNil(staleEvent)
+        snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.draft, draft)
+
+        _ = await hub.assistantSuggested(
+            answerSuggestion(
+                id: "answer-1",
+                sequence: 14,
+                topicID: "other-turn-1"
+            )
+        )
+        snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.assistant.draft)
+    }
+
+    func testCancellationClearsOnlyTheMatchingInstantDraft() async {
+        let hub = CompanionEventHub(streamID: "test-stream")
+        _ = await hub.assistantWorking(basedOnSequence: 14)
+        _ = await hub.assistantDrafted(
+            CompanionAssistantDraft(
+                id: "draft-1",
+                basedOnSequence: 14,
+                topicID: "other-turn-1",
+                question: "How did you isolate it?",
+                text: "I started with a fixed replay.",
+                generatedAt: Date(timeIntervalSince1970: 100),
+                generationMilliseconds: 480,
+                firstRenderableTextMilliseconds: 440,
+                trigger: .finalizedTurn
+            )
+        )
+
+        let staleCancellation = await hub.assistantCancelled(
+            basedOnSequence: 13
+        )
+        XCTAssertNil(staleCancellation)
+        var snapshot = await hub.snapshot()
+        XCTAssertNotNil(snapshot.assistant.draft)
+
+        let matchingCancellation = await hub.assistantCancelled(
+            basedOnSequence: 14
+        )
+        XCTAssertNotNil(matchingCancellation)
+        snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.assistant.draft)
+        XCTAssertEqual(snapshot.assistant.lastEvaluationOutcome, .cancelled)
     }
 
     func testEarlyBridgeSurvivesAnInconclusivePartialCheck() async {
@@ -1094,6 +1201,20 @@ final class CompanionTests: XCTestCase {
                 "question, request, or decision"
             )
         )
+        XCTAssertEqual(
+            LiveAssistantWebSearchMode.defaultMode(for: .interview),
+            .disabled
+        )
+        XCTAssertEqual(
+            LiveAssistantWebSearchMode.defaultMode(for: .meeting),
+            .automatic
+        )
+        XCTAssertTrue(
+            LiveAssistantClient.behaviorInstructions(
+                for: .interview,
+                answerMode: .grounded
+            ).contains("WEB SEARCH: DISABLED")
+        )
         let plan = AssistantPromptPlan(
             cachedPrefix: "stable behavior and references",
             volatileSuffix: "Other: What did you build?",
@@ -1106,25 +1227,17 @@ final class CompanionTests: XCTestCase {
         let root = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        XCTAssertEqual(root["model"] as? String, "gpt-5.6-terra")
+        XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
         XCTAssertEqual(root["service_tier"] as? String, "priority")
         XCTAssertEqual(root["store"] as? Bool, false)
+        XCTAssertEqual(root["stream"] as? Bool, true)
         XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
         XCTAssertEqual(root["prompt_cache_key"] as? String, "punderclass:test")
-        XCTAssertEqual(root["tool_choice"] as? String, "auto")
-        let tools = try XCTUnwrap(root["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(
-            tools[0]["type"] as? String,
-            LiveAssistantClient.webSearchToolType
-        )
-        XCTAssertEqual(tools[0]["search_context_size"] as? String, "low")
-        XCTAssertEqual(
-            root["include"] as? [String],
-            ["web_search_call.action.sources"]
-        )
+        XCTAssertNil(root["tool_choice"])
+        XCTAssertNil(root["tools"])
+        XCTAssertNil(root["include"])
         let reasoning = try XCTUnwrap(root["reasoning"] as? [String: String])
-        XCTAssertEqual(reasoning["effort"], "medium")
+        XCTAssertEqual(reasoning["effort"], "low")
 
         let cacheOptions = try XCTUnwrap(
             root["prompt_cache_options"] as? [String: String]
@@ -1256,6 +1369,22 @@ final class CompanionTests: XCTestCase {
         let meetingRoot = try XCTUnwrap(
             JSONSerialization.jsonObject(with: meetingData) as? [String: Any]
         )
+        XCTAssertEqual(meetingRoot["tool_choice"] as? String, "auto")
+        let meetingTools = try XCTUnwrap(
+            meetingRoot["tools"] as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            meetingTools[0]["type"] as? String,
+            LiveAssistantClient.webSearchToolType
+        )
+        XCTAssertEqual(
+            meetingTools[0]["search_context_size"] as? String,
+            "low"
+        )
+        XCTAssertEqual(
+            meetingRoot["include"] as? [String],
+            ["web_search_call.action.sources"]
+        )
         let meetingText = try XCTUnwrap(
             meetingRoot["text"] as? [String: Any]
         )
@@ -1276,6 +1405,90 @@ final class CompanionTests: XCTestCase {
         )
         XCTAssertEqual(meetingBeats["minItems"] as? Int, 3)
         XCTAssertEqual(meetingBeats["maxItems"] as? Int, 5)
+    }
+
+    func testInstantTextRequestUsesPlainTextWithoutToolsOrSchema() throws {
+        let plan = AssistantPromptPlan(
+            cachedPrefix: "stable behavior and references",
+            volatileSuffix: "Other: How did you validate it?",
+            promptCacheKey: "punderclass:instant-test"
+        )
+
+        let data = try LiveAssistantClient.instantTextRequestBody(for: plan)
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(root["model"] as? String, "gpt-5.6-luna")
+        XCTAssertEqual(root["service_tier"] as? String, "priority")
+        XCTAssertEqual(root["stream"] as? Bool, true)
+        XCTAssertEqual(root["max_output_tokens"] as? Int, 350)
+        XCTAssertNil(root["tools"])
+        XCTAssertNil(root["tool_choice"])
+        XCTAssertNil(root["include"])
+
+        let text = try XCTUnwrap(root["text"] as? [String: Any])
+        let format = try XCTUnwrap(text["format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "text")
+        XCTAssertNil(format["schema"])
+        XCTAssertNil(format["strict"])
+    }
+
+    func testInstantTextEligibilityFallsBackOutsideSafeInterviewPath() {
+        XCTAssertEqual(
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: true,
+                purpose: .interview,
+                trigger: .finalizedTurn,
+                webSearchMode: .disabled,
+                answerMode: .grounded
+            ),
+            .instantText
+        )
+        for mode in [
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: false,
+                purpose: .interview,
+                trigger: .finalizedTurn,
+                webSearchMode: .disabled,
+                answerMode: .grounded
+            ),
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: true,
+                purpose: .meeting,
+                trigger: .finalizedTurn,
+                webSearchMode: .disabled,
+                answerMode: .grounded
+            ),
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: true,
+                purpose: .interview,
+                trigger: .partialTranscript,
+                webSearchMode: .disabled,
+                answerMode: .grounded
+            ),
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: true,
+                purpose: .interview,
+                trigger: .finalizedTurn,
+                webSearchMode: .automatic,
+                answerMode: .grounded
+            ),
+            LiveAssistantClient.resolvedDeliveryMode(
+                requested: .instantText,
+                supportsInstantText: true,
+                purpose: .interview,
+                trigger: .finalizedTurn,
+                webSearchMode: .disabled,
+                answerMode: .plausibleRehearsal
+            )
+        ] {
+            XCTAssertEqual(mode, .verified)
+        }
     }
 
     func testLiveAssistantExtractsHostedWebSearchSources() {

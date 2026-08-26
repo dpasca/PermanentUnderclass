@@ -9,6 +9,7 @@ const eventNames = [
   "reference.status",
   "usage.updated",
   "assistant.bridge",
+  "assistant.draft",
   "assistant.working",
   "assistant.suggestion",
   "assistant.failed",
@@ -317,6 +318,22 @@ function renderInferenceStatus() {
     return;
   }
 
+  if (assistant?.draft?.text) {
+    const firstText = Number.isFinite(
+      assistant.draft.firstRenderableTextMilliseconds
+    )
+      ? ` after ${assistant.draft.firstRenderableTextMilliseconds.toLocaleString()} ms`
+      : "";
+    setInferenceStatus(
+      "general",
+      "LIVE TEXT DRAFT · VERIFY",
+      `The answer is streaming now${firstText}`,
+      "This plain-text experiment is displayed before structured grounding metadata is checked.",
+      checkCount
+    );
+    return;
+  }
+
   const pendingSpeech = unclassifiedInterviewerSpeech(assistant);
   if (pendingSpeech && !assistant?.bridge) {
     const drafting = assistant?.phase === "working";
@@ -379,6 +396,7 @@ function renderInferenceStatus() {
   }
 
   if (assistant?.phase === "ready" && assistant.suggestion) {
+    const instantText = assistant.suggestion.deliveryMode === "instantText";
     const suggestionIsPlausible = assistant.suggestion.answerMode === "plausibleRehearsal"
       || plausibleRehearsal;
     const usesGeneralKnowledge = assistant.suggestion.grounding === "generalKnowledge"
@@ -390,18 +408,24 @@ function renderInferenceStatus() {
       ? ` Grounding was corrected with one retry${Number.isFinite(repairMilliseconds) ? `, adding ${repairMilliseconds.toLocaleString()} ms` : ""}.`
       : "";
     setInferenceStatus(
-      suggestionIsPlausible ? "general" : usesGeneralKnowledge ? "general" : "active",
-      suggestionIsPlausible
+      instantText || suggestionIsPlausible || usesGeneralKnowledge ? "general" : "active",
+      instantText
+        ? "LIVE TEXT CUE · VERIFY"
+        : suggestionIsPlausible
         ? "PLAUSIBLE REHEARSAL · VERIFY"
         : usesGeneralKnowledge
         ? "INFERENCE ACTIVE · GENERAL KNOWLEDGE"
         : "INFERENCE ACTIVE · LOCALLY GROUNDED",
-      suggestionIsPlausible
+      instantText
+        ? "The streamed plain-text cue is complete"
+        : suggestionIsPlausible
         ? "A project-specific rehearsal draft is ready"
         : usesGeneralKnowledge
         ? `${assistantName} outline ready without local support`
         : "A locally grounded answer outline is ready",
-      suggestionIsPlausible
+      instantText
+        ? "It arrived without the structured grounding and citation contract; verify factual and personal claims before repeating it."
+        : suggestionIsPlausible
         ? `Unsupported details are rehearsal assumptions, even when a citation anchors the real project.${repairDetail}`
         : usesGeneralKnowledge
         ? meeting
@@ -641,7 +665,7 @@ function answerHistoryFor(assistant) {
   const history = Array.isArray(assistant?.suggestionHistory)
     ? [...assistant.suggestionHistory]
     : [];
-  const current = assistant?.suggestion;
+  const current = draftSuggestionFor(assistant?.draft) || assistant?.suggestion;
   if (current && !history.some((item) => item.id === current.id)) {
     history.unshift(current);
   }
@@ -654,13 +678,35 @@ function answerHistoryFor(assistant) {
   return unique.slice(0, 4);
 }
 
+function draftSuggestionFor(draft) {
+  if (!draft?.text) return null;
+  return {
+    id: draft.id,
+    basedOnSequence: draft.basedOnSequence,
+    topicID: draft.topicID,
+    question: draft.question,
+    preamble: draft.text,
+    beats: [],
+    citations: [],
+    grounding: "generalKnowledge",
+    confidence: "medium",
+    generatedAt: draft.generatedAt,
+    generationMilliseconds: draft.generationMilliseconds,
+    firstRenderableTextMilliseconds: draft.firstRenderableTextMilliseconds,
+    trigger: draft.trigger,
+    answerMode: "grounded",
+    deliveryMode: "instantText",
+    isStreaming: true
+  };
+}
+
 function topicIDFor(suggestion) {
   return suggestion?.topicID || suggestion?.id || "";
 }
 
 function unclassifiedInterviewerSpeech(assistant) {
   const transcript = state.snapshot?.transcript;
-  const currentTopicID = topicIDFor(assistant?.suggestion);
+  const currentTopicID = topicIDFor(assistant?.draft || assistant?.suggestion);
   const partials = (transcript?.partials || []).filter((item) => (
     item?.speaker === "other" && item?.text
   ));
@@ -804,6 +850,9 @@ function outlineText(suggestion) {
 }
 
 function groundingText(suggestion) {
+  if (suggestion.deliveryMode === "instantText") {
+    return "Live text draft · verify before repeating";
+  }
   const citationCount = (suggestion.citations || []).length;
   const usesGeneralKnowledge = suggestion.grounding === "generalKnowledge" || citationCount === 0;
   const usesWebSearch = suggestion.grounding === "webSearch" && citationCount > 0;
@@ -822,6 +871,16 @@ function groundingText(suggestion) {
 }
 
 function generationTimingText(suggestion) {
+  const firstText = suggestion.firstRenderableTextMilliseconds;
+  if (suggestion.deliveryMode === "instantText") {
+    const firstTextPart = Number.isFinite(firstText)
+      ? `first text ${firstText.toLocaleString()} ms`
+      : "first text streamed";
+    if (suggestion.isStreaming) {
+      return `${firstTextPart} · streaming at ${Number(suggestion.generationMilliseconds || 0).toLocaleString()} ms`;
+    }
+    return `${firstTextPart} · complete ${Number(suggestion.generationMilliseconds || 0).toLocaleString()} ms`;
+  }
   const assistantTime = Number(suggestion.generationMilliseconds || 0).toLocaleString();
   const totalTime = suggestion.totalLatencyMilliseconds;
   return Number.isFinite(totalTime)
@@ -844,6 +903,48 @@ function createWebCitationLinks(suggestion, className) {
     button.title = citation.path;
     button.textContent = `Source ${index + 1} · ${citation.label || citation.path} ↗`;
     container.append(button);
+  });
+  return container;
+}
+
+function createGoogleSearchSuggestions(suggestion, className) {
+  const widgets = (suggestion?.googleSearchSuggestionsHTML || []).filter((html) => (
+    typeof html === "string" && html.trim()
+  ));
+  if (!widgets.length) return null;
+
+  const container = document.createElement("div");
+  container.className = className;
+  container.setAttribute("aria-label", "Google Search suggestions");
+  widgets.forEach((html, index) => {
+    const frame = document.createElement("iframe");
+    frame.className = "google-search-suggestion-frame";
+    frame.title = `Google Search suggestions ${index + 1}`;
+    frame.setAttribute(
+      "sandbox",
+      "allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    );
+    frame.setAttribute("scrolling", "no");
+    frame.srcdoc = html;
+    frame.addEventListener("load", () => {
+      const resize = () => {
+        try {
+          const documentElement = frame.contentDocument?.documentElement;
+          const body = frame.contentDocument?.body;
+          const height = Math.max(
+            documentElement?.scrollHeight || 0,
+            body?.scrollHeight || 0,
+            40
+          );
+          frame.style.height = `${Math.min(height, 160)}px`;
+        } catch {
+          frame.style.height = "48px";
+        }
+      };
+      resize();
+      window.setTimeout(resize, 100);
+    });
+    container.append(frame);
   });
   return container;
 }
@@ -885,6 +986,11 @@ function createHistoryRound(suggestion, index) {
     "history-web-citations"
   );
   if (citations) round.append(citations);
+  const searchSuggestions = createGoogleSearchSuggestions(
+    suggestion,
+    "history-google-search-suggestions"
+  );
+  if (searchSuggestions) round.append(searchSuggestions);
   return round;
 }
 
@@ -938,7 +1044,10 @@ function renderEarlyBridge(bridge) {
 
 function renderSuggestionStack(assistant) {
   const suggestions = answerHistoryFor(assistant);
-  const current = assistant?.suggestion || suggestions[0] || null;
+  const current = draftSuggestionFor(assistant?.draft)
+    || assistant?.suggestion
+    || suggestions[0]
+    || null;
   $("#currentStage").classList.toggle("has-current", Boolean(current));
   state.visibleSuggestions = suggestions;
   state.currentSuggestion = current;
@@ -948,6 +1057,8 @@ function renderSuggestionStack(assistant) {
     $("#answerHistory").hidden = true;
     $("#webCitations").hidden = true;
     $("#webCitations").replaceChildren();
+    $("#googleSearchSuggestions").hidden = true;
+    $("#googleSearchSuggestions").replaceChildren();
     scheduleCurrentStageFit();
     return null;
   }
@@ -967,13 +1078,28 @@ function renderSuggestionStack(assistant) {
   const webCitations = createWebCitationLinks(current, "web-citations");
   $("#webCitations").replaceChildren(...(webCitations?.children || []));
   $("#webCitations").hidden = !webCitations;
+  const searchSuggestions = createGoogleSearchSuggestions(
+    current,
+    "google-search-suggestions"
+  );
+  $("#googleSearchSuggestions").replaceChildren(
+    ...(searchSuggestions?.children || [])
+  );
+  $("#googleSearchSuggestions").hidden = !searchSuggestions;
   const citationCount = (current.citations || []).length;
   const usesGeneralKnowledge = current.grounding === "generalKnowledge" || citationCount === 0;
   const plausibleRehearsal = current.answerMode === "plausibleRehearsal";
+  const instantText = current.deliveryMode === "instantText";
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
   $("#answerCard").classList.toggle("is-plausible", plausibleRehearsal);
-  $("#groundingNotice").hidden = !plausibleRehearsal && !usesGeneralKnowledge;
-  if (plausibleRehearsal) {
+  $("#answerCard").classList.toggle("is-instant", instantText);
+  $("#groundingNotice").hidden = !instantText && !plausibleRehearsal && !usesGeneralKnowledge;
+  if (instantText) {
+    $("#groundingNotice strong").textContent = "LIVE TEXT DRAFT · VERIFY";
+    $("#groundingNotice small").textContent = current.isStreaming
+      ? "Displayed before completion and before structured grounding checks."
+      : "Completed without the structured grounding and citation contract.";
+  } else if (plausibleRehearsal) {
     const assumptionCount = (current.plausibleAssumptions || []).length;
     $("#groundingNotice strong").textContent = "PLAUSIBLE REHEARSAL · VERIFY";
     $("#groundingNotice small").textContent = assumptionCount
@@ -994,6 +1120,9 @@ function renderSuggestionStack(assistant) {
   $("#sourceCitationText").textContent = citation ? `${citation.label} · ${citation.path}` : "";
   $("#sourceCitation").hidden = !citation;
   $("#pinButton").classList.toggle("is-active", assistant?.pinnedSuggestionID === current.id);
+  ["#pinButton", "#copyButton", "#dismissButton"].forEach((selector) => {
+    $(selector).disabled = Boolean(current.isStreaming);
+  });
 
   const previous = previousEntriesFor(suggestions, current);
   $("#answerHistory").hidden = previous.length === 0;
@@ -1044,7 +1173,9 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
     : "CURRENT TOPIC";
   if (suggestion) {
     $("#questionText").textContent = suggestion.question;
-    $("#confidenceLabel").innerHTML = `<i></i> ${suggestion.confidence} confidence`;
+    $("#confidenceLabel").innerHTML = suggestion.deliveryMode === "instantText"
+      ? `<i></i> ${suggestion.isStreaming ? "streaming · verify" : "plain text · verify"}`
+      : `<i></i> ${suggestion.confidence} confidence`;
   }
 
   if (bridge) {
@@ -1108,6 +1239,14 @@ function renderAssistant(assistant, paused = state.snapshot?.session?.suggestion
   if (assistant?.phase === "working") {
     listeningStrip.hidden = false;
     listeningStrip.classList.add("is-updating");
+    if (suggestion?.isStreaming) {
+      $("#topicEyebrow").textContent = "LIVE TEXT DRAFT · VERIFY";
+      $("#questionText").textContent = suggestion.question;
+      empty.hidden = true;
+      $("#assistantState").textContent = "Streaming a plain-text answer cue";
+      scheduleCurrentStageFit();
+      return;
+    }
     if (suggestion) {
       $("#topicEyebrow").textContent = plausibleRehearsal
         ? "PLAUSIBLE REHEARSAL · NEXT DRAFT"
@@ -1242,6 +1381,7 @@ function applyEnvelope(envelope) {
       break;
     case "assistant.working":
       state.snapshot.assistant.phase = "working";
+      state.snapshot.assistant.draft = null;
       state.snapshot.assistant.lastError = null;
       state.snapshot.assistant.evaluatingSequence = payload.basedOnSequence;
       state.snapshot.assistant.evaluatingTrigger = payload.trigger;
@@ -1253,9 +1393,16 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.bridge = payload;
       renderAssistant(state.snapshot.assistant);
       break;
+    case "assistant.draft":
+      state.snapshot.assistant.phase = "working";
+      state.snapshot.assistant.bridge = null;
+      state.snapshot.assistant.draft = payload;
+      renderAssistant(state.snapshot.assistant);
+      break;
     case "assistant.suggestion":
       state.snapshot.assistant.phase = "ready";
       state.snapshot.assistant.bridge = null;
+      state.snapshot.assistant.draft = null;
       state.snapshot.assistant.suggestion = payload;
       state.snapshot.assistant.suggestionHistory = [
         payload,
@@ -1276,6 +1423,7 @@ function applyEnvelope(envelope) {
     case "assistant.failed":
       state.snapshot.assistant.phase = payload.phase || "failed";
       state.snapshot.assistant.bridge = null;
+      state.snapshot.assistant.draft = null;
       state.snapshot.assistant.lastError = payload.message;
       state.snapshot.assistant.lastEvaluationOutcome = payload.outcome || "failed";
       state.snapshot.assistant.evaluatingSequence = null;

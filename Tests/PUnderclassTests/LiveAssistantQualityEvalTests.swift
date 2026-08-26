@@ -213,6 +213,8 @@ final class LiveAssistantQualityEvalTests: XCTestCase {
                 print(
                     "ANSWER MIRROR EVAL name=\(evalCase.name) "
                         + "outcome=\(generation.outcome.rawValue) "
+                        + "first_event_ms=\(generation.latencyMilestones.firstEventMilliseconds ?? -1) "
+                        + "first_text_ms=\(generation.latencyMilestones.firstTextDeltaMilliseconds ?? -1) "
                         + "generation_ms=\(generation.generationMilliseconds) "
                         + "grounding=\(suggestion.grounding.rawValue) "
                         + "directness=\(assessment.directness) "

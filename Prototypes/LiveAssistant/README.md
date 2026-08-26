@@ -15,7 +15,9 @@ mistaken for live inference.
 This is deliberately a thin display. Both Meeting Assistant and Interview's
 Answer Mirror use the teleprompter-style display: the Mac ingests documents,
 selects the explicit mode-specific behavior, calls the assistant model, and
-sends complete suggestion data;
+sends presentation-ready suggestion data. The opt-in Instant Text experiment
+may send a replaceable, prominently unverified draft while OpenAI text is still
+streaming;
 source files, prompts, audio, and credentials do not cross into the display
 client. The display reduces that data to a connection light and a stack of
 conversation rounds. The current question and its first-person cues stay large
@@ -46,6 +48,11 @@ Useful interactions:
   context card. Meeting results retain three to five direct response cues. `You`
   turns do not replace the current result. The browser itself never decides via
   text matching.
+- In grounded interviews, **Instant text stream (experimental)** can replace
+  only the finalized-turn request with plain text. It uses no JSON schema and
+  displays words after the model's `SHOW` control line. The draft is marked
+  `LIVE TEXT DRAFT · VERIFY`; every unsupported context falls back to the
+  structured path automatically.
 - Approach-oriented cues remain available when local files do not support the
   topic, but they use hypothetical phrasing such as "I would…" rather than
   inventing personal history.

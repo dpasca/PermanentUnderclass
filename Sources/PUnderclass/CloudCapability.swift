@@ -1,7 +1,7 @@
 import Foundation
 
-/// A hosted capability that an OpenAI key adds. Meeting and Interview capture
-/// themselves are local-capable; these cases describe only their cloud tier.
+/// A hosted capability. Meeting and Interview capture themselves are
+/// local-capable; these cases describe only their cloud tier.
 enum CloudFeature: String, CaseIterable, Identifiable {
     case meetingCapture
     case answerMirror
@@ -32,13 +32,13 @@ enum CloudFeature: String, CaseIterable, Identifiable {
     var cloudReason: String {
         switch self {
         case .meetingCapture:
-            "Local meeting transcripts work without a key. A key adds word-by-word live text, Meeting Assistant cues, and web-backed help."
+            "Local meeting transcripts work without a key. The selected assistant provider's key adds Meeting Assistant cues and web-backed help; an OpenAI key also adds word-by-word live text."
         case .answerMirror:
-            "Local interview transcripts work without a key. A key adds word-by-word live text, Answer Mirror suggestions, and web-backed help."
+            "Local interview transcripts work without a key. The selected assistant provider's key adds Answer Mirror suggestions and web-backed help; an OpenAI key also adds word-by-word live text."
         case .mockMeeting:
-            "Replay questions and grounded meeting responses are written by language models that run on OpenAI's servers."
+            "Replay dialogue is generated on OpenAI's servers; the live Meeting Assistant cues use the selected assistant provider."
         case .mockInterview:
-            "Replay questions and comparison answers are written by language models that run on OpenAI's servers."
+            "Replay dialogue is generated on OpenAI's servers; the live Answer Mirror cues use the selected assistant provider."
         case .bestAccuracyDictation:
             "Dictation already works offline. An API key adds OpenAI's higher-accuracy model as an option."
         }
