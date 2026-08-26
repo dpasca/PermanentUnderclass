@@ -110,6 +110,7 @@ struct CompanionSessionState: Codable, Equatable, Sendable {
     var isPreparingSyntheticInterview = false
     var answerMode: AssistantAnswerMode = .grounded
     var earlyBridgeEnabled = false
+    var deliveryMode: LiveAssistantDeliveryMode = .verified
 }
 
 enum CompanionSessionSource: String, Codable, Equatable, Sendable {
@@ -209,6 +210,22 @@ enum AssistantAnswerMode: String, Codable, Equatable, Sendable, CaseIterable {
     }
 }
 
+enum LiveAssistantDeliveryMode: String, Codable, Equatable, Sendable,
+    CaseIterable
+{
+    case verified
+    case instantText
+
+    var title: String {
+        switch self {
+        case .verified:
+            "Verified"
+        case .instantText:
+            "Instant text"
+        }
+    }
+}
+
 enum CompanionAssistantTrigger: String, Codable, Equatable, Sendable {
     case partialTranscript
     case finalizedTurn
@@ -228,6 +245,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var trigger: CompanionAssistantTrigger?
     var triggeredAt: Date?
     var totalLatencyMilliseconds: Int?
+    var firstRenderableTextMilliseconds: Int? = nil
     var topicID: String?
     var topicNumber: Int?
     var inferenceOutcome: CompanionInferenceOutcome? = nil
@@ -235,6 +253,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     var answerMode: AssistantAnswerMode = .grounded
     var plausibleAssumptions: [String] = []
     var plausibleRehearsalPlan: CompanionPlausibleRehearsalPlan? = nil
+    var deliveryMode: LiveAssistantDeliveryMode? = nil
     /// Provider-rendered Google Search suggestion widgets. These are kept only
     /// in the live companion state and must not be written to session archives.
     var googleSearchSuggestionsHTML: [String]? = nil
@@ -267,9 +286,22 @@ struct CompanionAssistantBridge: Codable, Equatable, Sendable {
     let generationMilliseconds: Int
 }
 
+struct CompanionAssistantDraft: Codable, Equatable, Sendable {
+    let id: String
+    let basedOnSequence: Int
+    let topicID: String
+    let question: String
+    let text: String
+    let generatedAt: Date
+    let generationMilliseconds: Int
+    let firstRenderableTextMilliseconds: Int
+    let trigger: CompanionAssistantTrigger
+}
+
 struct CompanionAssistantState: Codable, Equatable, Sendable {
     var phase: CompanionAssistantPhase = .idle
     var bridge: CompanionAssistantBridge?
+    var draft: CompanionAssistantDraft?
     var suggestion: CompanionAssistantSuggestion?
     var suggestionHistory: [CompanionAssistantSuggestion] = []
     var lastError: String?
@@ -418,6 +450,7 @@ actor CompanionEventHub {
         isPreparingSyntheticInterview: Bool = false,
         answerMode: AssistantAnswerMode = .grounded,
         earlyBridgeEnabled: Bool = false,
+        deliveryMode: LiveAssistantDeliveryMode = .verified,
         assistantAvailable: Bool = true
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
@@ -440,6 +473,9 @@ actor CompanionEventHub {
         state.session.earlyBridgeEnabled = purpose == .interview
             && answerMode == .plausibleRehearsal
             && earlyBridgeEnabled
+        state.session.deliveryMode = purpose == .interview
+            ? deliveryMode
+            : .verified
         if !assistantAvailable {
             state.session.behaviorName = "Local transcript"
             state.session.behaviorDetail =
@@ -455,6 +491,9 @@ actor CompanionEventHub {
                 if state.session.earlyBridgeEnabled {
                     state.session.behaviorDetail =
                         "Show an experimental early bridge, then a plausible rehearsal draft"
+                } else if state.session.deliveryMode == .instantText {
+                    state.session.behaviorDetail =
+                        "Stream a verification-labeled plain-text cue on finalized interviewer turns"
                 } else {
                     state.session.behaviorDetail = answerMode == .plausibleRehearsal
                         ? "Draft plausible, project-specific rehearsal answers to verify"
@@ -531,6 +570,7 @@ actor CompanionEventHub {
         startedAt: Date = Date()
     ) -> CompanionEvent {
         state.assistant.phase = .working
+        state.assistant.draft = nil
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = basedOnSequence
         state.assistant.evaluatingTrigger = trigger
@@ -556,11 +596,27 @@ actor CompanionEventHub {
     }
 
     @discardableResult
+    func assistantDrafted(
+        _ draft: CompanionAssistantDraft
+    ) -> CompanionEvent? {
+        guard
+            state.assistant.phase == .working,
+            state.assistant.evaluatingSequence == draft.basedOnSequence
+        else {
+            return nil
+        }
+        state.assistant.bridge = nil
+        state.assistant.draft = draft
+        return publish(name: "assistant.draft", payload: draft)
+    }
+
+    @discardableResult
     func assistantSupersededForNewTurn() -> CompanionEvent {
         state.assistant.phase = state.assistant.suggestion == nil
             ? .idle
             : .ready
         state.assistant.bridge = nil
+        state.assistant.draft = nil
         state.assistant.lastError = nil
         state.assistant.evaluatingSequence = nil
         state.assistant.evaluatingTrigger = nil
@@ -589,6 +645,7 @@ actor CompanionEventHub {
         }
         state.assistant.phase = .ready
         state.assistant.bridge = nil
+        state.assistant.draft = nil
         state.assistant.suggestion = numberedSuggestion
         state.assistant.suggestionHistory.removeAll {
             $0.id == numberedSuggestion.id
@@ -629,6 +686,7 @@ actor CompanionEventHub {
         let evaluationTriggeredAt = triggeredAt
             ?? state.assistant.evaluationTriggeredAt
         state.assistant.phase = .idle
+        state.assistant.draft = nil
         if !preserveBridge, evaluationTrigger != .partialTranscript {
             state.assistant.bridge = nil
         }
@@ -649,6 +707,24 @@ actor CompanionEventHub {
     }
 
     @discardableResult
+    func assistantCancelled(
+        basedOnSequence: Int,
+        completedAt: Date = Date()
+    ) -> CompanionEvent? {
+        guard
+            state.assistant.phase == .working,
+            state.assistant.evaluatingSequence == basedOnSequence
+        else {
+            return nil
+        }
+        return assistantFinishedWithoutSuggestion(
+            basedOnSequence: basedOnSequence,
+            completedAt: completedAt,
+            outcome: .cancelled
+        )
+    }
+
+    @discardableResult
     func assistantFailed(
         _ message: String,
         unavailable: Bool = false,
@@ -656,6 +732,7 @@ actor CompanionEventHub {
     ) -> CompanionEvent {
         state.assistant.phase = unavailable ? .unavailable : .failed
         state.assistant.bridge = nil
+        state.assistant.draft = nil
         state.assistant.lastError = message
         if !unavailable, let sequence = state.assistant.evaluatingSequence {
             state.assistant.lastEvaluatedSequence = sequence

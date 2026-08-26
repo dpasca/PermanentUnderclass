@@ -915,6 +915,27 @@ struct ReferenceMaterialView: View {
                             || controller.syntheticInterviewState.isActive
                             || !controller.capability.isCloudEnabled
                     )
+                } else {
+                    Divider()
+
+                    Toggle(isOn: instantTextBinding) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Instant text stream (experimental)")
+                                .font(.body.weight(.semibold))
+                            Text(
+                                "Shows an OpenAI plain-text draft as soon as usable words arrive, before structured grounding checks finish. It applies only to finalized grounded interview turns with web search off and is always labeled for verification. Gemini, partial turns, meetings, and web-search requests use the verified format automatically."
+                            )
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(
+                        controller.isListening
+                            || controller.syntheticInterviewState.isActive
+                            || controller.liveAssistantProvider != .openAI
+                    )
                 }
 
                 Text(
@@ -1690,6 +1711,17 @@ struct ReferenceMaterialView: View {
         Binding(
             get: { controller.assistantEarlyBridgeEnabled },
             set: { controller.setAssistantEarlyBridgePreference($0) }
+        )
+    }
+
+    private var instantTextBinding: Binding<Bool> {
+        Binding(
+            get: { controller.assistantDeliveryMode == .instantText },
+            set: {
+                controller.setAssistantDeliveryModePreference(
+                    $0 ? .instantText : .verified
+                )
+            }
         )
     }
 

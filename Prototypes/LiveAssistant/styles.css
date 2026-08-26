@@ -444,7 +444,8 @@ button:focus-visible {
   color: var(--amber);
 }
 
-.answer-card.is-plausible .grounding-notice {
+.answer-card.is-plausible .grounding-notice,
+.answer-card.is-instant .grounding-notice {
   display: flex !important;
   align-items: center;
   gap: 10px;
@@ -466,12 +467,14 @@ button:focus-visible {
   );
 }
 
-.answer-card.is-plausible .grounding-notice > span:last-child {
+.answer-card.is-plausible .grounding-notice > span:last-child,
+.answer-card.is-instant .grounding-notice > span:last-child {
   display: grid;
   gap: 2px;
 }
 
-.answer-card.is-plausible .grounding-notice small {
+.answer-card.is-plausible .grounding-notice small,
+.answer-card.is-instant .grounding-notice small {
   color: var(--muted);
 }
 

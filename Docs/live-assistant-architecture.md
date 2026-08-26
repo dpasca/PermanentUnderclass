@@ -116,7 +116,12 @@ Initial event set:
   finalized-turn fallback. It is never added to the four-card display history,
   but every accepted bridge is retained in the local interview archive.
 - `assistant.working`: generation started for a transcript watermark.
-- `assistant.suggestion`: newest structured answer outline with citation labels.
+- `assistant.draft`: replaceable plain-text words from the opt-in Instant Text
+  stream. It exists only while the matching finalized-turn evaluation is active,
+  is never added to history, and is always presented as unverified.
+- `assistant.suggestion`: newest completed answer cue. Most payloads are
+  structured outlines with citation labels; Instant Text completions retain
+  their explicit `deliveryMode` and verification warning.
 - `assistant.state`: idle state after a completed model check, including whether
   the latest other-speaker moment produced no outline. This prevents silence from
   being confused with a disconnected assistant.
@@ -168,6 +173,23 @@ The display temporarily hides the previous answer, shows this thinking phrase,
 and then replaces it with `assistant.suggestion`. The bridge and full request
 run independently: bridge text is never inserted into the full prompt, so its
 early interpretation cannot steer or constrain the substantive cue.
+
+Grounded Interview mode also offers an independent **Instant Text** experiment.
+It applies only to OpenAI, finalized interviewer turns, and disabled web search.
+The Responses request uses SSE with ordinary text output rather than a JSON
+schema. The model itself decides whether to answer using an exact wire prefix:
+`SKIP`, or `SHOW` followed by one compact spoken paragraph. The host does no
+keyword-based language classification; it only decodes that model-authored
+control prefix. Once `SHOW` and the first answer characters have arrived, the
+host publishes replaceable `assistant.draft` events over the companion SSE
+stream. It never tries to parse incomplete JSON.
+
+The draft is visibly labeled `LIVE TEXT DRAFT · VERIFY`, cannot be pinned,
+copied, dismissed, or archived, and is cleared on cancellation, failure, a new
+turn, or final completion. The completed cue carries no inferred citations or
+grounding claim because those fields were intentionally not requested. Partial
+turns, Plausible Rehearsal, Meeting Assistant, Gemini, and any web-search request
+fall back automatically to the verified structured path.
 
 The host chooses the facts and concise first-person wording. For Answer Mirror,
 the teleprompter shows the spoken preamble first; labels remain internal
@@ -236,6 +258,11 @@ completed decision that returns no outline leaves the previous suggestion intact
 is retained as assistant state so
 the display can distinguish "question checked, not clear enough" from "no
 inference happened."
+
+Instant Text does not change partial-turn behavior. It starts only from the
+finalized-turn opportunity and measures both first renderable text and completed
+cue latency. This keeps its speed claim tied to words the user can actually see,
+not to an early JSON fragment that the display cannot yet render.
 
 Plausible Rehearsal can optionally start an independent early-bridge lane 600
 ms after the first `Other` partial arrives, without waiting for silence. It

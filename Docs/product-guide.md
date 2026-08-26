@@ -270,6 +270,10 @@ explicit:
   retain separate text, and the selected brief guides transcription plus the
   corresponding live assistant. Interview spoken language remains a separate
   speech-recognition setting and is not inferred from the resume.
+- **Answer Mode** includes an opt-in **Instant text stream (experimental)**
+  switch for grounded OpenAI interviews. It streams a clearly marked plain-text
+  draft on finalized turns with search off. Verified structured output remains
+  automatic for Gemini, meetings, partial turns, rehearsal mode, and web search.
 - **Reference Library** is the durable, shared document folder used for
   grounding Meeting Assistant, Answer Mirror, and both generated replays.
 - **Speech Recognition Hints** contains exact terminology, expected languages,

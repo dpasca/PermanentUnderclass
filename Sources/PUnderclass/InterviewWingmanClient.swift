@@ -76,6 +76,26 @@ struct LiveAssistantGeneration: Equatable, Sendable {
     let usage: AssistantGenerationUsage
     let generationMilliseconds: Int
     let outcome: CompanionInferenceOutcome
+    let latencyMilestones: LiveAssistantLatencyMilestones
+    let deliveryMode: LiveAssistantDeliveryMode
+
+    init(
+        suggestion: CompanionAssistantSuggestion?,
+        usage: AssistantGenerationUsage,
+        generationMilliseconds: Int,
+        outcome: CompanionInferenceOutcome,
+        latencyMilestones: LiveAssistantLatencyMilestones? = nil,
+        deliveryMode: LiveAssistantDeliveryMode = .verified
+    ) {
+        self.suggestion = suggestion
+        self.usage = usage
+        self.generationMilliseconds = generationMilliseconds
+        self.outcome = outcome
+        self.latencyMilestones = latencyMilestones ?? .unavailable(
+            validatedCueMilliseconds: generationMilliseconds
+        )
+        self.deliveryMode = deliveryMode
+    }
 }
 
 enum LiveAssistantError: LocalizedError, Equatable, Sendable {
@@ -229,7 +249,7 @@ struct LiveAssistantConfiguration: Equatable, Sendable {
 
     static let production = LiveAssistantConfiguration(
         model: "gpt-5.6-luna",
-        reasoningEffort: .none,
+        reasoningEffort: .low,
         serviceTier: "priority"
     )
 
@@ -246,6 +266,15 @@ struct LiveAssistantClient: Sendable {
         LiveAssistantWebSearchMode,
         AssistantAnswerMode
     ) throws -> Data
+    private typealias ResponseLoader = @Sendable (
+        String,
+        Data
+    ) async throws -> LiveAssistantTransportResponse
+    private typealias InstantResponseLoader = @Sendable (
+        String,
+        Data,
+        @escaping OpenAITextDeltaHandler
+    ) async throws -> LiveAssistantTransportResponse
 
     static var model: String { LiveAssistantConfiguration.production.model }
     static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
@@ -347,6 +376,21 @@ struct LiveAssistantClient: Sendable {
     static let groundedAnswerInstructions = """
     ANSWER MODE: GROUNDED
     Personal history must remain supported by the references or transcript. For a supported past experience, say what I did. When an interviewer asks for a past incident that is not supported, still answer usefully: start with a question-specific "I'd" action and give the concrete sequence, mechanism, evidence, or decision rule I would use. If the request calls for a concrete incident, make this a compact worked conditional of roughly 55 to 80 spoken words. Use a direct "If" sentence—not coaching language such as "Say"—to name one plausible symptom, one leading cause, the controlled check that separates it from one named alternative, the exact change that check would justify, and the replay or observable that would verify the result. State both sides of the decision rule: what exact result confirms the leading cause, and what result sends me to the named alternative. Pick the actual value, buffer, state, counter, boundary, or controlled change; do not write placeholders such as "one suspect value," generic "inputs," "inspect each stage," or "change one thing." Commit to one coherent conditional path rather than listing several possible causes. Silently check that the controlled change does not itself create the expected observation and that the two results really distinguish the named causes. Verify correctness against an expected value, invariant, or known-good comparison; merely making the artifact disappear or the output nonzero is not enough. Keep those details conditional so they do not become personal-history claims. Do not fall back to a generic checklist of stages or tools. Do not call it hypothetical, explain the evidence limitation, tell me to find a real story, or discuss what can be invented or defended. Do not use past tense or attach the method to an unsupported project or result. Never invent a project, action, result, achievement, metric, employer, date, or responsibility. Always return usedExtrapolation as false and plausibleAssumptions as an empty array.
+
+    When the transcript or references document the main incident but not a control, alternative, rollback signal, design tradeoff, or verification detail requested by the interviewer, separate the two cleanly inside the spoken answer. Use past tense only for the documented evidence, then use "I'd," "I would," or an explicit "If" for the additional check or decision rule. Never turn a reasonable engineering inference into a claim that I historically performed it. When an exact number is requested but absent, say plainly that I do not have that exact figure in my notes, then give the supported qualitative result and the measurement needed to recover it. Do not use policy words such as "invent," "fabricate," "defensible," "grounding," or "source" in the spoken cue.
+    """
+
+    static let instantTextBehaviorInstructions = """
+    You are Answer Mirror, a low-latency interview companion. The response target is a finalized interviewer turn. Decide whether it contains a sufficiently clear question or prompt that needs an answer.
+
+    OUTPUT PROTOCOL
+    If no answer cue should be shown, output exactly SKIP and nothing else. Otherwise output exactly SHOW on the first line, followed immediately by one compact plain-text cue the candidate can say aloud. Do not output JSON, Markdown, labels, bullets, citations, analysis, or any text before SHOW. The spoken cue should normally be 40 to 70 words in one conversational paragraph.
+
+    Answer the actual question directly. Use the supplied recent transcript and local references before general knowledge. Personal history must remain supported by the transcript or references. For supported experience, state only the documented setting, action, measurement, and result. If the interviewer requests an incident or historical detail that is not supported, give a concrete first-person conditional using “I'd,” “I would,” or “If,” without attaching it to an unsupported project or past result. Never invent an employer, responsibility, action, metric, date, result, tradeoff, or achievement.
+
+    When the main incident is documented but the requested control, alternative, rollback signal, tradeoff, or verification detail is not, use past tense only for documented evidence and conditional language for the additional check. If an exact number is absent, say briefly that it is not in the notes, then give the supported qualitative result and how to recover the measurement. Do not mention sources, grounding, evidence policy, invention, defensibility, assistant rules, or answer modes in the spoken cue.
+
+    Be specific and causal rather than generic. Name the relevant mechanism, controlled comparison, decision rule, or verification observation. Use ordinary spoken language, short clauses, and first-person voice. Do not repeat the question, announce a framework, or add throat-clearing. Web search is disabled for this mode.
     """
 
     static let plausibleRehearsalInstructions = """
@@ -356,6 +400,8 @@ struct LiveAssistantClient: Sendable {
     Before drafting the spoken cue, build plausibleRehearsalPlan as one coherent internal mini-story with five non-empty fields: projectAnchor names the one project or work setting; observedSignal names what was concretely seen before the change; mechanismChange states the implementation or decision as a before-to-after difference; discriminatingCheck names the measurement, instrumentation boundary, controlled perturbation, or comparison that tests the causal claim; boundedOutcome states what changed afterward without an extreme claim. Keep each internal field to one terse clause; the five fields together should normally stay under about 50 words rather than duplicating the spoken answer. For a nontechnical or behavioral question, use the analogous concrete elements—situation, action or decision, evidence or feedback, and bounded result—without forcing profiling vocabulary into the answer. The preamble and all three beats must advance that same scene and causal thread; never use the beats as three unrelated examples, approaches, or invented incidents. Express every plan field across the spoken cue, with each beat adding a different part of the one story. Do not mention this plan or let its field names shape the spoken wording. In particular, do not say "observed signal," "mechanism change," "discriminating check," or "bounded outcome" merely because those are internal labels. If shouldShow is false, return all five plan fields as empty strings.
 
     Before returning the cue, do one silent plain-language pass. When a shorter common word keeps the same meaning, use it. Break a report-like sentence into shorter spoken clauses. Do not remove the actual mechanism, comparison, or result just to make the language simpler.
+
+    If the interviewer explicitly requests an exact number that the transcript and references do not contain, do not create one. A short factual boundary such as "I don't have the exact percentage in my notes" is allowed for that question, followed by the concrete mechanism, controlled comparison, and qualitative observation that are available. Never discuss invention, fabrication, defensibility, evidence policy, or assistant rules in the spoken cue.
 
     Name the project or work setting once. If the preamble already names it, do not start a beat by naming it again.
 
@@ -378,12 +424,14 @@ struct LiveAssistantClient: Sendable {
 
     private let configuration: LiveAssistantConfiguration
     private let requestBuilder: RequestBuilder
-    private let responseLoader: @Sendable (String, Data) async throws -> Data
+    private let responseLoader: ResponseLoader
+    private let instantResponseLoader: InstantResponseLoader?
 
     var configuredModel: String { configuration.model }
     var configuredReasoningEffort: LiveAssistantReasoningEffort {
         configuration.reasoningEffort
     }
+    var supportsInstantText: Bool { instantResponseLoader != nil }
 
     init(
         configuration: LiveAssistantConfiguration = .production,
@@ -400,10 +448,18 @@ struct LiveAssistantClient: Sendable {
             )
         }
         responseLoader = { apiKey, body in
-            try await Self.responseData(
+            try await OpenAIResponsesStream.load(
                 session: session,
                 apiKey: apiKey,
                 body: body
+            )
+        }
+        instantResponseLoader = { apiKey, body, onTextDelta in
+            try await OpenAIResponsesStream.load(
+                session: session,
+                apiKey: apiKey,
+                body: body,
+                onTextDelta: onTextDelta
             )
         }
     }
@@ -422,17 +478,24 @@ struct LiveAssistantClient: Sendable {
                 configuration: configuration
             )
         }
-        self.responseLoader = responseLoader
+        self.responseLoader = { apiKey, body in
+            LiveAssistantTransportResponse(
+                data: try await responseLoader(apiKey, body)
+            )
+        }
+        instantResponseLoader = nil
     }
 
     private init(
         configuration: LiveAssistantConfiguration,
         requestBuilder: @escaping RequestBuilder,
-        responseLoader: @escaping @Sendable (String, Data) async throws -> Data
+        responseLoader: @escaping ResponseLoader,
+        instantResponseLoader: InstantResponseLoader? = nil
     ) {
         self.configuration = configuration
         self.requestBuilder = requestBuilder
         self.responseLoader = responseLoader
+        self.instantResponseLoader = instantResponseLoader
     }
 
     static func gemini(
@@ -451,12 +514,11 @@ struct LiveAssistantClient: Sendable {
                 )
             },
             responseLoader: { apiKey, body in
-                let data = try await GeminiLiveAssistantAPI.responseData(
+                try await GeminiInteractionStream.load(
                     session: session,
                     apiKey: apiKey,
                     body: body
                 )
-                return try GeminiLiveAssistantAPI.normalizedResponse(data)
             }
         )
     }
@@ -474,18 +536,42 @@ struct LiveAssistantClient: Sendable {
         webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
         previousRehearsalStory: AssistantRehearsalStoryContext? = nil,
-        usefulnessDeadline: ContinuousClock.Instant? = nil
+        usefulnessDeadline: ContinuousClock.Instant? = nil,
+        deliveryMode: LiveAssistantDeliveryMode = .verified,
+        onInstantText: (@Sendable (
+            LiveAssistantInstantTextUpdate
+        ) async -> Void)? = nil
     ) async throws -> LiveAssistantGeneration {
         let resolvedWebSearchMode = webSearchMode
             ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
-        let prefix = try AssistantPromptBuilder.cachedPrefix(
-            behaviorInstructions: Self.behaviorInstructions(
+        let resolvedDeliveryMode = Self.resolvedDeliveryMode(
+            requested: deliveryMode,
+            supportsInstantText: supportsInstantText,
+            purpose: purpose,
+            trigger: trigger,
+            webSearchMode: resolvedWebSearchMode,
+            answerMode: answerMode
+        )
+        let behaviorInstructions: String
+        if resolvedDeliveryMode == .instantText {
+            behaviorInstructions = [
+                Self.instantTextBehaviorInstructions,
+                configuration.additionalBehaviorInstructions
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            ]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+        } else {
+            behaviorInstructions = Self.behaviorInstructions(
                 for: purpose,
                 answerMode: answerMode,
                 webSearchMode: resolvedWebSearchMode,
                 additionalInstructions:
                     configuration.additionalBehaviorInstructions
-            ),
+            )
+        }
+        let prefix = try AssistantPromptBuilder.cachedPrefix(
+            behaviorInstructions: behaviorInstructions,
             references: references
         )
         let rehearsalStory = try previousRehearsalStory?.promptJSON() ?? ""
@@ -501,11 +587,21 @@ struct LiveAssistantClient: Sendable {
                 ? "partial transcript observed after a pause; it may be unfinished"
                 : "finalized speaker turn"
         )
+        if resolvedDeliveryMode == .instantText {
+            return try await generateInstantText(
+                apiKey: apiKey,
+                plan: plan,
+                question: otherSpeakerText,
+                basedOnSequence: basedOnSequence,
+                usefulnessDeadline: usefulnessDeadline,
+                onInstantText: onInstantText
+            )
+        }
         let allowedReferencePaths = Set(
             references?.documents.map(\.relativePath) ?? []
         )
         let startedAt = ContinuousClock.now
-        let data = try await loadResponse(
+        let response = try await loadResponse(
             apiKey: apiKey,
             body: try requestBuilder(
                 plan,
@@ -515,6 +611,7 @@ struct LiveAssistantClient: Sendable {
             ),
             usefulnessDeadline: usefulnessDeadline
         )
+        let data = response.data
         let firstAttemptMilliseconds = Self.milliseconds(
             from: ContinuousClock.now - startedAt
         )
@@ -525,7 +622,10 @@ struct LiveAssistantClient: Sendable {
                 basedOnSequence: basedOnSequence,
                 generationMilliseconds: firstAttemptMilliseconds,
                 purpose: purpose,
-                answerMode: answerMode
+                answerMode: answerMode,
+                latencyMilestones: response.latencyMilestones(
+                    validatedCueMilliseconds: firstAttemptMilliseconds
+                )
             )
         } catch LiveAssistantError.invalidGrounding {
             try Task.checkCancellation()
@@ -534,20 +634,25 @@ struct LiveAssistantClient: Sendable {
             )
             var retryData: Data?
             do {
-                let responseData = try await loadResponse(
-                    apiKey: apiKey,
-                    body: try requestBuilder(
-                        Self.groundingCorrectionPlan(
-                            from: plan,
-                            answerMode: answerMode,
-                            webSearchMode: resolvedWebSearchMode
-                        ),
-                        purpose,
-                        resolvedWebSearchMode,
-                        answerMode
+                let retryBody = try requestBuilder(
+                    Self.groundingCorrectionPlan(
+                        from: plan,
+                        answerMode: answerMode,
+                        webSearchMode: resolvedWebSearchMode
                     ),
+                    purpose,
+                    resolvedWebSearchMode,
+                    answerMode
+                )
+                let retryStartedMilliseconds = Self.milliseconds(
+                    from: ContinuousClock.now - startedAt
+                )
+                let retryResponse = try await loadResponse(
+                    apiKey: apiKey,
+                    body: retryBody,
                     usefulnessDeadline: usefulnessDeadline
                 )
+                let responseData = retryResponse.data
                 retryData = responseData
                 let generationMilliseconds = Self.milliseconds(
                     from: ContinuousClock.now - startedAt
@@ -562,7 +667,12 @@ struct LiveAssistantClient: Sendable {
                     basedOnSequence: basedOnSequence,
                     generationMilliseconds: generationMilliseconds,
                     purpose: purpose,
-                    answerMode: answerMode
+                    answerMode: answerMode,
+                    latencyMilestones: retryResponse.latencyMilestones(
+                        validatedCueMilliseconds: generationMilliseconds,
+                        requestStartOffsetMilliseconds:
+                            retryStartedMilliseconds
+                    )
                 )
                 let usage = Self.usage(from: data)
                     .adding(retryGeneration.usage)
@@ -580,7 +690,8 @@ struct LiveAssistantClient: Sendable {
                         suggestion: suggestion,
                         usage: usage,
                         generationMilliseconds: generationMilliseconds,
-                        outcome: .repairedGrounding
+                        outcome: .repairedGrounding,
+                        latencyMilestones: retryGeneration.latencyMilestones
                     )
                 }
                 Self.logger.notice(
@@ -590,7 +701,8 @@ struct LiveAssistantClient: Sendable {
                     suggestion: nil,
                     usage: usage,
                     generationMilliseconds: generationMilliseconds,
-                    outcome: .notAnswerable
+                    outcome: .notAnswerable,
+                    latencyMilestones: retryGeneration.latencyMilestones
                 )
             } catch {
                 let generationMilliseconds = Self.milliseconds(
@@ -647,17 +759,143 @@ struct LiveAssistantClient: Sendable {
         }
     }
 
-    private func loadResponse(
+    static func resolvedDeliveryMode(
+        requested: LiveAssistantDeliveryMode,
+        supportsInstantText: Bool,
+        purpose: CapturePurpose,
+        trigger: CompanionAssistantTrigger,
+        webSearchMode: LiveAssistantWebSearchMode,
+        answerMode: AssistantAnswerMode
+    ) -> LiveAssistantDeliveryMode {
+        guard
+            requested == .instantText,
+            supportsInstantText,
+            purpose == .interview,
+            trigger == .finalizedTurn,
+            webSearchMode == .disabled,
+            answerMode == .grounded
+        else {
+            return .verified
+        }
+        return .instantText
+    }
+
+    private func generateInstantText(
+        apiKey: String,
+        plan: AssistantPromptPlan,
+        question: String,
+        basedOnSequence: Int,
+        usefulnessDeadline: ContinuousClock.Instant?,
+        onInstantText: (@Sendable (
+            LiveAssistantInstantTextUpdate
+        ) async -> Void)?
+    ) async throws -> LiveAssistantGeneration {
+        let accumulator = LiveAssistantInstantTextAccumulator()
+        let streamHandler: OpenAITextDeltaHandler = {
+            delta,
+            elapsedMilliseconds in
+            guard let update = await accumulator.consume(
+                delta: delta,
+                elapsedMilliseconds: elapsedMilliseconds
+            ) else {
+                return
+            }
+            await onInstantText?(update)
+        }
+        let startedAt = ContinuousClock.now
+        let response = try await loadInstantResponse(
+            apiKey: apiKey,
+            body: try Self.instantTextRequestBody(
+                for: plan,
+                configuration: configuration
+            ),
+            usefulnessDeadline: usefulnessDeadline,
+            onTextDelta: streamHandler
+        )
+        let generationMilliseconds = Self.milliseconds(
+            from: ContinuousClock.now - startedAt
+        )
+        let outputText = try Self.responseOutputText(from: response.data)
+        let decision = try await accumulator.completedDecision(
+            finalOutput: outputText
+        )
+        let firstRenderableTextMilliseconds = await accumulator
+            .firstRenderableTextMilliseconds
+        let latencyMilestones = response.latencyMilestones(
+            validatedCueMilliseconds: generationMilliseconds,
+            firstRenderableTextMilliseconds:
+                firstRenderableTextMilliseconds
+        )
+        let usage = Self.usage(from: response.data)
+        switch decision {
+        case .skip:
+            return LiveAssistantGeneration(
+                suggestion: nil,
+                usage: usage,
+                generationMilliseconds: generationMilliseconds,
+                outcome: .notAnswerable,
+                latencyMilestones: latencyMilestones,
+                deliveryMode: .instantText
+            )
+        case let .show(text):
+            let normalizedQuestion = question.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !normalizedQuestion.isEmpty else {
+                throw LiveAssistantError.invalidResponse
+            }
+            let suggestion = CompanionAssistantSuggestion(
+                id: UUID().uuidString.lowercased(),
+                basedOnSequence: basedOnSequence,
+                question: normalizedQuestion,
+                preamble: text,
+                beats: [],
+                citations: [],
+                grounding: .generalKnowledge,
+                confidence: .medium,
+                generatedAt: Date(),
+                generationMilliseconds: generationMilliseconds,
+                firstRenderableTextMilliseconds:
+                    firstRenderableTextMilliseconds,
+                answerMode: .grounded,
+                deliveryMode: .instantText
+            )
+            return LiveAssistantGeneration(
+                suggestion: suggestion,
+                usage: usage,
+                generationMilliseconds: generationMilliseconds,
+                outcome: .suggestion,
+                latencyMilestones: latencyMilestones,
+                deliveryMode: .instantText
+            )
+        }
+    }
+
+    private func loadInstantResponse(
         apiKey: String,
         body: Data,
-        usefulnessDeadline: ContinuousClock.Instant?
-    ) async throws -> Data {
-        guard let usefulnessDeadline else {
-            return try await responseLoader(apiKey, body)
+        usefulnessDeadline: ContinuousClock.Instant?,
+        onTextDelta: @escaping OpenAITextDeltaHandler
+    ) async throws -> LiveAssistantTransportResponse {
+        guard let instantResponseLoader else {
+            throw LiveAssistantError.invalidResponse
         }
-        return try await withThrowingTaskGroup(of: Data.self) { group in
+        guard let usefulnessDeadline else {
+            return try await instantResponseLoader(
+                apiKey,
+                body,
+                onTextDelta
+            )
+        }
+        return try await withThrowingTaskGroup(
+            of: LiveAssistantTransportResponse.self
+        ) { group in
             group.addTask {
-                try await responseLoader(apiKey, body)
+                try await instantResponseLoader(
+                    apiKey,
+                    body,
+                    onTextDelta
+                )
             }
             group.addTask {
                 try await ContinuousClock().sleep(until: usefulnessDeadline)
@@ -671,26 +909,30 @@ struct LiveAssistantClient: Sendable {
         }
     }
 
-    private static func responseData(
-        session: URLSession,
+    private func loadResponse(
         apiKey: String,
-        body: Data
-    ) async throws -> Data {
-        var request = URLRequest(url: Self.endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = body
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LiveAssistantError.invalidResponse
+        body: Data,
+        usefulnessDeadline: ContinuousClock.Instant?
+    ) async throws -> LiveAssistantTransportResponse {
+        guard let usefulnessDeadline else {
+            return try await responseLoader(apiKey, body)
         }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw LiveAssistantError.requestFailed(Self.errorMessage(from: data))
+        return try await withThrowingTaskGroup(
+            of: LiveAssistantTransportResponse.self
+        ) { group in
+            group.addTask {
+                try await responseLoader(apiKey, body)
+            }
+            group.addTask {
+                try await ContinuousClock().sleep(until: usefulnessDeadline)
+                throw LiveAssistantError.usefulnessDeadlineExceeded
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw LiveAssistantError.invalidResponse
+            }
+            return first
         }
-        return data
     }
 
     private static func groundingCorrectionPlan(
@@ -743,6 +985,7 @@ struct LiveAssistantClient: Sendable {
         var request: [String: Any] = [
             "model": configuration.model,
             "store": false,
+            "stream": true,
             "max_output_tokens": configuration.maximumOutputTokens
                 ?? defaultMaximumOutputTokens,
             "reasoning": ["effort": configuration.reasoningEffort.rawValue],
@@ -797,13 +1040,110 @@ struct LiveAssistantClient: Sendable {
         )
     }
 
+    static func instantTextRequestBody(
+        for plan: AssistantPromptPlan,
+        configuration: LiveAssistantConfiguration = .production
+    ) throws -> Data {
+        var request: [String: Any] = [
+            "model": configuration.model,
+            "store": false,
+            "stream": true,
+            "max_output_tokens": configuration.maximumOutputTokens ?? 350,
+            "reasoning": ["effort": configuration.reasoningEffort.rawValue],
+            "input": [
+                [
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        [
+                            "type": "input_text",
+                            "text": plan.cachedPrefix,
+                            "prompt_cache_breakpoint": ["mode": "explicit"]
+                        ]
+                    ]
+                ],
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        ["type": "input_text", "text": plan.volatileSuffix]
+                    ]
+                ]
+            ],
+            "prompt_cache_key": plan.promptCacheKey,
+            "prompt_cache_options": ["mode": "explicit"],
+            "text": [
+                "verbosity": "low",
+                "format": ["type": "text"]
+            ]
+        ]
+        if let serviceTier = configuration.serviceTier {
+            request["service_tier"] = serviceTier
+        }
+        return try JSONSerialization.data(
+            withJSONObject: request,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+    }
+
+    private static func responseOutputText(from data: Data) throws -> String {
+        guard
+            let root = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        else {
+            throw LiveAssistantError.invalidResponse
+        }
+        if root["status"] as? String == "incomplete" {
+            let details = root["incomplete_details"] as? [String: Any]
+            throw LiveAssistantError.incomplete(
+                details?["reason"] as? String ?? "unknown reason"
+            )
+        }
+        if
+            let status = root["status"] as? String,
+            status == "failed" || status == "cancelled"
+        {
+            let error = root["error"] as? [String: Any]
+            throw LiveAssistantError.requestFailed(
+                error?["message"] as? String
+                    ?? "Assistant response ended with status \(status)"
+            )
+        }
+
+        var fragments: [String] = []
+        var refusal: String?
+        for output in root["output"] as? [[String: Any]] ?? [] {
+            for content in output["content"] as? [[String: Any]] ?? [] {
+                switch content["type"] as? String {
+                case "output_text":
+                    if let text = content["text"] as? String {
+                        fragments.append(text)
+                    }
+                case "refusal":
+                    refusal = content["refusal"] as? String
+                default:
+                    continue
+                }
+            }
+        }
+        if let refusal {
+            throw LiveAssistantError.refused(refusal)
+        }
+        let outputText = fragments.joined()
+        guard !outputText.isEmpty else {
+            throw LiveAssistantError.invalidResponse
+        }
+        return outputText
+    }
+
     static func parseResponse(
         _ data: Data,
         allowedReferencePaths: Set<String>,
         basedOnSequence: Int,
         generationMilliseconds: Int,
         purpose: CapturePurpose = .interview,
-        answerMode: AssistantAnswerMode = .grounded
+        answerMode: AssistantAnswerMode = .grounded,
+        latencyMilestones: LiveAssistantLatencyMilestones? = nil
     ) throws -> LiveAssistantGeneration {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LiveAssistantError.invalidResponse
@@ -812,6 +1152,16 @@ struct LiveAssistantClient: Sendable {
             let details = root["incomplete_details"] as? [String: Any]
             throw LiveAssistantError.incomplete(
                 details?["reason"] as? String ?? "unknown reason"
+            )
+        }
+        if
+            let status = root["status"] as? String,
+            status == "failed" || status == "cancelled"
+        {
+            let error = root["error"] as? [String: Any]
+            throw LiveAssistantError.requestFailed(
+                error?["message"] as? String
+                    ?? "Assistant response ended with status \(status)"
             )
         }
 
@@ -853,7 +1203,8 @@ struct LiveAssistantClient: Sendable {
                 suggestion: nil,
                 usage: usage,
                 generationMilliseconds: generationMilliseconds,
-                outcome: .notAnswerable
+                outcome: .notAnswerable,
+                latencyMilestones: latencyMilestones
             )
         }
         let question = output.question.trimmingCharacters(
@@ -1007,7 +1358,8 @@ struct LiveAssistantClient: Sendable {
             suggestion: suggestion,
             usage: usage,
             generationMilliseconds: generationMilliseconds,
-            outcome: .suggestion
+            outcome: .suggestion,
+            latencyMilestones: latencyMilestones
         )
     }
 
@@ -1079,17 +1431,6 @@ struct LiveAssistantClient: Sendable {
         if existingTitle.isEmpty || existingTitle == "Web source" {
             titlesByURL[rawURL] = title.isEmpty ? "Web source" : title
         }
-    }
-
-    private static func errorMessage(from data: Data) -> String {
-        guard
-            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let error = root["error"] as? [String: Any],
-            let message = error["message"] as? String
-        else {
-            return "HTTP response could not be read"
-        }
-        return message
     }
 
     private static func integer(_ value: Any?) -> Int {

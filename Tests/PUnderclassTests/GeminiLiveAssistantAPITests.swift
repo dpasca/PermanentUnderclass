@@ -33,8 +33,12 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         )
         XCTAssertGreaterThan(generation.usage.inputTokens, 0)
         XCTAssertGreaterThan(generation.usage.outputTokens, 0)
+        XCTAssertNotNil(generation.latencyMilestones.firstEventMilliseconds)
+        XCTAssertNotNil(
+            generation.latencyMilestones.firstTextDeltaMilliseconds
+        )
         print(
-            "GEMINI_SMOKE model=gemini-3.7-flash thinking=medium generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) citations=\(suggestion.citations.count)"
+            "GEMINI_SMOKE model=gemini-3.7-flash thinking=medium first_event_ms=\(generation.latencyMilestones.firstEventMilliseconds ?? -1) first_text_ms=\(generation.latencyMilestones.firstTextDeltaMilliseconds ?? -1) generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) citations=\(suggestion.citations.count)"
         )
     }
 
@@ -83,8 +87,12 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
         XCTAssertNil(suggestion.googleSearchSuggestionsHTML)
         XCTAssertGreaterThan(generation.usage.inputTokens, 0)
         XCTAssertGreaterThan(generation.usage.outputTokens, 0)
+        XCTAssertNotNil(generation.latencyMilestones.firstEventMilliseconds)
+        XCTAssertNotNil(
+            generation.latencyMilestones.firstTextDeltaMilliseconds
+        )
         print(
-            "GEMINI_NO_SEARCH_SMOKE model=gemini-3.7-flash thinking=medium generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) grounding=\(suggestion.grounding.rawValue) citations=\(suggestion.citations.count)"
+            "GEMINI_NO_SEARCH_SMOKE model=gemini-3.7-flash thinking=medium first_event_ms=\(generation.latencyMilestones.firstEventMilliseconds ?? -1) first_text_ms=\(generation.latencyMilestones.firstTextDeltaMilliseconds ?? -1) generation_ms=\(generation.generationMilliseconds) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) thought_tokens=\(generation.usage.reasoningTokens) grounding=\(suggestion.grounding.rawValue) citations=\(suggestion.citations.count)"
         )
     }
 
@@ -107,6 +115,7 @@ final class GeminiLiveAssistantAPITests: XCTestCase {
 
         XCTAssertEqual(root["model"] as? String, "gemini-3.7-flash")
         XCTAssertEqual(root["store"] as? Bool, false)
+        XCTAssertEqual(root["stream"] as? Bool, true)
         XCTAssertEqual(
             root["system_instruction"] as? String,
             plan.cachedPrefix

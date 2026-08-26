@@ -34,6 +34,7 @@ enum GeminiLiveAssistantAPI {
         var request: [String: Any] = [
             "model": configuration.model,
             "store": false,
+            "stream": true,
             "system_instruction": plan.cachedPrefix,
             "input": plan.volatileSuffix,
             "generation_config": generationConfiguration,
@@ -56,28 +57,6 @@ enum GeminiLiveAssistantAPI {
             withJSONObject: request,
             options: [.sortedKeys, .withoutEscapingSlashes]
         )
-    }
-
-    static func responseData(
-        session: URLSession,
-        apiKey: String,
-        body: Data
-    ) async throws -> Data {
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
-        request.httpBody = body
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw LiveAssistantError.invalidResponse
-        }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw LiveAssistantError.requestFailed(errorMessage(from: data))
-        }
-        return data
     }
 
     /// Converts Gemini's interaction timeline into the internal Responses-style
@@ -285,18 +264,6 @@ enum GeminiLiveAssistantAPI {
             return message
         }
         return "Gemini interaction ended with status \(status)"
-    }
-
-    private static func errorMessage(from data: Data) -> String {
-        guard
-            let root = try? JSONSerialization.jsonObject(with: data)
-                as? [String: Any],
-            let error = root["error"] as? [String: Any],
-            let message = error["message"] as? String
-        else {
-            return "HTTP response could not be read"
-        }
-        return message
     }
 
     private static func structuredGroundingSources(

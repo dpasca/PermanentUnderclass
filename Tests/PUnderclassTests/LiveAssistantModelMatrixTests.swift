@@ -82,7 +82,7 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
                         let grounding = generation.suggestion?.grounding.rawValue
                             ?? "none"
                         print(
-                            "MODEL_MATRIX_RUN_DONE configuration=\(configuration.id) case=\(benchmarkCase.name) repetition=\(repetition) latency_ms=\(generation.generationMilliseconds) expectation_pass=\(expectationPassed) grounding=\(grounding) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) reasoning_tokens=\(generation.usage.reasoningTokens) model_calls=\(generation.usage.requestCount)"
+                            "MODEL_MATRIX_RUN_DONE configuration=\(configuration.id) case=\(benchmarkCase.name) repetition=\(repetition) response_headers_ms=\(generation.latencyMilestones.responseHeadersMilliseconds ?? -1) first_event_ms=\(generation.latencyMilestones.firstEventMilliseconds ?? -1) first_text_ms=\(generation.latencyMilestones.firstTextDeltaMilliseconds ?? -1) validated_cue_ms=\(generation.latencyMilestones.validatedCueMilliseconds) latency_ms=\(generation.generationMilliseconds) expectation_pass=\(expectationPassed) grounding=\(grounding) input_tokens=\(generation.usage.inputTokens) cached_tokens=\(generation.usage.cachedInputTokens) output_tokens=\(generation.usage.outputTokens) reasoning_tokens=\(generation.usage.reasoningTokens) model_calls=\(generation.usage.requestCount)"
                         )
                         attempts.append(
                             ModelMatrixAttempt(
@@ -256,6 +256,15 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
         }
         let assessments = suggestionAttempts.compactMap(\.assessment)
         let latencies = successful.map(\.generationMilliseconds).sorted()
+        let responseHeaderLatencies = successful.compactMap {
+            $0.latencyMilestones.responseHeadersMilliseconds
+        }.sorted()
+        let firstEventLatencies = successful.compactMap {
+            $0.latencyMilestones.firstEventMilliseconds
+        }.sorted()
+        let firstTextLatencies = successful.compactMap {
+            $0.latencyMilestones.firstTextDeltaMilliseconds
+        }.sorted()
         let qualityPassCount = assessments.filter(
             \.passesLiveAssistantMatrix
         ).count
@@ -307,6 +316,23 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
                 percentile: 0.95
             ),
             maximumGenerationMilliseconds: latencies.last ?? 0,
+            streamingSampleRate: rate(
+                firstTextLatencies.count,
+                successful.count
+            ),
+            meanResponseHeadersMilliseconds: mean(
+                responseHeaderLatencies.map(Double.init)
+            ),
+            meanFirstEventMilliseconds: mean(
+                firstEventLatencies.map(Double.init)
+            ),
+            meanFirstTextDeltaMilliseconds: mean(
+                firstTextLatencies.map(Double.init)
+            ),
+            p95FirstTextDeltaMilliseconds: percentile(
+                firstTextLatencies,
+                percentile: 0.95
+            ),
             meanInputTokens: mean(
                 successful.map { Double($0.usage.inputTokens) }
             ),
@@ -377,6 +403,10 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
             referenceDocument(
                 path: "Projects/Checkout.md",
                 content: "In 2024, checkout p95 reached 1.8 seconds because each line item repeated an inventory lookup. I used distributed traces to isolate the N+1 query, batched the lookup, and replayed recorded traffic in a load test. Checkout p95 fell to 1.05 seconds, and I added a latency alert for the path."
+            ),
+            referenceDocument(
+                path: "Projects/QueueMigration.md",
+                content: "In 2025, I moved media-processing jobs from a monolithic scheduler to queue workers. I shadowed production jobs first, enabled the new path by job type, and then used a five-percent canary. Failure injection exposed duplicate completion callbacks during retries, so I added an idempotency key at the completion boundary before ramping to all jobs over two weeks. This record does not state a team size, customer count, revenue effect, or percentage throughput improvement."
             )
         ]
         return ReferenceLibrarySnapshot(
@@ -450,6 +480,105 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
             answerMode: .grounded,
             trigger: .partialTranscript,
             expectation: .noSuggestion
+        ),
+        ModelMatrixCase(
+            name: "checkout-percent-calculation",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "Roughly what percentage improvement was the checkout p95 change from 1.8 seconds to 1.05 seconds, and how would you explain it without overselling it?",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "checkout-causal-challenge",
+            recentTranscript: """
+            Interviewer: Tell me about the checkout slowdown.
+            Candidate: Traces showed repeated inventory lookups, so I batched them and the p95 improved on replayed traffic.
+            """,
+            currentPartial: "",
+            question: "How did you know the improvement came from removing the N+1 lookups rather than a warm cache or an easier traffic sample?",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "checkout-unsupported-tradeoff",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "What consistency tradeoff did you personally make when you batched those inventory lookups?",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "renderer-number-trap-plausible",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "What exact percentage did your rendering optimization improve frame time, and how many scenes did you test?",
+            answerMode: .plausibleRehearsal,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "renderer-competing-hypotheses",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "The GPU gets slower only in material-heavy scenes. Give me one controlled test that separates descriptor churn from expensive pixel shaders, and tell me what each result means.",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.generalKnowledge)
+        ),
+        ModelMatrixCase(
+            name: "renderer-correction-follow-up",
+            recentTranscript: """
+            Interviewer: You said the visible-object list caused the spikes.
+            Candidate: I need to correct that. The CPU list was stable; the spike tracked descriptor-table rebuilds when materials changed.
+            """,
+            currentPartial: "",
+            question: "Okay, then what did you change, and what result would have sent you back to the CPU-list hypothesis?",
+            answerMode: .plausibleRehearsal,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "queue-migration-grounded",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "Walk me through a risky migration you made safer without stopping delivery.",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "queue-migration-failure-follow-up",
+            recentTranscript: """
+            Candidate: I shadowed jobs and then moved five percent of job types to queue workers.
+            Interviewer: You still found a retry problem.
+            """,
+            currentPartial: "",
+            question: "Why didn't shadow traffic catch the duplicate callbacks, and why was an idempotency key the right boundary for the fix?",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "clear-partial-question",
+            recentTranscript: "",
+            currentPartial: "Interviewer: What did the five-percent canary tell you that shadow traffic couldn't?",
+            question: "What did the five-percent canary tell you that shadow traffic couldn't?",
+            answerMode: .grounded,
+            trigger: .partialTranscript,
+            expectation: .suggestion(.localReferences)
+        ),
+        ModelMatrixCase(
+            name: "migration-multipart-pressure",
+            recentTranscript: "",
+            currentPartial: "",
+            question: "What was the riskiest failure mode in the queue migration, how did you detect it, and what rollback signal would have stopped the ramp?",
+            answerMode: .grounded,
+            trigger: .finalizedTurn,
+            expectation: .suggestion(.localReferences)
         )
     ]
 
@@ -502,6 +631,13 @@ final class LiveAssistantModelMatrixTests: XCTestCase {
             model: "gemini-3.7-flash",
             reasoningEffort: .high,
             serviceTier: nil
+        ),
+        ModelMatrixConfiguration(
+            id: "terra-low-priority",
+            provider: .openAI,
+            model: "gpt-5.6-terra",
+            reasoningEffort: .low,
+            serviceTier: "priority"
         ),
         ModelMatrixConfiguration(
             id: "terra-medium-priority",
@@ -598,6 +734,11 @@ private struct ModelMatrixSummary: Encodable {
     let medianGenerationMilliseconds: Double
     let p95GenerationMilliseconds: Double
     let maximumGenerationMilliseconds: Int
+    let streamingSampleRate: Double
+    let meanResponseHeadersMilliseconds: Double
+    let meanFirstEventMilliseconds: Double
+    let meanFirstTextDeltaMilliseconds: Double
+    let p95FirstTextDeltaMilliseconds: Double
     let meanInputTokens: Double
     let meanCachedInputTokens: Double
     let meanOutputTokens: Double

@@ -21,10 +21,13 @@ final class MeetingController: ObservableObject {
     @Published var preparationPurpose: CapturePurpose = .meeting
     @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
     @Published var assistantEarlyBridgeEnabled = false
+    @Published var assistantDeliveryMode: LiveAssistantDeliveryMode = .verified
     @Published var liveAssistantProvider: LiveAssistantProvider = .openAI
     @Published private(set) var activeAssistantAnswerMode:
         AssistantAnswerMode = .grounded
     @Published private(set) var activeAssistantEarlyBridgeEnabled = false
+    @Published private(set) var activeAssistantDeliveryMode:
+        LiveAssistantDeliveryMode = .verified
     /// Local-first: the app is fully usable on a fresh install with no key.
     @Published var refinementEngine: TranscriptRefinementEngine = .localWhisper
     @Published var processes: [AudioProcessInfo] = []
@@ -167,6 +170,8 @@ final class MeetingController: ObservableObject {
         "PUnderclass.AssistantAnswerMode"
     static let assistantEarlyBridgeDefaultsKey =
         "PUnderclass.AssistantEarlyBridgeEnabled"
+    static let assistantDeliveryModeDefaultsKey =
+        "PUnderclass.AssistantDeliveryMode"
     static let liveAssistantProviderDefaultsKey =
         "PUnderclass.LiveAssistantProvider"
     /// Renamed when local-only stopped being the primary gate and became a
@@ -251,6 +256,7 @@ final class MeetingController: ObservableObject {
         assistantAnswerMode = Self.storedAssistantAnswerMode()
         assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
             && Self.storedAssistantEarlyBridgeEnabled()
+        assistantDeliveryMode = Self.storedAssistantDeliveryMode()
         liveAssistantProvider = Self.storedLiveAssistantProvider()
         // A cloud choice left over from before the key was removed must not
         // break dictation on the next launch.
@@ -924,6 +930,30 @@ final class MeetingController: ObservableObject {
             ?? false
     }
 
+    static func storedAssistantDeliveryMode(
+        defaults: UserDefaults = .standard
+    ) -> LiveAssistantDeliveryMode {
+        guard
+            let rawValue = defaults.string(
+                forKey: assistantDeliveryModeDefaultsKey
+            ),
+            let mode = LiveAssistantDeliveryMode(rawValue: rawValue)
+        else {
+            return .verified
+        }
+        return mode
+    }
+
+    static func storeAssistantDeliveryMode(
+        _ mode: LiveAssistantDeliveryMode,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            mode.rawValue,
+            forKey: assistantDeliveryModeDefaultsKey
+        )
+    }
+
     static func storedLiveAssistantProvider(
         defaults: UserDefaults = .standard
     ) -> LiveAssistantProvider {
@@ -971,6 +1001,13 @@ final class MeetingController: ObservableObject {
             answerMode: assistantAnswerMode,
             earlyBridgeEnabled: assistantEarlyBridgeEnabled
         )
+    }
+
+    func setAssistantDeliveryModePreference(
+        _ mode: LiveAssistantDeliveryMode
+    ) {
+        assistantDeliveryMode = mode
+        Self.storeAssistantDeliveryMode(mode)
     }
 
     func setLiveAssistantProvider(_ provider: LiveAssistantProvider) {
@@ -2334,6 +2371,7 @@ final class MeetingController: ObservableObject {
         capturePurpose = .interview
         activeAssistantAnswerMode = .grounded
         activeAssistantEarlyBridgeEnabled = false
+        activeAssistantDeliveryMode = .verified
         prepareCompanionForNewSession()
         localTrack = TrackViewState()
         remoteTrack = TrackViewState()
@@ -3365,6 +3403,11 @@ final class MeetingController: ObservableObject {
         activeAssistantEarlyBridgeEnabled = purpose == .interview
             && assistantAnswerMode == .plausibleRehearsal
             && assistantEarlyBridgeEnabled
+        activeAssistantDeliveryMode = purpose == .interview
+            && assistantAnswerMode == .grounded
+            && liveAssistantProvider == .openAI
+            ? assistantDeliveryMode
+            : .verified
         activePreparedReferencePack = purpose == .interview
             && hasReadyInterviewEvidence
             ? referencePreparationState.pack
@@ -3390,6 +3433,9 @@ final class MeetingController: ObservableObject {
             ? activeAssistantAnswerMode
             : .grounded
         let earlyBridgeEnabled = activeAssistantEarlyBridgeEnabled
+        let deliveryMode = purpose == .interview
+            ? activeAssistantDeliveryMode
+            : .verified
         let assistantAvailable = isSyntheticSession
             || isLiveAssistantAvailable
         enqueueCompanionUpdate { hub in
@@ -3402,6 +3448,7 @@ final class MeetingController: ObservableObject {
                 isPreparingSyntheticInterview: isPreparingSyntheticInterview,
                 answerMode: answerMode,
                 earlyBridgeEnabled: earlyBridgeEnabled,
+                deliveryMode: deliveryMode,
                 assistantAvailable: assistantAvailable
             )
         }
@@ -3878,6 +3925,9 @@ final class MeetingController: ObservableObject {
         let answerMode = purpose == .interview
             ? activeAssistantAnswerMode
             : .grounded
+        let deliveryMode = purpose == .interview
+            ? activeAssistantDeliveryMode
+            : .verified
         let previousRehearsalStory = answerMode == .plausibleRehearsal
             ? latestRehearsalStory
             : nil
@@ -4001,7 +4051,27 @@ final class MeetingController: ObservableObject {
                     webSearchMode: webSearchMode,
                     answerMode: answerMode,
                     previousRehearsalStory: previousRehearsalStory,
-                    usefulnessDeadline: usefulnessDeadline
+                    usefulnessDeadline: usefulnessDeadline,
+                    deliveryMode: deliveryMode,
+                    onInstantText: { update in
+                        guard !Task.isCancelled else { return }
+                        guard !(await hub.suggestionsPaused()) else { return }
+                        _ = await hub.assistantDrafted(
+                            CompanionAssistantDraft(
+                                id: "instant-\(turnID)",
+                                basedOnSequence: basedOnSequence,
+                                topicID: turnID,
+                                question: normalizedText,
+                                text: update.text,
+                                generatedAt: Date(),
+                                generationMilliseconds:
+                                    update.elapsedMilliseconds,
+                                firstRenderableTextMilliseconds:
+                                    update.firstRenderableTextMilliseconds,
+                                trigger: trigger
+                            )
+                        )
+                    }
                 )
                 await MainActor.run {
                     controller.value?.recordAssistantUsage(generation.usage)
@@ -4043,7 +4113,7 @@ final class MeetingController: ObservableObject {
                 let grounding = generation.suggestion?.grounding.rawValue
                     ?? "none"
                 Self.liveAssistantLogger.notice(
-                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) provider=\(assistantProvider.rawValue, privacy: .public) model=\(client.configuredModel, privacy: .public) reasoning_effort=\(client.configuredReasoningEffort.rawValue, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
+                    "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(generation.outcome.rawValue, privacy: .public) grounding=\(grounding, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) delivery_mode=\(generation.deliveryMode.rawValue, privacy: .public) provider=\(assistantProvider.rawValue, privacy: .public) model=\(client.configuredModel, privacy: .public) reasoning_effort=\(client.configuredReasoningEffort.rawValue, privacy: .public) model_calls=\(generation.usage.requestCount, privacy: .public) repair_attempts=\(generation.usage.groundingRepairAttempts, privacy: .public) repair_ms=\(generation.usage.groundingRepairMilliseconds, privacy: .public) response_headers_ms=\(generation.latencyMilestones.responseHeadersMilliseconds ?? -1, privacy: .public) first_event_ms=\(generation.latencyMilestones.firstEventMilliseconds ?? -1, privacy: .public) first_text_ms=\(generation.latencyMilestones.firstTextDeltaMilliseconds ?? -1, privacy: .public) first_renderable_ms=\(generation.latencyMilestones.firstRenderableTextMilliseconds ?? -1, privacy: .public) validated_cue_ms=\(generation.latencyMilestones.validatedCueMilliseconds, privacy: .public) generation_ms=\(generation.generationMilliseconds, privacy: .public) total_ms=\(totalLatencyMilliseconds, privacy: .public)"
                 )
                 guard !Task.isCancelled else { return }
                 let isCurrentRevision = await MainActor.run {
@@ -4099,6 +4169,11 @@ final class MeetingController: ObservableObject {
                     )
                 }
             } catch is CancellationError {
+                if let evaluationSequence {
+                    _ = await hub.assistantCancelled(
+                        basedOnSequence: evaluationSequence
+                    )
+                }
                 Self.liveAssistantLogger.debug(
                     "assistant_check_cancelled trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.cancelled.rawValue, privacy: .public)"
                 )
@@ -4847,6 +4922,7 @@ final class MeetingController: ObservableObject {
         activeCaptureUsesHostedTranscription = false
         activeAssistantAnswerMode = .grounded
         activeAssistantEarlyBridgeEnabled = false
+        activeAssistantDeliveryMode = .verified
         isListening = false
         capturePurpose = nil
         localTrack.socket = .idle

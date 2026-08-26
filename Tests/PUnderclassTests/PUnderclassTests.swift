@@ -2266,6 +2266,10 @@ final class PUnderclassTests: XCTestCase {
                 defaults: defaults
             )
         )
+        XCTAssertEqual(
+            MeetingController.storedAssistantDeliveryMode(defaults: defaults),
+            .verified
+        )
 
         MeetingController.storeAssistantPreferences(
             answerMode: .plausibleRehearsal,
@@ -2297,6 +2301,15 @@ final class PUnderclassTests: XCTestCase {
             MeetingController.storedAssistantEarlyBridgeEnabled(
                 defaults: defaults
             )
+        )
+
+        MeetingController.storeAssistantDeliveryMode(
+            .instantText,
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            MeetingController.storedAssistantDeliveryMode(defaults: defaults),
+            .instantText
         )
     }
 
