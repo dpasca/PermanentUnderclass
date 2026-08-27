@@ -923,7 +923,7 @@ struct ReferenceMaterialView: View {
                             Text("Instant text stream (experimental)")
                                 .font(.body.weight(.semibold))
                             Text(
-                                "Shows an OpenAI plain-text draft as soon as usable words arrive, before structured grounding checks finish. It applies only to finalized grounded interview turns with web search off and is always labeled for verification. Gemini, partial turns, meetings, and web-search requests use the verified format automatically."
+                                "Starts with the verified response at the first stable pause. If it is still unanswered when the interviewer turn finalizes, a plain-text OpenAI stream races it and the first completed cue wins. This can briefly use two OpenAI requests for that turn. Streaming words are always labeled for verification. Gemini, meetings, rehearsal mode, and web-search requests keep the verified format."
                             )
                             .font(.callout)
                             .foregroundStyle(.secondary)

@@ -124,9 +124,12 @@ final class MeetingController: ObservableObject {
     private let interviewContextSuggestionClient =
         InterviewContextSuggestionClient()
     private var companionUpdateTail: Task<Void, Never>?
-    private var assistantGenerationTask: Task<Void, Never>?
-    private var assistantGenerationRequestID: UUID?
+    private var assistantGenerationTasks: [UUID: Task<Void, Never>] = [:]
+    private var assistantGenerationArbitration =
+        AssistantGenerationArbitrationState()
     private var assistantGenerationIdentity: AssistantEvaluationIdentity?
+    private var assistantGenerationTurnID: String?
+    private var assistantGenerationPrimaryTrigger: CompanionAssistantTrigger?
     private var assistantBridgeTask: Task<Void, Never>?
     private var assistantBridgeRequestID: UUID?
     private var assistantBridgeTurnID: String?
@@ -3376,10 +3379,7 @@ final class MeetingController: ObservableObject {
 
     private func prepareCompanionForNewSession() {
         closeActiveInterviewArchive()
-        assistantGenerationTask?.cancel()
-        assistantGenerationTask = nil
-        assistantGenerationRequestID = nil
-        assistantGenerationIdentity = nil
+        cancelAssistantGenerations()
         assistantBridgeTask?.cancel()
         assistantBridgeTask = nil
         assistantBridgeRequestID = nil
@@ -3578,10 +3578,7 @@ final class MeetingController: ObservableObject {
         guard !normalizedText.isEmpty else { return }
 
         if assistantBridgeTurnID != turnID {
-            assistantGenerationTask?.cancel()
-            assistantGenerationTask = nil
-            assistantGenerationRequestID = nil
-            assistantGenerationIdentity = nil
+            cancelAssistantGenerations()
             assistantBridgeTask?.cancel()
             assistantBridgeTask = nil
             assistantBridgeRequestID = nil
@@ -3880,17 +3877,75 @@ final class MeetingController: ObservableObject {
             turnID: turnID,
             text: normalizedText
         )
-        guard assistantGenerationIdentity != identity else {
+        let answerMode = purpose == .interview
+            ? activeAssistantAnswerMode
+            : .grounded
+        let deliveryMode = purpose == .interview
+            ? activeAssistantDeliveryMode
+            : .verified
+        let client = selectedLiveAssistantClient
+        let resolvedWebSearchMode = webSearchMode
+            ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
+        let resolvedDeliveryMode = LiveAssistantClient.resolvedDeliveryMode(
+            requested: deliveryMode,
+            supportsInstantText: client.supportsInstantText,
+            purpose: purpose,
+            trigger: trigger,
+            webSearchMode: resolvedWebSearchMode,
+            answerMode: answerMode
+        )
+        let isSameTurn = assistantGenerationTurnID == turnID
+        if
+            trigger == .finalizedTurn,
+            isSameTurn,
+            assistantGenerationArbitration.hasPublishedSuggestion
+        {
             Self.liveAssistantLogger.debug(
-                "assistant_check_coalesced trigger=\(trigger.rawValue, privacy: .public) turn_id=\(turnID, privacy: .public)"
+                "assistant_check_coalesced trigger=\(trigger.rawValue, privacy: .public) turn_id=\(turnID, privacy: .public) reason=suggestion_already_available"
             )
             return
         }
 
-        assistantGenerationTask?.cancel()
+        let startsFinalizedTurnHedge = AssistantGenerationHedgePolicy
+            .shouldStartFinalizedTurnHedge(
+                trigger: trigger,
+                resolvedDeliveryMode: resolvedDeliveryMode,
+                isSameTurn: isSameTurn,
+                primaryTrigger: assistantGenerationPrimaryTrigger,
+                arbitration: assistantGenerationArbitration
+            )
+        let repeatsFinalAfterNoCue = trigger == .finalizedTurn
+            && isSameTurn
+            && !assistantGenerationArbitration.hasActiveRequest
+            && !assistantGenerationArbitration.hasPublishedSuggestion
+        if
+            !startsFinalizedTurnHedge,
+            assistantGenerationIdentity == identity,
+            !repeatsFinalAfterNoCue
+        {
+            Self.liveAssistantLogger.debug(
+                "assistant_check_coalesced trigger=\(trigger.rawValue, privacy: .public) turn_id=\(turnID, privacy: .public) reason=duplicate_identity"
+            )
+            return
+        }
+
         let requestID = UUID()
-        assistantGenerationRequestID = requestID
-        assistantGenerationIdentity = identity
+        if startsFinalizedTurnHedge {
+            guard assistantGenerationArbitration.startHedge(requestID) else {
+                Self.liveAssistantLogger.debug(
+                    "assistant_check_coalesced trigger=\(trigger.rawValue, privacy: .public) turn_id=\(turnID, privacy: .public) reason=hedge_already_active"
+                )
+                return
+            }
+            assistantGenerationIdentity = identity
+        } else {
+            let requestIDsToCancel = assistantGenerationArbitration
+                .startPrimary(requestID)
+            cancelAssistantGenerationTasks(requestIDsToCancel)
+            assistantGenerationIdentity = identity
+            assistantGenerationTurnID = turnID
+            assistantGenerationPrimaryTrigger = trigger
+        }
         // The assistant is a hosted model; local-only mode withholds the
         // selected provider's key rather than sending the transcript off-Mac.
         let isLocalOnly = privacyLockEnabled
@@ -3922,18 +3977,11 @@ final class MeetingController: ObservableObject {
         let sessionContext = contextPrompt(for: purpose).trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        let answerMode = purpose == .interview
-            ? activeAssistantAnswerMode
-            : .grounded
-        let deliveryMode = purpose == .interview
-            ? activeAssistantDeliveryMode
-            : .verified
         let previousRehearsalStory = answerMode == .plausibleRehearsal
             ? latestRehearsalStory
             : nil
         let pendingCompanionUpdates = companionUpdateTail
         let hub = companionGateway.hub
-        let client = selectedLiveAssistantClient
         let controller = WeakMeetingController(self)
         let delayMilliseconds = AssistantEvaluationPolicy.delayMilliseconds(
             for: trigger
@@ -3943,10 +3991,17 @@ final class MeetingController: ObservableObject {
             : 0
 
         Self.liveAssistantLogger.notice(
-            "assistant_check_scheduled trigger=\(trigger.rawValue, privacy: .public) trigger_speaker=\(speaker.rawValue, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) speech_pause_ms=\(speechPauseMilliseconds, privacy: .public) schedule_delay_ms=\(delayMilliseconds, privacy: .public)"
+            "assistant_check_scheduled trigger=\(trigger.rawValue, privacy: .public) trigger_speaker=\(speaker.rawValue, privacy: .public) answer_mode=\(answerMode.rawValue, privacy: .public) speech_pause_ms=\(speechPauseMilliseconds, privacy: .public) schedule_delay_ms=\(delayMilliseconds, privacy: .public) hedge=\(startsFinalizedTurnHedge, privacy: .public)"
         )
 
-        assistantGenerationTask = Task {
+        let generationTask = Task {
+            defer {
+                DispatchQueue.main.async {
+                    controller.value?.assistantGenerationRequestEnded(
+                        requestID
+                    )
+                }
+            }
             var evaluationSequence: Int?
             do {
                 if delayMilliseconds > 0 {
@@ -4009,6 +4064,13 @@ final class MeetingController: ObservableObject {
                         Self.liveAssistantLogger.notice(
                             "assistant_inference_skipped sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) reason=usefulness_deadline_elapsed"
                         )
+                        let shouldPublish = await MainActor.run {
+                            controller.value?
+                                .finishAssistantGenerationWithoutSuggestion(
+                                    requestID: requestID
+                                ) == true
+                        }
+                        guard shouldPublish else { return }
                         await hub.assistantFinishedWithoutSuggestion(
                             basedOnSequence: basedOnSequence,
                             trigger: trigger,
@@ -4055,6 +4117,13 @@ final class MeetingController: ObservableObject {
                     deliveryMode: deliveryMode,
                     onInstantText: { update in
                         guard !Task.isCancelled else { return }
+                        let isActiveRequest = await MainActor.run {
+                            controller.value?
+                                .isAssistantGenerationRequestActive(
+                                    requestID
+                                ) == true
+                        }
+                        guard isActiveRequest else { return }
                         guard !(await hub.suggestionsPaused()) else { return }
                         _ = await hub.assistantDrafted(
                             CompanionAssistantDraft(
@@ -4087,6 +4156,13 @@ final class MeetingController: ObservableObject {
                     Self.liveAssistantLogger.notice(
                         "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) total_ms=\(Self.milliseconds(from: observedAt, to: completedAt), privacy: .public) reason=usefulness_deadline_elapsed_after_response"
                     )
+                    let shouldPublish = await MainActor.run {
+                        controller.value?
+                            .finishAssistantGenerationWithoutSuggestion(
+                                requestID: requestID
+                            ) == true
+                    }
+                    guard shouldPublish else { return }
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
@@ -4096,15 +4172,6 @@ final class MeetingController: ObservableObject {
                         preserveBridge: true
                     )
                     return
-                }
-                await MainActor.run {
-                    if generation.suggestion != nil
-                        || trigger == .finalizedTurn
-                    {
-                        controller.value?.retireAssistantBridge(
-                            for: turnID
-                        )
-                    }
                 }
                 let totalLatencyMilliseconds = Self.milliseconds(
                     from: observedAt,
@@ -4123,6 +4190,13 @@ final class MeetingController: ObservableObject {
                     ) == referenceStateRevision
                 }
                 guard isCurrentRevision else {
+                    let shouldPublish = await MainActor.run {
+                        controller.value?
+                            .finishAssistantGenerationWithoutSuggestion(
+                                requestID: requestID
+                            ) == true
+                    }
+                    guard shouldPublish else { return }
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
@@ -4133,6 +4207,13 @@ final class MeetingController: ObservableObject {
                     return
                 }
                 guard !(await hub.suggestionsPaused()) else {
+                    let shouldPublish = await MainActor.run {
+                        controller.value?
+                            .finishAssistantGenerationWithoutSuggestion(
+                                requestID: requestID
+                            ) == true
+                    }
+                    guard shouldPublish else { return }
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
@@ -4150,16 +4231,38 @@ final class MeetingController: ObservableObject {
                     suggestion.topicID = turnID
                     suggestion.inferenceOutcome = generation.outcome
                     let completedSuggestion = suggestion
-                    await MainActor.run {
+                    let accepted = await MainActor.run {
+                        guard
+                            controller.value?
+                                .claimAssistantGenerationSuggestion(
+                                    requestID: requestID
+                                ) == true
+                        else {
+                            return false
+                        }
+                        controller.value?.retireAssistantBridge(for: turnID)
                         controller.value?.recordAssistantSuggestion(
                             completedSuggestion
                         )
+                        return true
                     }
+                    guard accepted else { return }
                     await hub.assistantSuggested(
                         completedSuggestion,
                         outcome: generation.outcome
                     )
                 } else {
+                    let shouldPublish = await MainActor.run {
+                        let shouldPublish = controller.value?
+                            .finishAssistantGenerationWithoutSuggestion(
+                                requestID: requestID
+                            ) == true
+                        if shouldPublish, trigger == .finalizedTurn {
+                            controller.value?.retireAssistantBridge(for: turnID)
+                        }
+                        return shouldPublish
+                    }
+                    guard shouldPublish else { return }
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
@@ -4169,7 +4272,13 @@ final class MeetingController: ObservableObject {
                     )
                 }
             } catch is CancellationError {
-                if let evaluationSequence {
+                let shouldPublish = await MainActor.run {
+                    controller.value?
+                        .finishAssistantGenerationWithoutSuggestion(
+                            requestID: requestID
+                        ) == true
+                }
+                if shouldPublish, let evaluationSequence {
                     _ = await hub.assistantCancelled(
                         basedOnSequence: evaluationSequence
                     )
@@ -4183,9 +4292,6 @@ final class MeetingController: ObservableObject {
                 let liveError = (error as? LiveAssistantFailure)?.cause
                     ?? error as? LiveAssistantError
                 await MainActor.run {
-                    if liveError != .usefulnessDeadlineExceeded {
-                        controller.value?.allowAssistantRetry(requestID: requestID)
-                    }
                     if let failure = error as? LiveAssistantFailure {
                         controller.value?.recordAssistantUsage(failure.usage)
                     }
@@ -4201,6 +4307,13 @@ final class MeetingController: ObservableObject {
                     Self.liveAssistantLogger.notice(
                         "assistant_inference_completed sequence=\(basedOnSequence, privacy: .public) trigger=\(trigger.rawValue, privacy: .public) outcome=\(CompanionInferenceOutcome.timedOut.rawValue, privacy: .public) total_ms=\(Self.milliseconds(from: observedAt, to: completedAt), privacy: .public)"
                     )
+                    let shouldPublish = await MainActor.run {
+                        controller.value?
+                            .finishAssistantGenerationWithoutSuggestion(
+                                requestID: requestID
+                            ) == true
+                    }
+                    guard shouldPublish else { return }
                     await hub.assistantFinishedWithoutSuggestion(
                         basedOnSequence: basedOnSequence,
                         trigger: trigger,
@@ -4219,12 +4332,21 @@ final class MeetingController: ObservableObject {
                 Self.liveAssistantLogger.error(
                     "assistant_inference_failed trigger=\(trigger.rawValue, privacy: .public) outcome=\(outcome.rawValue, privacy: .public) error_type=\(errorType, privacy: .public)"
                 )
+                let shouldPublish = await MainActor.run {
+                    controller.value?
+                        .finishAssistantGenerationWithoutSuggestion(
+                            requestID: requestID,
+                            allowRetry: true
+                        ) == true
+                }
+                guard shouldPublish else { return }
                 await hub.assistantFailed(
                     error.localizedDescription,
                     outcome: outcome
                 )
             }
         }
+        assistantGenerationTasks[requestID] = generationTask
     }
 
     private func assistantReferenceStateRevision(
@@ -4356,9 +4478,57 @@ final class MeetingController: ObservableObject {
         }
     }
 
-    private func allowAssistantRetry(requestID: UUID) {
-        guard assistantGenerationRequestID == requestID else { return }
+    private func cancelAssistantGenerations() {
+        _ = assistantGenerationArbitration.reset()
+        let tasks = assistantGenerationTasks.values
+        assistantGenerationTasks.removeAll()
+        tasks.forEach { $0.cancel() }
         assistantGenerationIdentity = nil
+        assistantGenerationTurnID = nil
+        assistantGenerationPrimaryTrigger = nil
+    }
+
+    private func cancelAssistantGenerationTasks(
+        _ requestIDs: Set<UUID>
+    ) {
+        for requestID in requestIDs {
+            assistantGenerationTasks.removeValue(forKey: requestID)?.cancel()
+        }
+    }
+
+    private func isAssistantGenerationRequestActive(
+        _ requestID: UUID
+    ) -> Bool {
+        assistantGenerationArbitration.contains(requestID)
+    }
+
+    private func claimAssistantGenerationSuggestion(
+        requestID: UUID
+    ) -> Bool {
+        let claim = assistantGenerationArbitration.claimSuggestion(
+            from: requestID
+        )
+        guard claim.isAccepted else { return false }
+        cancelAssistantGenerationTasks(claim.requestIDsToCancel)
+        return true
+    }
+
+    private func finishAssistantGenerationWithoutSuggestion(
+        requestID: UUID,
+        allowRetry: Bool = false
+    ) -> Bool {
+        let shouldPublish = assistantGenerationArbitration
+            .finishWithoutSuggestion(requestID: requestID)
+        assistantGenerationTasks.removeValue(forKey: requestID)
+        if shouldPublish, allowRetry {
+            assistantGenerationIdentity = nil
+        }
+        return shouldPublish
+    }
+
+    private func assistantGenerationRequestEnded(_ requestID: UUID) {
+        assistantGenerationArbitration.requestEnded(requestID)
+        assistantGenerationTasks.removeValue(forKey: requestID)
     }
 
     private static func milliseconds(from startedAt: Date, to endedAt: Date) -> Int {
@@ -4884,8 +5054,7 @@ final class MeetingController: ObservableObject {
 
     private func stopImmediately() {
         closeActiveInterviewArchive()
-        assistantGenerationTask?.cancel()
-        assistantGenerationTask = nil
+        cancelAssistantGenerations()
         assistantBridgeTask?.cancel()
         assistantBridgeTask = nil
         assistantBridgeRequestID = nil
@@ -4938,7 +5107,7 @@ final class MeetingController: ObservableObject {
     }
 
     deinit {
-        assistantGenerationTask?.cancel()
+        assistantGenerationTasks.values.forEach { $0.cancel() }
         assistantBridgeTask?.cancel()
         referencePreparationTask?.cancel()
         referenceEmbeddingWarmupTask?.cancel()

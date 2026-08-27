@@ -176,6 +176,12 @@ early interpretation cannot steer or constrain the substantive cue.
 
 Grounded Interview mode also offers an independent **Instant Text** experiment.
 It applies only to OpenAI, finalized interviewer turns, and disabled web search.
+The ordinary 800 ms partial check remains verified. If it has not produced a
+cue when the turn finalizes, the host keeps it alive and starts Instant Text as
+a hedge. The first request to complete a usable cue atomically wins and cancels
+its sibling; a no-show, failure, or timeout from one contender waits for the
+other before clearing assistant state. A hedged turn may therefore briefly
+consume two hosted requests even though only one completion is retained.
 The Responses request uses SSE with ordinary text output rather than a JSON
 schema. The model itself decides whether to answer using an exact wire prefix:
 `SKIP`, or `SHOW` followed by one compact spoken paragraph. The host does no
@@ -251,8 +257,10 @@ An 800 ms audio pause from `Other` schedules a structured shorthand outline
 from the current other-speaker partial before the 3 second final-turn boundary.
 A finalized `Other` turn schedules immediately as the reliable fallback. `You`
 turns remain visible in the transcript for comparison but do not schedule or
-replace the model outline. Exact partial/final duplicates for one other-speaker
-turn are coalesced. This is structural speaker routing, not a language
+replace the model outline. An already completed partial cue suppresses a
+redundant final request. Exact partial/final duplicates are otherwise coalesced,
+except when Instant Text is enabled and the verified partial is still running;
+that finalized request is the hedge. This is structural speaker routing, not a language
 heuristic; there is no keyword or pattern gate in front of the model. A
 completed decision that returns no outline leaves the previous suggestion intact and
 is retained as assistant state so
@@ -260,9 +268,10 @@ the display can distinguish "question checked, not clear enough" from "no
 inference happened."
 
 Instant Text does not change partial-turn behavior. It starts only from the
-finalized-turn opportunity and measures both first renderable text and completed
-cue latency. This keeps its speed claim tied to words the user can actually see,
-not to an early JSON fragment that the display cannot yet render.
+finalized-turn opportunity, alongside rather than instead of an unfinished
+verified partial. The host measures both first renderable text and completed cue
+latency. This keeps its speed claim tied to words the user can actually see, not
+to an early JSON fragment that the display cannot yet render.
 
 Plausible Rehearsal can optionally start an independent early-bridge lane 600
 ms after the first `Other` partial arrives, without waiting for silence. It
