@@ -144,12 +144,15 @@ interview session archives.
 With OpenAI live transcription active, an 800 ms pause in the other speaker's
 audio can trigger the selected provider from the current partial transcript
 before the 3 second final-turn boundary. The OpenAI option uses Priority
-`gpt-5.6-luna` without reasoning through the Responses API. The Gemini option
+`gpt-5.6-luna` at low reasoning through the Responses API. The Gemini option
 uses `gemini-3.7-flash` at medium thinking through the Interactions API.
 With a Gemini key but no OpenAI key, capture and transcription remain local and
 the Gemini request starts when the completed turn's local transcript is ready.
-The finalized turn remains a fallback, and an exact partial/final duplicate is
-coalesced rather than billed twice. The user's speech stays visible in the
+The finalized turn remains a fallback. A completed partial cue suppresses a
+redundant final request. With Instant Text enabled, a still-running verified
+partial is retained while a finalized plain-text request races it; the first
+completed cue wins and cancels the other request. Without that hedge, an exact
+partial/final duplicate is coalesced rather than billed twice. The user's speech stays visible in the
 transcript and its concrete details override a conflicting retained draft;
 generic wording affects only the final style pass. Explicit speaker and
 capture-purpose state provides this routing; there is no keyword or regex gate.
@@ -272,8 +275,11 @@ explicit:
   speech-recognition setting and is not inferred from the resume.
 - **Answer Mode** includes an opt-in **Instant text stream (experimental)**
   switch for grounded OpenAI interviews. It streams a clearly marked plain-text
-  draft on finalized turns with search off. Verified structured output remains
-  automatic for Gemini, meetings, partial turns, rehearsal mode, and web search.
+  draft on finalized turns with search off when the verified partial has not
+  already produced a cue. The two requests race and the first completed cue
+  wins, so a slow turn may briefly consume two OpenAI requests. Verified
+  structured output remains automatic for Gemini, meetings, partial turns,
+  rehearsal mode, and web search.
 - **Reference Library** is the durable, shared document folder used for
   grounding Meeting Assistant, Answer Mirror, and both generated replays.
 - **Speech Recognition Hints** contains exact terminology, expected languages,
@@ -473,8 +479,10 @@ The proof of concept includes:
   supplies a manual boundary for controlled comparisons.
 - Meeting Assistant and Answer Mirror check an other-speaker partial after an
   800 ms audio pause when OpenAI live transcription supplies partial text,
-  immediately check a new finalized turn, and coalesce an unchanged
-  partial/final pair. In Gemini-only mode, the check starts after local
+  then use the finalized turn as a fallback. Instant Text retains a still-running
+  verified partial and races it with the finalized plain-text stream; a cue
+  already completed from the partial suppresses the fallback. Other unchanged
+  partial/final pairs are coalesced. In Gemini-only mode, the check starts after local
   transcription returns the completed turn. The selected capture purpose
   chooses the model-backed behavior explicitly; the user's turns never replace
   the current response outline.

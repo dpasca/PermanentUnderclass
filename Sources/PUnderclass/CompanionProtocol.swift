@@ -493,7 +493,7 @@ actor CompanionEventHub {
                         "Show an experimental early bridge, then a plausible rehearsal draft"
                 } else if state.session.deliveryMode == .instantText {
                     state.session.behaviorDetail =
-                        "Stream a verification-labeled plain-text cue on finalized interviewer turns"
+                        "Hedge a slow verified pause check with a verification-labeled plain-text final-turn stream"
                 } else {
                     state.session.behaviorDetail = answerMode == .plausibleRehearsal
                         ? "Draft plausible, project-specific rehearsal answers to verify"

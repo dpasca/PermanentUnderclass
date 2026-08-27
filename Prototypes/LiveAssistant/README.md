@@ -49,10 +49,11 @@ Useful interactions:
   turns do not replace the current result. The browser itself never decides via
   text matching.
 - In grounded interviews, **Instant text stream (experimental)** can replace
-  only the finalized-turn request with plain text. It uses no JSON schema and
-  displays words after the model's `SHOW` control line. The draft is marked
-  `LIVE TEXT DRAFT · VERIFY`; every unsupported context falls back to the
-  structured path automatically.
+  a slow verified partial with a finalized-turn plain-text hedge. Both requests
+  remain live until one completes a cue, then the loser is cancelled. Instant
+  Text uses no JSON schema and displays words after the model's `SHOW` control
+  line. The draft is marked `LIVE TEXT DRAFT · VERIFY`; every unsupported
+  context falls back to the structured path automatically.
 - Approach-oriented cues remain available when local files do not support the
   topic, but they use hypothetical phrasing such as "I would…" rather than
   inventing personal history.
