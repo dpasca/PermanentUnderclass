@@ -80,6 +80,7 @@ final class HoldToDictateService {
     private var lastLivePreviewByteCount = 0
     private var activeStreamID: String?
     private var streamDidFail = false
+    private var streamTailBuffer: DictationStreamTailBuffer?
     private var generation = UUID()
     private var transcriberState: SocketState = .idle
     private var transcriberFailureMessage: String?
@@ -690,15 +691,23 @@ final class HoldToDictateService {
         let streamID = streamHandle == nil
             ? nil
             : "dictation-\(UUID().uuidString)"
+        let streamTailBuffer = streamHandle == nil
+            ? nil
+            : DictationStreamTailBuffer()
 
         let pipeline = AudioTrackPipeline(
             label: "PUnderclass.Audio.Dictation",
             onChunk: { chunk in
                 buffer.append(chunk)
-                if let streamHandle, let streamID {
+                if
+                    let streamHandle,
+                    let streamID,
+                    let readyAudio = streamTailBuffer?.append(chunk),
+                    !readyAudio.isEmpty
+                {
                     streamHandle.appendStream(
                         streamID: streamID,
-                        pcm16Audio: chunk
+                        pcm16Audio: readyAudio
                     )
                 }
             },
@@ -717,6 +726,7 @@ final class HoldToDictateService {
         recordingTarget = pasteTarget
         audioBuffer = buffer
         self.pipeline = pipeline
+        self.streamTailBuffer = streamTailBuffer
         microphoneCapture = capture
         recordingHandler(true)
         phaseHandler(
@@ -820,6 +830,7 @@ final class HoldToDictateService {
         let capture = microphoneCapture
         let pipeline = pipeline
         let buffer = audioBuffer
+        let streamTailBuffer = streamTailBuffer
         let pasteTarget = wasInterrupted ? nil : recordingTarget
         let receivedMicrophoneBuffer = microphoneCaptureHadBuffer
             || capture?.hasReceivedBuffer == true
@@ -827,6 +838,7 @@ final class HoldToDictateService {
         microphoneCapture = nil
         self.pipeline = nil
         audioBuffer = nil
+        self.streamTailBuffer = nil
         self.recordingID = nil
         recordingTarget = nil
         isRecoveringMicrophone = false
@@ -837,10 +849,10 @@ final class HoldToDictateService {
         cancelInFlightPreviewWork()
         recordingHandler(false)
 
-        let audio = buffer?.take() ?? Data()
-        let peak = PCM16SignalGate.peakMagnitude(audio)
+        let capturedAudio = buffer?.take() ?? Data()
+        let peak = PCM16SignalGate.peakMagnitude(capturedAudio)
         Self.logger.notice(
-            "recording_finished bytes=\(audio.count, privacy: .public) peak=\(peak, privacy: .public)"
+            "recording_finished bytes=\(capturedAudio.count, privacy: .public) peak=\(peak, privacy: .public)"
         )
         guard receivedMicrophoneBuffer else {
             Self.logger.error("recording_failed reason=no_microphone_buffers")
@@ -857,7 +869,7 @@ final class HoldToDictateService {
             phaseHandler(currentWorkPhase())
             return
         }
-        guard audio.count >= 4_800 else {
+        guard capturedAudio.count >= QuickDictationAudioPolicy.minimumAudioBytes else {
             Self.logger.notice("recording_skipped reason=too_short")
             discardDictationStream()
             phaseHandler(currentWorkPhase())
@@ -873,11 +885,52 @@ final class HoldToDictateService {
             }
             return
         }
+        guard let preparedAudio = QuickDictationAudioPolicy.prepare(capturedAudio) else {
+            Self.logger.notice("recording_skipped reason=no_sustained_speech")
+            discardDictationStream()
+            phaseHandler(currentWorkPhase())
+            return
+        }
+        let audio = preparedAudio.pcm16Audio
+        Self.logger.notice(
+            "recording_prepared bytes=\(audio.count, privacy: .public) speech_frames=\(preparedAudio.speechFrameCount, privacy: .public) leading_trim_ms=\(preparedAudio.leadingMilliseconds(sampleRate: QuickDictationAudioPolicy.sampleRate), privacy: .public) trailing_trim_ms=\(preparedAudio.trailingMilliseconds(sourceByteCount: capturedAudio.count, sampleRate: QuickDictationAudioPolicy.sampleRate), privacy: .public) noise_rms=\(preparedAudio.noiseFloorRMS, privacy: .public) threshold_rms=\(preparedAudio.speechThresholdRMS, privacy: .public)"
+        )
 
         let languages = expectedLanguages()
         // A streamed dictation keeps the ID it was opened with so the transcript
         // that arrives can be matched to this recording's paste target.
-        let streamedID = streamDidFail ? nil : activeStreamID
+        var streamedID = streamDidFail ? nil : activeStreamID
+        if let candidateStreamID = streamedID {
+            if
+                let streaming = availableStreamingTranscriber,
+                let streamTailBuffer
+            {
+                let completion = streamTailBuffer.finish(
+                    retaining: preparedAudio.sourceRange
+                )
+                if completion.canUseStream {
+                    streaming.appendStream(
+                        streamID: candidateStreamID,
+                        pcm16Audio: completion.audioToForward
+                    )
+                } else {
+                    Self.logger.notice(
+                        "stream_fallback_to_batch reason=trailing_silence_already_uploaded bytes=\(completion.forwardedPastRetainedEndByteCount, privacy: .public)"
+                    )
+                    streaming.cancelStream(streamID: candidateStreamID)
+                    activeStreamID = nil
+                    streamedID = nil
+                }
+            } else {
+                Self.logger.notice(
+                    "stream_fallback_to_batch reason=tail_buffer_unavailable"
+                )
+                discardDictationStream()
+                streamedID = nil
+            }
+        } else {
+            streamTailBuffer?.discard()
+        }
         let transcriptID = streamedID ?? "dictation-\(UUID().uuidString)"
         let recovery: QuickDictationRecoveryEntry
         do {
@@ -890,6 +943,7 @@ final class HoldToDictateService {
                 "recording_retained recovery_id=\(recovery.id.uuidString, privacy: .public)"
             )
         } catch {
+            discardDictationStream()
             Self.logger.fault(
                 "recording_retention_failed error=\(error.localizedDescription, privacy: .public)"
             )
@@ -901,6 +955,7 @@ final class HoldToDictateService {
             return
         }
         guard let transcriber else {
+            discardDictationStream()
             retainRecovery(
                 recovery,
                 message: "The selected Quick Dictation model is unavailable."
@@ -912,6 +967,7 @@ final class HoldToDictateService {
             !isAnyFinalTranscriberReady,
             let transcriberFailureMessage
         {
+            discardDictationStream()
             retainRecovery(
                 recovery,
                 message: transcriberFailureMessage
@@ -925,6 +981,7 @@ final class HoldToDictateService {
                 languages: languages
             )
         } catch {
+            discardDictationStream()
             retainRecovery(recovery, message: error.localizedDescription)
             return
         }
@@ -1018,6 +1075,8 @@ final class HoldToDictateService {
     /// Abandons the open stream without publishing a result, for recordings
     /// that will never be transcribed or that fall back to the batch upload.
     private func discardDictationStream() {
+        streamTailBuffer?.discard()
+        streamTailBuffer = nil
         if let activeStreamID {
             availableStreamingTranscriber?.cancelStream(streamID: activeStreamID)
         }
@@ -1760,13 +1819,16 @@ final class HoldToDictateService {
             scheduleLivePreview(recordingID: recordingID)
             return
         }
-        guard PCM16SignalGate.containsAudibleSignal(bufferedAudio) else {
+        let previewAudio = QuickDictationLivePreviewPolicy.previewAudio(
+            from: bufferedAudio
+        )
+        guard let preparedAudio = QuickDictationAudioPolicy.prepare(previewAudio) else {
             scheduleLivePreview(recordingID: recordingID)
             return
         }
 
         lastLivePreviewByteCount = bufferedAudio.count
-        let audio = QuickDictationLivePreviewPolicy.previewAudio(from: bufferedAudio)
+        let audio = preparedAudio.pcm16Audio
         let context: TranscriptionContext
         do {
             context = try makeTranscriptionContext(delay: .minimal)
@@ -1807,15 +1869,8 @@ final class HoldToDictateService {
 }
 
 enum PCM16SignalGate {
-    /// Avoids passing silence to a bounded ASR model. Some Core ML execution
-    /// paths cannot construct a valid encoder tensor for all-silence input.
-    static func containsAudibleSignal(
-        _ pcm16Audio: Data,
-        minimumPeak: Int32 = 64
-    ) -> Bool {
-        peakMagnitude(pcm16Audio) >= minimumPeak
-    }
-
+    /// Separates a dead or muted digital input from a healthy microphone whose
+    /// sustained-speech decision is made by `QuickDictationAudioPolicy`.
     static func peakMagnitude(_ pcm16Audio: Data) -> Int32 {
         pcm16Audio.withUnsafeBytes { rawBuffer in
             rawBuffer.bindMemory(to: Int16.self).reduce(into: Int32(0)) { peak, sample in

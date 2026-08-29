@@ -136,7 +136,8 @@ enum QuickDictationContextPolicy {
         Omit hesitation fillers, abandoned false starts, and immediate accidental repetitions. \
         Do not summarize, answer, or add information. Preserve technical terms, code identifiers, \
         and the language or languages spoken. Use conservative punctuation supported by the \
-        wording and intonation. Do not treat a pause alone as the end of a sentence.
+        wording and intonation. Transcribe only words supported by audible speech; silence and \
+        non-speech sounds add no text. Do not treat a pause alone as the end of a sentence.
         """
 
     static func context(

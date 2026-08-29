@@ -327,17 +327,22 @@ delivery, it switches to **Recovering microphone** and rebuilds capture twice.
 If recovery fails, it keeps any audio already captured and shows an explicit
 failure instead of silently treating the recording as empty. Audio packets that
 contain only digital silence are also reported rather than shown as healthy.
+An otherwise healthy capture is sent to recognition only after sustained speech
+is present: room tone and isolated shortcut or keyboard clicks produce no text.
+The leading and trailing quiet portions are removed with a small amount of
+speech padding, while pauses between spoken phrases remain intact.
 
 With GPT-Transcribe selected, audio streams to the transcription session **while
 the user speaks** rather than being uploaded after the shortcut is released. The
 stream remains one transcription turn for the entire shortcut hold and is
 committed only when the shortcut is released. Brief hesitations and microphone
 level differences therefore cannot manufacture intermediate turn boundaries or
-their associated punctuation. Streaming still keeps the release-time upload
-limited to the unsent tail. If the stream breaks at any point, the complete
-recording is still buffered locally and is uploaded through the original
-one-shot path at release, so a broken stream costs latency rather than the
-dictation.
+their associated punctuation. The newest two seconds stay buffered locally
+until release, so the pause before the modifier keys come up can be omitted from
+the committed turn. Older audio continues uploading while the user speaks. If a
+longer release pause was already uploaded, or if the stream breaks at any point,
+the speech-bounded recording is uploaded through the one-shot path instead, so
+the dictation is preserved without committing known trailing silence.
 
 Engines that cannot stream keep the bounded-snapshot preview loop, and any
 preview still in flight is cancelled when the shortcut is released so it cannot

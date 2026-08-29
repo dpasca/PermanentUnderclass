@@ -1263,15 +1263,101 @@ final class PUnderclassTests: XCTestCase {
         )
     }
 
-    func testQuickDictationDoesNotSendSilenceToParakeet() {
-        let silence = Data(repeating: 0, count: 9_600)
-        XCTAssertFalse(PCM16SignalGate.containsAudibleSignal(silence))
+    func testQuickDictationRejectsSilenceAndAnIsolatedSpike() {
+        let silence = pcm16Audio(frameAmplitudes: Array(repeating: 0, count: 50))
+        XCTAssertNil(QuickDictationAudioPolicy.prepare(silence))
 
-        var audible = Data(repeating: 0, count: 9_600)
-        withUnsafeBytes(of: Int16(65).littleEndian) { bytes in
-            audible.replaceSubrange(100..<102, with: bytes)
+        var click = silence
+        withUnsafeBytes(of: Int16(12_000).littleEndian) { bytes in
+            click.replaceSubrange(4_800..<4_802, with: bytes)
         }
-        XCTAssertTrue(PCM16SignalGate.containsAudibleSignal(audible))
+        XCTAssertNil(QuickDictationAudioPolicy.prepare(click))
+    }
+
+    func testQuickDictationRejectsSteadyRoomNoise() {
+        let roomNoise = pcm16Audio(
+            frameAmplitudes: Array(repeating: 300, count: 50)
+        )
+
+        XCTAssertNil(QuickDictationAudioPolicy.prepare(roomNoise))
+    }
+
+    func testQuickDictationKeepsSustainedQuietSpeech() throws {
+        let audio = pcm16Audio(
+            frameAmplitudes:
+                Array(repeating: 40, count: 15)
+                + Array(repeating: 260, count: 12)
+                + Array(repeating: 40, count: 25)
+        )
+
+        let prepared = try XCTUnwrap(
+            QuickDictationAudioPolicy.prepare(audio)
+        )
+
+        XCTAssertEqual(prepared.speechFrameCount, 12)
+        XCTAssertGreaterThan(prepared.pcm16Audio.count, 0)
+        XCTAssertLessThan(prepared.pcm16Audio.count, audio.count)
+        XCTAssertLessThan(prepared.speechThresholdRMS, 0.008)
+    }
+
+    func testQuickDictationTrimsOuterSilenceAndIgnoresReleaseClick() throws {
+        let audio = pcm16Audio(
+            frameAmplitudes:
+                Array(repeating: 40, count: 10)
+                + Array(repeating: 1_500, count: 10)
+                + Array(repeating: 40, count: 30)
+                + Array(repeating: 1_500, count: 10)
+                + Array(repeating: 40, count: 49)
+                + [10_000]
+        )
+
+        let prepared = try XCTUnwrap(
+            QuickDictationAudioPolicy.prepare(audio)
+        )
+
+        XCTAssertEqual(prepared.speechFrameCount, 20)
+        XCTAssertEqual(prepared.sourceRange.lowerBound, 0)
+        XCTAssertEqual(
+            prepared.sourceRange.upperBound,
+            70 * QuickDictationAudioPolicy.frameByteCount
+        )
+        XCTAssertEqual(
+            prepared.pcm16Audio.count,
+            prepared.sourceRange.count
+        )
+        XCTAssertEqual(
+            prepared.trailingMilliseconds(
+                sourceByteCount: audio.count,
+                sampleRate: QuickDictationAudioPolicy.sampleRate
+            ),
+            800
+        )
+    }
+
+    func testStreamTailWaitsForReleaseTimeSpeechBoundary() {
+        let buffer = DictationStreamTailBuffer(holdbackByteCount: 8)
+        let input = Data((0..<12).map(UInt8.init))
+
+        XCTAssertTrue(buffer.append(Data(input.prefix(6))).isEmpty)
+        XCTAssertEqual(
+            buffer.append(Data(input.suffix(6))),
+            Data([0, 1, 2, 3])
+        )
+
+        let completion = buffer.finish(retaining: 0..<9)
+        XCTAssertTrue(completion.canUseStream)
+        XCTAssertEqual(completion.audioToForward, Data([4, 5, 6, 7, 8]))
+    }
+
+    func testStreamTailFallsBackWhenSilenceWasAlreadyForwarded() {
+        let buffer = DictationStreamTailBuffer(holdbackByteCount: 4)
+        _ = buffer.append(Data((0..<10).map(UInt8.init)))
+
+        let completion = buffer.finish(retaining: 0..<5)
+
+        XCTAssertFalse(completion.canUseStream)
+        XCTAssertEqual(completion.forwardedPastRetainedEndByteCount, 1)
+        XCTAssertTrue(completion.audioToForward.isEmpty)
     }
 
     func testQuickDictationFactoryBuildsTheSelectedPrimaryTranscriber() {
@@ -1342,6 +1428,10 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertTrue(
             RealtimeRefinementClient.transcriptionPrompt(for: request)
                 .contains("Omit hesitation fillers")
+        )
+        XCTAssertTrue(
+            RealtimeRefinementClient.transcriptionPrompt(for: request)
+                .contains("only words supported by audible speech")
         )
         XCTAssertTrue(
             RealtimeRefinementClient.transcriptionPrompt(for: request)
@@ -2517,5 +2607,18 @@ final class PUnderclassTests: XCTestCase {
         // at the provider and only its release-time commit remains.
         XCTAssertNil(DictationTranscriptionProgress.finishing.fraction)
         XCTAssertNil(DictationTranscriptionProgress.transcribing.fraction)
+    }
+
+    private func pcm16Audio(frameAmplitudes: [Int16]) -> Data {
+        let samplesPerFrame = QuickDictationAudioPolicy.frameByteCount
+            / MemoryLayout<Int16>.size
+        var samples: [Int16] = []
+        samples.reserveCapacity(frameAmplitudes.count * samplesPerFrame)
+        for amplitude in frameAmplitudes {
+            for index in 0..<samplesPerFrame {
+                samples.append(index.isMultiple(of: 2) ? amplitude : -amplitude)
+            }
+        }
+        return samples.withUnsafeBytes { Data($0) }
     }
 }
