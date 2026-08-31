@@ -32,9 +32,15 @@ struct PUnderclassApp: App {
 
     var body: some Scene {
         WindowGroup("PermanentUnderclass") {
-            if let controller = applicationModel.controller {
+            if
+                let controller = applicationModel.controller,
+                let navigation = applicationModel.navigation,
+                let slashCommandCenter = applicationModel.slashCommandCenter
+            {
                 ContentView(
                     controller: controller,
+                    navigation: navigation,
+                    slashCommandCenter: slashCommandCenter,
                     documentationDemoMode: applicationModel.documentationDemoMode
                 )
             } else {
@@ -47,6 +53,14 @@ struct PUnderclassApp: App {
                 ? 560
                 : 900
         )
+        .commands {
+            CommandMenu("Commands") {
+                Button("Command Palette…") {
+                    applicationModel.slashCommandCenter?.present()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            }
+        }
 
         Window(
             "Meeting & Interview Preparation",
@@ -73,20 +87,41 @@ struct PUnderclassApp: App {
 }
 
 /// Owns the shared services used by the app's main and auxiliary windows.
+@MainActor
 final class PUnderclassApplicationModel: ObservableObject {
     let controller: MeetingController?
     let documentationDemoMode: DocumentationDemoMode?
+    let navigation: ApplicationNavigation?
+    let slashCommandCenter: SlashCommandCenter?
 
     init() {
         documentationDemoMode = DocumentationDemoMode.requested()
         let isSelfTest = DictationSelfTestRunner.isRequested
             || MeetingCaptureSelfTestRunner.isRequested
+        let resolvedController: MeetingController?
         if let documentationDemoMode {
-            controller = MeetingController.documentationDemo(documentationDemoMode)
+            resolvedController = MeetingController.documentationDemo(
+                documentationDemoMode
+            )
         } else if isSelfTest || !ApplicationInstanceCoordinator.shared.isPrimary {
-            controller = nil
+            resolvedController = nil
         } else {
-            controller = MeetingController()
+            resolvedController = MeetingController()
+        }
+        controller = resolvedController
+
+        if let resolvedController {
+            let navigation = ApplicationNavigation(
+                documentationDemoMode: documentationDemoMode
+            )
+            self.navigation = navigation
+            slashCommandCenter = SlashCommandCenter(
+                controller: resolvedController,
+                navigation: navigation
+            )
+        } else {
+            navigation = nil
+            slashCommandCenter = nil
         }
     }
 }
@@ -97,6 +132,8 @@ final class PUnderclassAppDelegate: NSObject, NSApplicationDelegate {
     private var meetingCaptureSelfTest: MeetingCaptureSelfTestRunner?
     private var headlessModeController: HeadlessModeController?
     private var documentationController: MeetingController?
+    private var documentationNavigation: ApplicationNavigation?
+    private var documentationSlashCommandCenter: SlashCommandCenter?
     private var documentationWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -201,10 +238,18 @@ final class PUnderclassAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @MainActor
     private func presentDocumentationWindow(for mode: DocumentationDemoMode) {
         let controller = MeetingController.documentationDemo(mode)
+        let navigation = ApplicationNavigation(documentationDemoMode: mode)
+        let slashCommandCenter = SlashCommandCenter(
+            controller: controller,
+            navigation: navigation
+        )
         let rootView = ContentView(
             controller: controller,
+            navigation: navigation,
+            slashCommandCenter: slashCommandCenter,
             documentationDemoMode: mode
         )
         let window = NSWindow(
@@ -221,6 +266,8 @@ final class PUnderclassAppDelegate: NSObject, NSApplicationDelegate {
         window.collectionBehavior.insert(.moveToActiveSpace)
 
         documentationController = controller
+        documentationNavigation = navigation
+        documentationSlashCommandCenter = slashCommandCenter
         documentationWindow = window
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)

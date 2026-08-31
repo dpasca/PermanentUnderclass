@@ -3,35 +3,23 @@ import CoreAudio
 import SwiftUI
 
 struct ContentView: View {
-    private enum AppTab: Hashable {
-        case quickDictation
-        case meeting
-        case interview
-    }
-
     @ObservedObject var controller: MeetingController
+    @ObservedObject var navigation: ApplicationNavigation
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
+    private let slashCommandCenter: SlashCommandCenter
     private let documentationDemoMode: DocumentationDemoMode?
-    /// Dictation leads: it is the part that works with no account, no key, and
-    /// no configuration.
-    @State private var selectedTab: AppTab = .quickDictation
-    @State private var expandedTranscriptPurpose: CapturePurpose?
 
     init(
         controller: MeetingController,
+        navigation: ApplicationNavigation,
+        slashCommandCenter: SlashCommandCenter,
         documentationDemoMode: DocumentationDemoMode? = nil
     ) {
         self.controller = controller
+        self.navigation = navigation
+        self.slashCommandCenter = slashCommandCenter
         self.documentationDemoMode = documentationDemoMode
-        switch documentationDemoMode {
-        case .meeting:
-            _selectedTab = State(initialValue: .meeting)
-        case .interview:
-            _selectedTab = State(initialValue: .interview)
-        case .quickDictation, nil:
-            _selectedTab = State(initialValue: .quickDictation)
-        }
     }
 
     var body: some View {
@@ -39,7 +27,7 @@ struct ContentView: View {
             sharedHeader
             Divider()
 
-            TabView(selection: $selectedTab) {
+            TabView(selection: $navigation.selectedTab) {
                 QuickDictationHistoryView(controller: controller)
                     .tabItem {
                         Label("Quick Dictation", systemImage: "mic.badge.plus")
@@ -74,14 +62,23 @@ struct ContentView: View {
             controller.refreshProcesses()
             controller.refreshCompanionGatewayEndpoint()
         }
+        .onChange(of: navigation.settingsRequest) { _, request in
+            guard let request else { return }
+            controller.requestSettings(request.section)
+            openSettings()
+        }
+        .onChange(of: navigation.preparationRequest) { _, request in
+            guard let request else { return }
+            controller.preparationPurpose = request.purpose
+            openWindow(id: PUnderclassWindow.preparation)
+        }
     }
 
     /// Opens the Settings scene at a specific section. `openSettings` is the
     /// only reliable way to present it; the controller just records where to
     /// land.
     private func showSettings(_ section: SettingsSection) {
-        controller.requestSettings(section)
-        openSettings()
+        navigation.openSettings(section)
     }
 
     private var meetingTab: some View {
@@ -93,7 +90,7 @@ struct ContentView: View {
     }
 
     private func captureTab(for purpose: CapturePurpose) -> some View {
-        let isTranscriptExpanded = expandedTranscriptPurpose == purpose
+        let isTranscriptExpanded = navigation.expandedTranscriptPurpose == purpose
         let isLiveCaptureActive = controller.isListening
             && controller.capturePurpose == purpose
 
@@ -119,7 +116,7 @@ struct ContentView: View {
                     isExpanded: isTranscriptExpanded
                 ) {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        expandedTranscriptPurpose = isTranscriptExpanded
+                        navigation.expandedTranscriptPurpose = isTranscriptExpanded
                             ? nil
                             : purpose
                     }
@@ -348,6 +345,15 @@ struct ContentView: View {
             }
             modelMenu
             apiEstimateButton
+
+            Button(action: slashCommandCenter.present) {
+                Text("/")
+                    .font(.callout.monospaced().weight(.bold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.bordered)
+            .help("Commands — press /")
+            .accessibilityLabel("Open slash commands")
 
             Button {
                 showSettings(.general)
@@ -611,14 +617,14 @@ struct ContentView: View {
 
     private func handlePrimaryCaptureAction(for purpose: CapturePurpose) {
         if controller.syntheticInterviewState.isActive {
-            selectedTab = controller.syntheticInterviewState.purpose == .meeting
+            navigation.selectedTab = controller.syntheticInterviewState.purpose == .meeting
                 ? .meeting
                 : .interview
         } else if controller.isListening {
             if controller.capturePurpose == purpose {
                 controller.stopCapture()
             } else {
-                selectedTab = controller.capturePurpose == .interview
+                navigation.selectedTab = controller.capturePurpose == .interview
                     ? .interview
                     : .meeting
             }
@@ -839,7 +845,7 @@ struct ContentView: View {
     }
 
     private var visibleStatusMessage: String {
-        switch selectedTab {
+        switch navigation.selectedTab {
         case .meeting:
             controller.syntheticInterviewState.isActive
                 && controller.syntheticInterviewState.purpose == .meeting
@@ -862,8 +868,7 @@ struct ContentView: View {
         let snapshot = state.snapshot
 
         return Button {
-            controller.preparationPurpose = purpose
-            openWindow(id: PUnderclassWindow.preparation)
+            navigation.openPreparation(for: purpose)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 10) {
@@ -1119,7 +1124,7 @@ struct ContentView: View {
 
                 if let otherReplayPurpose {
                     Button("Open \(otherReplayPurpose.title)") {
-                        selectedTab = otherReplayPurpose == .meeting
+                        navigation.selectedTab = otherReplayPurpose == .meeting
                             ? .meeting
                             : .interview
                     }
