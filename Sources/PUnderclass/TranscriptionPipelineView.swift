@@ -101,9 +101,9 @@ struct QuickDictationPreviewControl: View {
                 Text("Show text while I speak")
                     .font(.callout.weight(.semibold))
                 Text(
-                    controller.refinementEngine.isCloud
+                    controller.resolvedDictationEngine.isCloud
                         ? "Words appear in the floating panel as you talk, from the same session that produces the final text."
-                        : "While held, periodically runs \(controller.refinementEngine.title) to update the floating panel. Turning this off does not affect the final text."
+                        : "While held, periodically runs \(controller.resolvedDictationEngine.title) to update the floating panel. Turning this off does not affect the final text."
                 )
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -189,8 +189,8 @@ struct ModelUsageSummary: View {
         VStack(alignment: .leading, spacing: 5) {
             row(
                 workflow: "Quick Dictation",
-                model: controller.refinementEngine.modelName,
-                isCloud: controller.refinementEngine.isCloud,
+                model: controller.resolvedDictationEngine.modelName,
+                isCloud: controller.resolvedDictationEngine.isCloud,
                 note: "your choice"
             )
             row(
@@ -205,9 +205,9 @@ struct ModelUsageSummary: View {
             )
             row(
                 workflow: "Live capture · final",
-                model: controller.resolvedDictationEngine.modelName,
-                isCloud: controller.resolvedDictationEngine.isCloud,
-                note: "same as Quick Dictation"
+                model: controller.resolvedCaptureEngine.modelName,
+                isCloud: controller.resolvedCaptureEngine.isCloud,
+                note: controller.languageAssistanceMode.isEnabled ? "Japanese + English" : "your choice"
             )
             row(
                 workflow: "Live assistants · cues",
@@ -293,13 +293,13 @@ struct TranscriptionPipelineDiagram: View {
                     TranscriptionPipelineConnector(label: "TURN\nENDS")
                     TranscriptionStageCard(
                         stage: "STAGE 2 · FINAL",
-                        modelName: controller.resolvedDictationEngine.modelName,
-                        role: "\(controller.resolvedDictationEngine.title) · complete turn",
+                        modelName: controller.resolvedCaptureEngine.modelName,
+                        role: "\(controller.resolvedCaptureEngine.title) · complete turn",
                         detail: controller.capability.isCloudEnabled
                             ? "Receives the captured turn audio and replaces or refines the live wording using the selected local or cloud engine."
                             : "Produces the first transcript for the completed turn entirely on this Mac.",
                         badge: selectedLocationBadge,
-                        systemImage: controller.resolvedDictationEngine.systemImage,
+                        systemImage: controller.resolvedCaptureEngine.systemImage,
                         color: .green
                     )
                 }
@@ -308,44 +308,44 @@ struct TranscriptionPipelineDiagram: View {
 
                 workflowTitle(
                     "Quick Dictation",
-                    detail: controller.refinementEngine.isCloud
+                    detail: controller.resolvedDictationEngine.isCloud
                         ? "One session uploads while you speak, then commits the complete dictation when you release the shortcut."
                         : "The selected model is reused; the live-capture model is not involved."
                 )
                 HStack(alignment: .center, spacing: 8) {
                     TranscriptionStageCard(
-                        stage: controller.refinementEngine.isCloud
+                        stage: controller.resolvedDictationEngine.isCloud
                             ? "WHILE HELD · UPLOADING"
                             : "OPTIONAL STAGE · WHILE HELD",
-                        modelName: controller.refinementEngine.modelName,
-                        role: controller.refinementEngine.isCloud
-                            ? "\(controller.refinementEngine.title) · continuous upload"
-                            : "\(controller.refinementEngine.title) · bounded snapshots",
-                        detail: controller.refinementEngine.isCloud
+                        modelName: controller.resolvedDictationEngine.modelName,
+                        role: controller.resolvedDictationEngine.isCloud
+                            ? "\(controller.resolvedDictationEngine.title) · continuous upload"
+                            : "\(controller.resolvedDictationEngine.title) · bounded snapshots",
+                        detail: controller.resolvedDictationEngine.isCloud
                             ? "Audio uploads as you speak but remains one transcription turn. It is committed only when the shortcut is released. This is not gpt-live-transcribe."
                             : "Optional periodic transcriptions update the on-screen preview while audio is still growing. This is not gpt-live-transcribe.",
-                        badge: controller.refinementEngine.isCloud
+                        badge: controller.resolvedDictationEngine.isCloud
                             ? "ONE TURN"
                             : (controller.dictationPreviewEnabled ? "PREVIEW ON" : "PREVIEW OFF"),
                         systemImage: "text.bubble",
                         color: .orange,
-                        isEnabled: controller.refinementEngine.isCloud
+                        isEnabled: controller.resolvedDictationEngine.isCloud
                             || controller.dictationPreviewEnabled
                     )
                     TranscriptionPipelineConnector(
-                        label: controller.refinementEngine.isCloud
+                        label: controller.resolvedDictationEngine.isCloud
                             ? "SAME\nSTREAM"
                             : "SAME\nMODEL"
                     )
                     TranscriptionStageCard(
                         stage: "ON RELEASE · FINAL",
-                        modelName: controller.refinementEngine.modelName,
-                        role: "\(controller.refinementEngine.title) · full recording",
-                        detail: controller.refinementEngine.isCloud
+                        modelName: controller.resolvedDictationEngine.modelName,
+                        role: "\(controller.resolvedDictationEngine.title) · full recording",
+                        detail: controller.resolvedDictationEngine.isCloud
                             ? "Commits the last segment, then returns to the app and field focused when recording began, pastes there, and saves it in history."
                             : "Transcribes the complete clip once, then returns to the app and field focused when recording began, pastes there, and saves it in history.",
                         badge: selectedLocationBadge,
-                        systemImage: controller.refinementEngine.systemImage,
+                        systemImage: controller.resolvedDictationEngine.systemImage,
                         color: .green
                     )
                 }

@@ -277,7 +277,15 @@ final class SlashCommandTests: XCTestCase {
             "audio.process.select",
             "settings.api-keys",
             "privacy.local-only.enable",
-            "assistant.display.restart"
+            "assistant.display.restart",
+            "assistant.language.off",
+            "assistant.language.translate",
+            "assistant.language.replies",
+            "transcription.languages.auto",
+            "transcription.languages.japanese",
+            "transcription.languages.english-japanese",
+            "transcription.languages.english",
+            "settings.languages"
         ]
         XCTAssertTrue(
             expectedNames.isSubset(of: names),
@@ -323,6 +331,37 @@ final class SlashCommandTests: XCTestCase {
             stop?.availability.unavailableReason,
             "No live capture is running."
         )
+    }
+
+    func testLanguageCommandsRespectCaptureAndDictationAvailability() throws {
+        let controller = MeetingController.documentationDemo(.meeting)
+        let registry = SlashCommandRegistry(
+            controller: controller,
+            navigation: ApplicationNavigation(documentationDemoMode: .meeting)
+        )
+        func command(_ name: String) throws -> SlashCommand {
+            try XCTUnwrap(registry.commands().first { $0.name == name })
+        }
+
+        // Preferences can be configured before a provider key is available.
+        controller.apiKeyDraft = ""
+        controller.geminiAPIKeyDraft = ""
+        XCTAssertTrue(try command("assistant.language.replies").availability.isAvailable)
+        XCTAssertFalse(try command("assistant.language.off").availability.isAvailable)
+        XCTAssertTrue(try command("transcription.languages.japanese").availability.isAvailable)
+        XCTAssertEqual(SlashCommandMatcher.matches(registry.commands(),
+            query: "/assistant.language.translate").first?.name, "assistant.language.translate")
+
+        controller.isListening = true
+        XCTAssertFalse(try command("assistant.language.replies").availability.isAvailable)
+        XCTAssertFalse(try command("transcription.languages.japanese").availability.isAvailable)
+        XCTAssertTrue(try command("settings.languages").availability.isAvailable)
+
+        controller.isListening = false
+        controller.isDictating = true
+        XCTAssertFalse(try command("transcription.languages.auto").availability.isAvailable)
+        controller.isDictating = false
+        XCTAssertTrue(try command("transcription.languages.auto").availability.isAvailable)
     }
 
     private func makeCommand(

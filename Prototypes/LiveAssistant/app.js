@@ -318,6 +318,18 @@ function renderInferenceStatus() {
     return;
   }
 
+  if (session?.languageAssistanceMode && session.languageAssistanceMode !== "off") {
+    const working = assistant?.phase === "working";
+    setInferenceStatus(
+      working ? "working" : "active",
+      working ? "TRANSLATING" : "JAPANESE LANGUAGE ASSISTANCE",
+      working ? "Translating the latest speech" : "Listening for the other speaker",
+      "English translations update during speech or after completed local turns. Replies follow completed turns and include pronunciation and meaning.",
+      checkCount
+    );
+    return;
+  }
+
   if (assistant?.draft?.text) {
     const firstText = Number.isFinite(
       assistant.draft.firstRenderableTextMilliseconds
@@ -834,6 +846,12 @@ function previousEntriesFor(suggestions, current) {
 
 function outlineText(suggestion) {
   if (!suggestion) return "";
+  if (suggestion.languageAssistance) {
+    const { translation, reply } = suggestion.languageAssistance;
+    return [suggestion.question, translation,
+      reply?.segments.map((segment) => segment.text).join(""),
+      reply?.kana, reply?.romaji, reply?.meaning].filter(Boolean).join("\n");
+  }
   const assumptions = suggestion.answerMode === "plausibleRehearsal"
     && (suggestion.plausibleAssumptions || []).length
     ? `Verify: ${suggestion.plausibleAssumptions.join("; ")}`
@@ -850,6 +868,7 @@ function outlineText(suggestion) {
 }
 
 function groundingText(suggestion) {
+  if (suggestion.languageAssistance) return "AI translation · check important details";
   if (suggestion.deliveryMode === "instantText") {
     return "Live text draft · verify before repeating";
   }
@@ -949,6 +968,44 @@ function createGoogleSearchSuggestions(suggestion, className) {
   return container;
 }
 
+function createLanguageAssistance(assistance) {
+  if (!assistance) return null;
+  const panel = document.createElement("section");
+  panel.className = "language-assistance";
+  const addLine = (label, text, className, language = "en") => {
+    const row = document.createElement("div");
+    row.className = className;
+    const caption = document.createElement("small");
+    caption.textContent = label;
+    const content = document.createElement("p");
+    content.lang = language;
+    content.textContent = text;
+    row.append(caption, content);
+    panel.append(row);
+    return content;
+  };
+  addLine("ENGLISH TRANSLATION", assistance.translation, "language-translation");
+  if (assistance.reply) {
+    const reply = assistance.reply;
+    const sentence = addLine("SUGGESTED REPLY", "", "language-reply", "ja");
+    reply.segments.forEach((segment) => {
+      if (!segment.reading) {
+        sentence.append(document.createTextNode(segment.text));
+        return;
+      }
+      const ruby = document.createElement("ruby");
+      const reading = document.createElement("rt");
+      reading.textContent = segment.reading;
+      ruby.append(document.createTextNode(segment.text), reading);
+      sentence.append(ruby);
+    });
+    addLine("KANA", reply.kana, "language-reading", "ja");
+    addLine("ROMAJI", reply.romaji, "language-reading", "ja-Latn");
+    addLine("MEANING", reply.meaning, "language-meaning");
+  }
+  return panel;
+}
+
 function createHistoryRound(suggestion, index) {
   const round = document.createElement("article");
   round.className = "history-round";
@@ -981,6 +1038,8 @@ function createHistoryRound(suggestion, index) {
   preamble.hidden = !suggestion.preamble;
 
   round.append(header, preamble, beats);
+  const languageAssistance = createLanguageAssistance(suggestion.languageAssistance);
+  if (languageAssistance) round.append(languageAssistance);
   const citations = createWebCitationLinks(
     suggestion,
     "history-web-citations"
@@ -1068,7 +1127,14 @@ function renderSuggestionStack(assistant) {
   preamble.textContent = current.preamble || "";
   preamble.hidden = !current.preamble;
   const meeting = state.snapshot?.session?.purpose === "meeting";
-  $("#answerLead").textContent = meeting ? "Respond from here" : "Speak from here";
+  $("#answerLead").textContent = current.languageAssistance
+    ? "Japanese language assistance" : meeting ? "Respond from here" : "Speak from here";
+  $("#answerQuestion").previousElementSibling.textContent = current.languageAssistance
+    ? "ORIGINAL SPEECH" : "QUESTION";
+  const languageAssistance = createLanguageAssistance(current.languageAssistance);
+  $("#languageAssistance").replaceChildren(...(languageAssistance ? [languageAssistance] : []));
+  $("#languageAssistance").hidden = !languageAssistance;
+  $("#answerBeats").hidden = Boolean(languageAssistance);
   const previousVersion = previousVersionFor(suggestions, current);
   replaceAnswerBeats(
     $("#answerBeats"),
@@ -1093,7 +1159,8 @@ function renderSuggestionStack(assistant) {
   $("#answerCard").classList.toggle("uses-general-knowledge", usesGeneralKnowledge);
   $("#answerCard").classList.toggle("is-plausible", plausibleRehearsal);
   $("#answerCard").classList.toggle("is-instant", instantText);
-  $("#groundingNotice").hidden = !instantText && !plausibleRehearsal && !usesGeneralKnowledge;
+  $("#groundingNotice").hidden = Boolean(current.languageAssistance)
+    || (!instantText && !plausibleRehearsal && !usesGeneralKnowledge);
   if (instantText) {
     $("#groundingNotice strong").textContent = "LIVE TEXT DRAFT · VERIFY";
     $("#groundingNotice small").textContent = current.isStreaming
@@ -1142,7 +1209,179 @@ function renderSuggestionStack(assistant) {
   return current;
 }
 
+// Completed model-aligned passages are stable. Only the draft at the end
+// receives newer transcript text while its next translation is in flight.
+function languagePassagesForTurn(turn, result) {
+  const language = result?.languageAssistance;
+  const passages = (language?.passages || []).map((passage) => ({...passage}));
+  if (!passages.length && language?.translation) {
+    passages.push({source: result.question, translation: language.translation, isComplete: !turn.partial});
+  }
+  let offset = 0;
+  for (const passage of passages) {
+    if (turn.text.startsWith(passage.source, offset)) {
+      offset += passage.source.length;
+      continue;
+    }
+    if (!passage.isComplete) {
+      // ASR commonly revises the live tail. Keep that revision in the draft,
+      // without duplicating all of the preceding Japanese above/below it.
+      passage.source = turn.text.slice(offset);
+      passage.pending = true;
+    } else {
+      // A completed translation still belongs to its original source until
+      // the corrected translation arrives. Make the changed tail explicit.
+      passages.push({source: turn.text.slice(offset), translation: "", isComplete: false, pending: true, wasRevised: true});
+    }
+    return passages;
+  }
+  const pending = turn.text.slice(offset);
+  if (pending) {
+    const draft = passages.at(-1);
+    if (draft && !draft.isComplete) {
+      draft.source += pending;
+      draft.pending = true;
+    } else {
+      passages.push({source: pending, translation: "", isComplete: false, pending: true});
+    }
+  }
+  return passages;
+}
+
+function renderLanguageConversation() {
+  const session = state.snapshot?.session;
+  const assistant = state.snapshot?.assistant;
+  const enabled = Boolean(session?.languageAssistanceMode && session.languageAssistanceMode !== "off");
+  $("#languageConversation").hidden = !enabled;
+  $(".teleprompter").classList.toggle("is-language-mode", enabled);
+  if (!enabled) return false;
+
+  const status = $("#languageConversationStatus");
+  status.textContent = !session.assistantAvailable
+    ? "Speech is still captured. Translation needs your selected assistant provider’s key and cloud access."
+    : assistant?.lastError
+      ? `Translation needs attention: ${assistant.lastError}`
+      : session.suggestionsPaused ? "Translations paused · speech and history remain visible"
+      : !session.isListening ? "Capture stopped · conversation history retained"
+      : session.liveTranscriptionAvailable === false
+        ? "Text and translations follow completed turns. Add an OpenAI key and restart capture for live words."
+        : "Completed passages stay fixed · only the live draft updates";
+  if (state.mode === "live" && state.connectionKind !== "connected") {
+    status.textContent = "Reconnecting to the Mac · showing the last received conversation";
+  }
+
+  const history = assistant?.translationHistory
+    || (assistant?.suggestionHistory || []).filter((item) => item.languageAssistance).slice().reverse();
+  const translated = new Map(history.map((item) => [item.topicID || item.id, item]));
+  const transcript = state.snapshot?.transcript;
+  const turns = new Map((transcript?.turns || []).map((turn) => [turn.id, {...turn, partial: false}]));
+  (transcript?.partials || []).filter((turn) => turn.text).forEach((turn) => {
+    if (!turns.has(turn.id)) turns.set(turn.id, {...turn, partial: true});
+  });
+  // A translated partial may arrive between clearing the partial and final text.
+  history.forEach((item) => {
+    const id = item.topicID || item.id;
+    if (!turns.has(id)) turns.set(id, {id, speaker: "other", text: item.question,
+      partial: item.trigger === "partialTranscript", startedAt: item.generatedAt});
+  });
+
+  const log = $("#languageConversationLog");
+  const follow = log.dataset.follow !== "false";
+  const scrollTop = log.scrollTop;
+  const logTop = log.getBoundingClientRect().top;
+  const anchor = [...log.children].find((row) => row.getBoundingClientRect().bottom > logTop);
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - logTop : 0;
+  const oldRows = new Map([...log.children].map((row) => [row.dataset.passageId, row]));
+  const retained = new Set();
+  let rowIndex = 0;
+  for (const turn of turns.values()) {
+    const passages = languagePassagesForTurn(turn, translated.get(turn.id));
+    for (const [index, passage] of passages.entries()) {
+      const id = `${turn.id}:${index}`;
+      let row = oldRows.get(id);
+      if (!row) {
+        row = document.createElement("article");
+        row.dataset.turnId = turn.id;
+        row.dataset.passageId = id;
+        const label = document.createElement("small");
+        const pair = document.createElement("div"); pair.className = "language-passage-pair";
+        const translation = document.createElement("p"); translation.className = "language-translated"; translation.lang = "en";
+        const source = document.createElement("p"); source.className = "language-source";
+        pair.append(translation, source);
+        row.append(label, pair);
+      }
+      const [label, pair] = row.children;
+      const [translation, source] = pair.children;
+      const ownSpeech = turn.speaker === "you";
+      row.classList.toggle("is-draft", !passage.isComplete && !ownSpeech);
+      row.classList.toggle("is-own-speech", ownSpeech);
+      const phase = passage.wasRevised ? "TRANSCRIPT CORRECTED"
+        : passage.isComplete ? "ENGLISH" : passage.pending ? "LIVE · translating" : "LIVE DRAFT · may change";
+      label.textContent = `${ownSpeech ? "You" : `Other speaker · ${phase}`} · ${formatTime(turn.startedAt)} · ${index + 1}`;
+      if (source.textContent !== passage.source) source.textContent = passage.source;
+      const meaning = passage.translation || (ownSpeech ? "" : "Translating…");
+      if (translation.textContent !== meaning) translation.textContent = meaning;
+      if (log.children[rowIndex] !== row) log.insertBefore(row, log.children[rowIndex] || null);
+      ++rowIndex;
+      retained.add(id);
+    }
+  }
+  oldRows.forEach((row, id) => { if (!retained.has(id)) row.remove(); });
+  if (!turns.size) {
+    const empty = document.createElement("p");
+    empty.textContent = "Both sides of the conversation will appear here as speech is transcribed.";
+    log.replaceChildren(empty);
+  }
+  if (follow) log.scrollTop = log.scrollHeight;
+  else if (anchor?.isConnected) log.scrollTop += anchor.getBoundingClientRect().top - logTop - anchorOffset;
+  else log.scrollTop = scrollTop;
+  const followButton = $("#languageFollowLive");
+  const updateFollowButton = () => {
+    const following = log.dataset.follow !== "false";
+    followButton.textContent = following ? "Pause scrolling" : "Follow live";
+    followButton.setAttribute("aria-pressed", String(following));
+    followButton.title = following ? "Keep your reading position while new passages arrive" : "Jump to the latest passage and follow new speech";
+  };
+  log.onscroll = () => {
+    if (log.scrollHeight - log.scrollTop - log.clientHeight > 64) log.dataset.follow = "false";
+    updateFollowButton();
+  };
+  followButton.onclick = () => {
+    log.dataset.follow = String(log.dataset.follow === "false");
+    if (log.dataset.follow === "true") log.scrollTop = log.scrollHeight;
+    updateFollowButton();
+  };
+  updateFollowButton();
+
+  const replyPanel = $("#languageConversationReply");
+  const showReplies = session.languageAssistanceMode === "translationAndReplies";
+  replyPanel.hidden = !showReplies;
+  $(".language-conversation-columns").classList.toggle("translation-only", !showReplies);
+  const reply = [...history].reverse().find((item) => item.languageAssistance?.reply);
+  const replyID = reply?.id || "none";
+  if (replyPanel.dataset.suggestionId !== replyID) {
+    replyPanel.dataset.suggestionId = replyID;
+    const heading = document.createElement("h2"); heading.textContent = "Suggested reply";
+    const context = document.createElement("p");
+    context.textContent = reply ? `Reply to: ${reply.question}` : "A Japanese reply with pronunciation will appear after the other speaker finishes a turn.";
+    replyPanel.replaceChildren(heading, context);
+    if (reply) {
+      const content = createLanguageAssistance(reply.languageAssistance);
+      content.firstElementChild.remove(); // The translation is already beside its original speech.
+      replyPanel.append(content);
+    }
+  }
+  return true;
+}
+
 function renderAssistant(assistant, paused = state.snapshot?.session?.suggestionsPaused) {
+  if (renderLanguageConversation()) {
+    $("#currentStage").hidden = true;
+    $("#localTranscriptView").hidden = true;
+    $("#answerHistory").hidden = true;
+    $("#pausedState").hidden = true;
+    return;
+  }
   if (state.snapshot?.session?.assistantAvailable === false) {
     $("#currentStage").hidden = true;
     $("#answerHistory").hidden = true;
@@ -1369,7 +1608,9 @@ function applyEnvelope(envelope) {
       break;
     case "transcript.cleared":
       state.snapshot.transcript = payload;
+      state.snapshot.assistant.translationHistory = [];
       renderTranscript(payload);
+      renderAssistant(state.snapshot.assistant);
       break;
     case "reference.status":
       state.snapshot.reference = payload;
@@ -1404,6 +1645,13 @@ function applyEnvelope(envelope) {
       state.snapshot.assistant.bridge = null;
       state.snapshot.assistant.draft = null;
       state.snapshot.assistant.suggestion = payload;
+      if (payload.languageAssistance) {
+        const history = state.snapshot.assistant.translationHistory ||= [];
+        const topicID = payload.topicID || payload.id;
+        const index = history.findIndex((item) => (item.topicID || item.id) === topicID);
+        if (index < 0) history.push(payload);
+        else history[index] = payload;
+      }
       state.snapshot.assistant.suggestionHistory = [
         payload,
         ...(state.snapshot.assistant.suggestionHistory || []).filter((item) => item.id !== payload.id)

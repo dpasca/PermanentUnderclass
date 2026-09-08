@@ -365,6 +365,7 @@ final class SlashCommandRegistry {
         addReplayCommands(using: add)
         addDictationCommands(using: add)
         addPreparationCommands(using: add)
+        addLanguageCommands(using: add)
         addAudioAndModelCommands(using: add)
         addSettingsCommands(using: add)
         addTroubleshootingCommands(using: add)
@@ -1458,6 +1459,71 @@ final class SlashCommandRegistry {
             ) { [controller] in
                 controller.delay = delay
             }
+        }
+    }
+
+    private func addLanguageCommands(using add: AddCommand) {
+        let assistanceReason = controller.isListening
+            ? "Stop live capture before changing language assistance."
+            : controller.syntheticInterviewState.isActive
+                ? "Stop the generated replay before changing language assistance."
+                : nil
+        let modes: [(String, LanguageAssistanceMode, String)] = [
+            ("off", .off, "Turn off translations and Japanese reply suggestions."),
+            ("translate", .translation,
+             "Translate the other speaker into English without suggesting replies. Uses the selected suggestion provider when available."),
+            ("replies", .translationAndReplies,
+             "Translate into English and suggest Japanese replies with kanji, furigana, kana, romaji, and English meaning. Uses the selected suggestion provider when available.")
+        ]
+        for (name, mode, description) in modes {
+            add(
+                "assistant.language.\(name)", "assistant.language.\(name)", nil,
+                mode == .off ? "Turn Off Japanese Assistance" : mode.title,
+                description, .preparation, "character.bubble",
+                ["Japanese", "translation", "furigana", "kana", "romaji", "language"],
+                assistanceReason ?? (controller.languageAssistanceMode == mode
+                    ? "This language assistance mode is already selected." : nil),
+                nil, .action
+            ) { [controller] in
+                controller.setLanguageAssistanceMode(mode)
+            }
+        }
+
+        let speechReason = controller.isListening
+            ? "Stop live capture before changing speech languages."
+            : controller.isDictationBusy
+                ? "Finish Quick Dictation before changing speech languages."
+                : nil
+        let presets: [(String, String, String)] = [
+            ("auto", "", "Detect Speech Language Automatically"),
+            ("japanese", "ja", "Recognize Japanese Speech"),
+            ("english-japanese", "en, ja", "Recognize English and Japanese Speech"),
+            ("english", "en", "Recognize English Speech")
+        ]
+        for (name, languages, title) in presets {
+            add(
+                "transcription.languages.\(name)", "transcription.languages.\(name)", nil,
+                title,
+                "Set speech hints for Quick Dictation and both call audio tracks. Japanese assistance additionally enables English and Japanese for calls.",
+                .audio, "waveform",
+                ["language", "speech", "recognition", "microphone", languages],
+                speechReason ?? (controller.languagesText == languages
+                    ? "These speech languages are already selected." : nil),
+                nil, .action
+            ) { [controller] in
+                controller.setTranscriptionLanguages(languages)
+            }
+        }
+
+        add(
+            "settings.languages", "settings.languages", nil,
+            "Open Language Settings",
+            "Configure Japanese assistance or enter custom speech language codes in General Settings.",
+            .settings, "character.bubble",
+            ["Japanese", "translation", "languages", "custom", "preferences"],
+            nil, nil, .action
+        ) { [navigation] in
+            navigation.openSettings(.general)
         }
     }
 

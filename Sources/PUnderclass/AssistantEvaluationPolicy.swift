@@ -23,6 +23,14 @@ enum AssistantEvaluationPolicy {
     ) -> Int {
         0
     }
+
+    static func shouldReevaluateFinalizedLanguageTurn(
+        mode: LanguageAssistanceMode,
+        trigger: CompanionAssistantTrigger,
+        previousTrigger: CompanionAssistantTrigger?
+    ) -> Bool {
+        mode.isEnabled && trigger == .finalizedTurn && previousTrigger == .partialTranscript
+    }
 }
 
 enum LiveAssistantUsefulnessPolicy {

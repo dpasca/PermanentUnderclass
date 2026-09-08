@@ -96,6 +96,8 @@ struct CompanionCursor: Codable, Equatable, Sendable, CustomStringConvertible {
 }
 
 struct CompanionSessionState: Codable, Equatable, Sendable {
+    var liveTranscriptionAvailable: Bool? = nil
+    var languageAssistanceMode: LanguageAssistanceMode? = nil
     var isListening = false
     var status = "Ready"
     var behaviorName = "Answer mirror"
@@ -234,7 +236,7 @@ enum CompanionAssistantTrigger: String, Codable, Equatable, Sendable {
 struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let basedOnSequence: Int
-    let question: String
+    var question: String
     var preamble: String? = nil
     let beats: [CompanionAnswerBeat]
     var citations: [CompanionCitation]
@@ -257,6 +259,7 @@ struct CompanionAssistantSuggestion: Codable, Equatable, Identifiable, Sendable 
     /// Provider-rendered Google Search suggestion widgets. These are kept only
     /// in the live companion state and must not be written to session archives.
     var googleSearchSuggestionsHTML: [String]? = nil
+    var languageAssistance: CompanionLanguageAssistance? = nil
 }
 
 enum CompanionAssistantPhase: String, Codable, Equatable, Sendable {
@@ -304,6 +307,8 @@ struct CompanionAssistantState: Codable, Equatable, Sendable {
     var draft: CompanionAssistantDraft?
     var suggestion: CompanionAssistantSuggestion?
     var suggestionHistory: [CompanionAssistantSuggestion] = []
+    /// One latest translation per turn, retained for this session and reconnects.
+    var translationHistory: [CompanionAssistantSuggestion]? = nil
     var lastError: String?
     var pinnedSuggestionID: String?
     var evaluatingSequence: Int?
@@ -451,7 +456,9 @@ actor CompanionEventHub {
         answerMode: AssistantAnswerMode = .grounded,
         earlyBridgeEnabled: Bool = false,
         deliveryMode: LiveAssistantDeliveryMode = .verified,
-        assistantAvailable: Bool = true
+        assistantAvailable: Bool = true,
+        languageAssistanceMode: LanguageAssistanceMode = .off,
+        liveTranscriptionAvailable: Bool = false
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.session.startedAt = Date()
@@ -467,6 +474,8 @@ actor CompanionEventHub {
         state.session.isPreparingSyntheticInterview =
             isPreparingSyntheticInterview
         state.session.assistantAvailable = assistantAvailable
+        state.session.languageAssistanceMode = languageAssistanceMode
+        state.session.liveTranscriptionAvailable = liveTranscriptionAvailable
         state.session.answerMode = purpose == .interview
             ? answerMode
             : .grounded
@@ -480,6 +489,11 @@ actor CompanionEventHub {
             state.session.behaviorName = "Local transcript"
             state.session.behaviorDetail =
                 "Completed turns are transcribed on this Mac; OpenAI response cues are off"
+        } else if languageAssistanceMode.isEnabled {
+            state.session.behaviorName = "Japanese language assistance"
+            state.session.behaviorDetail = languageAssistanceMode == .translation
+                ? "Translate the other speaker into English as live text arrives"
+                : "English translations and Japanese replies with pronunciation"
         } else {
             switch purpose {
             case .meeting:
@@ -647,6 +661,15 @@ actor CompanionEventHub {
         state.assistant.bridge = nil
         state.assistant.draft = nil
         state.assistant.suggestion = numberedSuggestion
+        if numberedSuggestion.languageAssistance != nil {
+            var history = state.assistant.translationHistory ?? []
+            if let index = history.firstIndex(where: { ($0.topicID ?? $0.id) == topicID }) {
+                history[index] = numberedSuggestion
+            } else {
+                history.append(numberedSuggestion)
+            }
+            state.assistant.translationHistory = history
+        }
         state.assistant.suggestionHistory.removeAll {
             $0.id == numberedSuggestion.id
         }

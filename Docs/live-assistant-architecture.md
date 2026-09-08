@@ -74,6 +74,62 @@ them, never receives the reference corpus, and does not call either provider
 directly. The host
 continues capture, indexing, and assistant work when no display is connected.
 
+## Language assistance
+
+`LanguageAssistanceMode` is an explicit, persisted session setting: off,
+translation, or translation with replies. Japanese-to-English is the initial
+language pair. `CompanionLanguageAssistance` carries a source language code,
+English translation, and an optional reply with text/reading segments, kana,
+romaji, and meaning. Segmented readings render as native HTML ruby elements;
+all model text is inserted through text nodes. This payload is optional on
+existing suggestions, preserving old session archives and companion fixtures.
+
+The selected OpenAI/Gemini adapter uses the same strict schema and shared
+validation. Language mode substitutes its translation prompt, forces grounded
+structured delivery, disables web search and early rehearsal bridges, and
+allows a translation without an answer. No keyword or script-detection gate
+classifies incoming speech. The model handles mixed-language input and decides
+whether a reply is appropriate.
+
+Both captured audio tracks receive `en` and `ja` hints in addition to the
+user's language codes. Whisper detects language for multilingual hints;
+explicit Japanese routes unsupported Parakeet selections to local Whisper.
+The existing acoustic turn detector is language-neutral. Hosted partials
+feed a fixed-cadence translation queue while speech continues; local capture
+triggers after transcription. The queue keeps one pending update per turn,
+does not cancel an in-flight translation, and preserves completed turns when
+newer speech arrives. Partial requests translate only, so reply pronunciation
+does not delay the first meaning; completed turns can generate replies.
+Finalization rechecks partial translations, and corrections from the final
+audio pass can refresh the current turn. Request cancellation and arbitration
+continue to reject superseded results. Translation is exempt from the
+interview cue's six-second usefulness deadline because the meaning remains
+useful after that window. Provider request timeouts still apply.
+
+The language display is a conversation log, independent of the cue teleprompter.
+Original partials render immediately; completed originals and translated text
+remain together in a scrollable history. `translationHistory` keeps one latest
+result per turn for the full session, independently of the four-entry cue cache,
+and is included in snapshots for reconnects. Each result includes aligned
+`passages` with verbatim source, English, and a model-authored `isComplete` flag.
+`LiveLanguageTranslationProgress` retains completed passages whose exact source
+still matches the transcript prefix and sends only the untranslated remainder
+as the next target, with completed speech as context. It never rephrases retained
+English. Source revisions invalidate the affected passage and those after it;
+the first replacement is marked corrected. Invalid source partitions remain
+uncommitted drafts, so a malformed alignment cannot drop words or advance the
+source cursor. Linguistic boundaries are model decisions, not text heuristics.
+The display renders keyed passage pairs, English first, with a visually distinct
+live draft. New updates preserve a visible passage's scroll offset while reading
+history; Pause scrolling also holds the position at the live edge. Follow live
+explicitly returns to the latest speech. Snapshots retain passage boundaries and
+wording; legacy payloads without passages still render as a single paired turn.
+
+Adding another pair should extend explicit configuration and transcription
+capability routing while reusing this payload, provider transport, and display.
+Japanese reading fields are currently required for replies; other languages
+will need a language-specific pronunciation contract.
+
 ## HTTP surface
 
 All routes are same-origin and versioned.

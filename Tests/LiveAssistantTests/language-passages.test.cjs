@@ -1,0 +1,81 @@
+const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const { resolve } = require("node:path");
+const { runInNewContext } = require("node:vm");
+const { test } = require("node:test");
+
+// Exercise the production, DOM-independent projection without launching an
+// extra browser or evaluating the companion's network/bootstrap code.
+const app = readFileSync(resolve(__dirname, "../../Prototypes/LiveAssistant/app.js"), "utf8");
+const start = app.indexOf("function languagePassagesForTurn(");
+const end = app.indexOf("function renderLanguageConversation(", start);
+assert.ok(start >= 0 && end > start);
+const project = runInNewContext(`${app.slice(start, end)}; languagePassagesForTurn`);
+const completed = { source: "今日は税金の話です。", translation: "Today we're discussing taxes.", isComplete: true };
+const draft = { source: "次に", translation: "Next…", isComplete: false };
+const result = (passages) => ({ question: passages.map(p => p.source).join(""),
+  languageAssistance: { passages, translation: passages.map(p => p.translation).join("\n") } });
+const turn = (text) => ({ text, partial: true, speaker: "other" });
+
+test("appended words change only the live draft and never mutate the snapshot", () => {
+  const input = result([completed, draft]);
+  const before = JSON.stringify(input);
+  const output = project(turn(completed.source + "次に領収書を"), input);
+  assert.equal(output.length, 2);
+  assert.equal(output[0].translation, completed.translation);
+  assert.equal(output[1].source, "次に領収書を");
+  assert.equal(output[1].pending, true);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test("a revised ASR draft never duplicates the preceding Japanese", () => {
+  const output = project(turn(completed.source + "続いて領収書を"), result([completed, draft]));
+  assert.equal(output.length, 2);
+  assert.equal(output[1].source, "続いて領収書を");
+  assert.equal(output.map(p => p.source).join(""), completed.source + "続いて領収書を");
+  assert.equal(output[0].translation, completed.translation);
+});
+
+test("new speech after a completed passage creates one separate pending row", () => {
+  const output = project(turn(completed.source + "そして"), result([completed]));
+  assert.equal(output.length, 2);
+  assert.equal(output[0].isComplete, true);
+  assert.equal(output[1].translation, "");
+  assert.equal(output[1].source, "そして");
+});
+
+test("corrections keep the old source/translation pair until its replacement arrives", () => {
+  const wrong = {source: "五万円です。", translation: "It's 50,000 yen.", isComplete: true};
+  const output = project(turn(completed.source + "十五万円です。"), result([completed, wrong]));
+  assert.equal(output.length, 3);
+  assert.equal(output[1].source, wrong.source);
+  assert.equal(output[1].translation, wrong.translation);
+  assert.equal(output[2].source, "十五万円です。");
+  assert.equal(output[2].wasRevised, true);
+});
+
+test("legacy snapshots, untranslated speech and both speakers remain readable", () => {
+  const legacy = project(turn("はい。次に"), {question: "はい。", languageAssistance: {translation: "Yes."}});
+  assert.equal(legacy.map(p => p.source).join(""), "はい。次に");
+  assert.equal(legacy[0].translation, "Yes.");
+  for (const speaker of ["you", "other"]) {
+    const output = project({text: "はい。", speaker, partial: false}, null);
+    assert.equal(output.length, 1);
+    assert.equal(output[0].source, "はい。");
+  }
+  assert.equal(project(turn(""), null).length, 0);
+});
+
+test("a long podcast keeps all completed pairs when the current phrase is revised", () => {
+  const passages = Array.from({length: 100}, (_, index) => ({
+    source: `項目${index}です。`, translation: `Item ${index}.`, isComplete: true
+  }));
+  const prefix = passages.map(p => p.source).join("");
+  const input = result([...passages, draft]);
+  for (let index = 0; index < 100; ++index) {
+    const output = project(turn(prefix + `修正中${index}`), input);
+    assert.equal(output.length, 101);
+    assert.equal(output[100].source, `修正中${index}`);
+    assert.equal(output[99].translation, passages[99].translation);
+  }
+});

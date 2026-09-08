@@ -135,6 +135,7 @@ struct LiveAssistantFailure: LocalizedError, Sendable {
 }
 
 private struct LiveAssistantOutput: Decodable {
+    let languageAssistance: CompanionLanguageAssistance?
     let shouldShow: Bool
     let grounding: CompanionSuggestionGrounding
     let question: String
@@ -264,7 +265,8 @@ struct LiveAssistantClient: Sendable {
         AssistantPromptPlan,
         CapturePurpose,
         LiveAssistantWebSearchMode,
-        AssistantAnswerMode
+        AssistantAnswerMode,
+        LanguageAssistanceMode
     ) throws -> Data
     private typealias ResponseLoader = @Sendable (
         String,
@@ -438,13 +440,14 @@ struct LiveAssistantClient: Sendable {
         session: URLSession = .shared
     ) {
         self.configuration = configuration
-        requestBuilder = { plan, purpose, webSearchMode, answerMode in
+        requestBuilder = { plan, purpose, webSearchMode, answerMode, languageAssistance in
             try Self.requestBody(
                 for: plan,
                 purpose: purpose,
                 webSearchMode: webSearchMode,
                 answerMode: answerMode,
-                configuration: configuration
+                configuration: configuration,
+                languageAssistance: languageAssistance
             )
         }
         responseLoader = { apiKey, body in
@@ -469,13 +472,14 @@ struct LiveAssistantClient: Sendable {
         responseLoader: @escaping @Sendable (String, Data) async throws -> Data
     ) {
         self.configuration = configuration
-        requestBuilder = { plan, purpose, webSearchMode, answerMode in
+        requestBuilder = { plan, purpose, webSearchMode, answerMode, languageAssistance in
             try Self.requestBody(
                 for: plan,
                 purpose: purpose,
                 webSearchMode: webSearchMode,
                 answerMode: answerMode,
-                configuration: configuration
+                configuration: configuration,
+                languageAssistance: languageAssistance
             )
         }
         self.responseLoader = { apiKey, body in
@@ -504,13 +508,14 @@ struct LiveAssistantClient: Sendable {
     ) -> LiveAssistantClient {
         return LiveAssistantClient(
             configuration: configuration,
-            requestBuilder: { plan, purpose, webSearchMode, answerMode in
+            requestBuilder: { plan, purpose, webSearchMode, answerMode, languageAssistance in
                 try GeminiLiveAssistantAPI.requestBody(
                     for: plan,
                     purpose: purpose,
                     webSearchMode: webSearchMode,
                     answerMode: answerMode,
-                    configuration: configuration
+                    configuration: configuration,
+                    languageAssistance: languageAssistance
                 )
             },
             responseLoader: { apiKey, body in
@@ -538,14 +543,20 @@ struct LiveAssistantClient: Sendable {
         previousRehearsalStory: AssistantRehearsalStoryContext? = nil,
         usefulnessDeadline: ContinuousClock.Instant? = nil,
         deliveryMode: LiveAssistantDeliveryMode = .verified,
+        languageAssistance: LanguageAssistanceMode = .off,
+        translatedSpeechContext: String = "",
         onInstantText: (@Sendable (
             LiveAssistantInstantTextUpdate
         ) async -> Void)? = nil
     ) async throws -> LiveAssistantGeneration {
-        let resolvedWebSearchMode = webSearchMode
+        // Translation needs spoken context, not the full document library.
+        // Keep that larger grounding context for completed-turn reply requests.
+        let references = languageAssistance == .translation ? nil : references
+        let answerMode: AssistantAnswerMode = languageAssistance.isEnabled ? .grounded : answerMode
+        let resolvedWebSearchMode: LiveAssistantWebSearchMode = languageAssistance.isEnabled ? .disabled : webSearchMode
             ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let resolvedDeliveryMode = Self.resolvedDeliveryMode(
-            requested: deliveryMode,
+            requested: languageAssistance.isEnabled ? .verified : deliveryMode,
             supportsInstantText: supportsInstantText,
             purpose: purpose,
             trigger: trigger,
@@ -553,7 +564,9 @@ struct LiveAssistantClient: Sendable {
             answerMode: answerMode
         )
         let behaviorInstructions: String
-        if resolvedDeliveryMode == .instantText {
+        if languageAssistance.isEnabled {
+            behaviorInstructions = languageAssistance.instructions
+        } else if resolvedDeliveryMode == .instantText {
             behaviorInstructions = [
                 Self.instantTextBehaviorInstructions,
                 configuration.additionalBehaviorInstructions
@@ -577,14 +590,16 @@ struct LiveAssistantClient: Sendable {
         let rehearsalStory = try previousRehearsalStory?.promptJSON() ?? ""
         let plan = AssistantPromptBuilder.plan(
             cachedPrefix: prefix,
-            recentTranscript: recentTranscript,
+            recentTranscript: [recentTranscript, translatedSpeechContext].filter { !$0.isEmpty }.joined(separator: "\n\n"),
             currentPartial: currentPartial,
             rehearsalStory: rehearsalStory,
             sessionContext: sessionContext,
             focusSpeaker: SpeakerTag.other.displayName(for: purpose),
             focusText: otherSpeakerText,
             focusState: trigger == .partialTranscript
-                ? "partial transcript observed after a pause; it may be unfinished"
+                ? (languageAssistance.isEnabled
+                    ? "live partial transcript while the speaker may still be talking; it may be unfinished"
+                    : "partial transcript observed after a pause; it may be unfinished")
                 : "finalized speaker turn"
         )
         if resolvedDeliveryMode == .instantText {
@@ -607,7 +622,8 @@ struct LiveAssistantClient: Sendable {
                 plan,
                 purpose,
                 resolvedWebSearchMode,
-                answerMode
+                answerMode,
+                languageAssistance
             ),
             usefulnessDeadline: usefulnessDeadline
         )
@@ -623,6 +639,7 @@ struct LiveAssistantClient: Sendable {
                 generationMilliseconds: firstAttemptMilliseconds,
                 purpose: purpose,
                 answerMode: answerMode,
+                languageAssistance: languageAssistance,
                 latencyMilestones: response.latencyMilestones(
                     validatedCueMilliseconds: firstAttemptMilliseconds
                 )
@@ -642,7 +659,8 @@ struct LiveAssistantClient: Sendable {
                     ),
                     purpose,
                     resolvedWebSearchMode,
-                    answerMode
+                    answerMode,
+                    languageAssistance
                 )
                 let retryStartedMilliseconds = Self.milliseconds(
                     from: ContinuousClock.now - startedAt
@@ -668,6 +686,7 @@ struct LiveAssistantClient: Sendable {
                     generationMilliseconds: generationMilliseconds,
                     purpose: purpose,
                     answerMode: answerMode,
+                    languageAssistance: languageAssistance,
                     latencyMilestones: retryResponse.latencyMilestones(
                         validatedCueMilliseconds: generationMilliseconds,
                         requestStartOffsetMilliseconds:
@@ -968,12 +987,15 @@ struct LiveAssistantClient: Sendable {
         purpose: CapturePurpose,
         webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
-        configuration: LiveAssistantConfiguration = .production
+        configuration: LiveAssistantConfiguration = .production,
+        languageAssistance: LanguageAssistanceMode = .off
     ) throws -> Data {
         let resolvedWebSearchMode = webSearchMode
             ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let defaultMaximumOutputTokens: Int
-        if resolvedWebSearchMode == .required {
+        if languageAssistance.isEnabled {
+            defaultMaximumOutputTokens = 1_600
+        } else if resolvedWebSearchMode == .required {
             defaultMaximumOutputTokens = answerMode == .plausibleRehearsal
                 ? 900
                 : 800
@@ -1021,7 +1043,8 @@ struct LiveAssistantClient: Sendable {
                     "strict": true,
                     "schema": outputSchema(
                         for: purpose,
-                        answerMode: answerMode
+                        answerMode: answerMode,
+                        languageAssistance: languageAssistance
                     )
                 ]
             ]
@@ -1143,6 +1166,7 @@ struct LiveAssistantClient: Sendable {
         generationMilliseconds: Int,
         purpose: CapturePurpose = .interview,
         answerMode: AssistantAnswerMode = .grounded,
+        languageAssistance: LanguageAssistanceMode = .off,
         latencyMilestones: LiveAssistantLatencyMilestones? = nil
     ) throws -> LiveAssistantGeneration {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1266,7 +1290,12 @@ struct LiveAssistantClient: Sendable {
             }
         }
         let allowedBeatCount: ClosedRange<Int>
-        if purpose == .meeting {
+        if languageAssistance.isEnabled {
+            guard output.languageAssistance?.isValid(for: languageAssistance) == true else {
+                throw LiveAssistantError.invalidResponse
+            }
+            allowedBeatCount = 0...0
+        } else if purpose == .meeting {
             allowedBeatCount = 3...5
         } else if answerMode == .plausibleRehearsal {
             allowedBeatCount = 3...3
@@ -1275,7 +1304,7 @@ struct LiveAssistantClient: Sendable {
         }
         guard
             !question.isEmpty,
-            purpose == .meeting || preamble?.isEmpty == false,
+            languageAssistance.isEnabled || purpose == .meeting || preamble?.isEmpty == false,
             allowedBeatCount.contains(beats.count),
             beats.allSatisfy({ !$0.label.isEmpty && !$0.point.isEmpty })
         else {
@@ -1352,7 +1381,8 @@ struct LiveAssistantClient: Sendable {
             plausibleRehearsalPlan: answerMode == .plausibleRehearsal
                 ? rehearsalPlan
                 : nil,
-            googleSearchSuggestionsHTML: visibleGoogleSearchSuggestionsHTML
+            googleSearchSuggestionsHTML: visibleGoogleSearchSuggestionsHTML,
+            languageAssistance: languageAssistance.isEnabled ? output.languageAssistance : nil
         )
         return LiveAssistantGeneration(
             suggestion: suggestion,
@@ -1454,8 +1484,27 @@ struct LiveAssistantClient: Sendable {
 
     static func outputSchema(
         for purpose: CapturePurpose,
-        answerMode: AssistantAnswerMode
+        answerMode: AssistantAnswerMode,
+        languageAssistance: LanguageAssistanceMode = .off
     ) -> [String: Any] {
+        if languageAssistance.isEnabled {
+            var schema = interviewOutputSchema
+            guard
+                var properties = schema["properties"] as? [String: Any],
+                var required = schema["required"] as? [String],
+                var beats = properties["beats"] as? [String: Any]
+            else {
+                return schema
+            }
+            beats["minItems"] = 0
+            beats["maxItems"] = 0
+            properties["beats"] = beats
+            properties["languageAssistance"] = CompanionLanguageAssistance.schema
+            required.append("languageAssistance")
+            schema["properties"] = properties
+            schema["required"] = required
+            return schema
+        }
         if purpose == .interview, answerMode == .plausibleRehearsal {
             var schema = interviewOutputSchema
             guard

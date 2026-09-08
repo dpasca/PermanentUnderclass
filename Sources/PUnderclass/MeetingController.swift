@@ -10,13 +10,14 @@ final class MeetingController: ObservableObject {
     @Published var exaAPIKeyDraft = ""
     @Published var webReferenceURLDraft = ""
     @Published var meetingContextPrompt =
-        "An English-language one-on-one technical company meeting. Speakers may have different regional or non-native English accents. Discussion may include software, hardware, APIs, product names, acronyms, numbers, and action items."
+        "A one-on-one meeting. Speakers may use different languages or accents. Preserve names, terminology, numbers, and action items in the language spoken."
     @Published private(set) var interviewContextPrompt =
         InterviewContextDraft.basicDescription
     @Published private(set) var interviewContextSuggestionPhase:
         InterviewContextSuggestionPhase = .idle
     @Published var keywordsText = ""
     @Published var languagesText = "en"
+    @Published private(set) var languageAssistanceMode: LanguageAssistanceMode = .off
     @Published var delay: TranscriptionDelay = .medium
     @Published var preparationPurpose: CapturePurpose = .meeting
     @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
@@ -125,6 +126,9 @@ final class MeetingController: ObservableObject {
         InterviewContextSuggestionClient()
     private var companionUpdateTail: Task<Void, Never>?
     private var assistantGenerationTasks: [UUID: Task<Void, Never>] = [:]
+    private var languageTranslationQueue = LiveLanguageTranslationQueue()
+    private var languageTranslationPump: Task<Void, Never>?
+    private var languageTranslationPumpID: UUID?
     private var assistantGenerationArbitration =
         AssistantGenerationArbitrationState()
     private var assistantGenerationIdentity: AssistantEvaluationIdentity?
@@ -256,6 +260,10 @@ final class MeetingController: ObservableObject {
         {
             refinementEngine = engine
         }
+        languageAssistanceMode = LanguageAssistanceMode(rawValue:
+            UserDefaults.standard.string(forKey: "PUnderclass.LanguageAssistanceMode") ?? ""
+        ) ?? .off
+        languagesText = UserDefaults.standard.string(forKey: "PUnderclass.TranscriptionLanguages") ?? "en"
         assistantAnswerMode = Self.storedAssistantAnswerMode()
         assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
             && Self.storedAssistantEarlyBridgeEnabled()
@@ -266,7 +274,7 @@ final class MeetingController: ObservableObject {
         refinementEngine = capability.resolvedEngine(preferring: refinementEngine)
         dictationOverlay.setEnabled(dictationPreviewEnabled)
         dictationOverlay.update(
-            engine: capability.resolvedEngine(preferring: refinementEngine)
+            engine: resolvedDictationEngine
         )
         // Core ML model loading is the longest launch task. Start it before
         // synchronous history and audio-device discovery so those operations
@@ -698,7 +706,7 @@ final class MeetingController: ObservableObject {
                 self.recordOpenAIUsage(usage)
             }
             refinementStates = [.you: .connecting, .other: .connecting]
-            switch capability.resolvedEngine(preferring: refinementEngine) {
+            switch resolvedCaptureEngine {
             case .localWhisper:
                 let client = WhisperRefinementClient(
                     onState: { [weak self] state in
@@ -798,9 +806,7 @@ final class MeetingController: ObservableObject {
             startMicrophoneCapture(sessionID: sessionID, isSwitch: false)
 
             if !usesHostedLiveTranscription {
-                let localModel = capability.resolvedEngine(
-                    preferring: refinementEngine
-                ).shortLabel
+                let localModel = resolvedCaptureEngine.shortLabel
                 statusMessage = isLiveAssistantAvailable
                     ? "Listening locally with \(localModel) — suggestions appear after each completed turn"
                     : "Listening locally with \(localModel) — AI suggestions are off"
@@ -1147,7 +1153,7 @@ final class MeetingController: ObservableObject {
             engine.rawValue,
             forKey: Self.refinementEngineDefaultsKey
         )
-        dictationOverlay.update(engine: engine)
+        dictationOverlay.update(engine: resolvedDictationEngine)
         if engine == .localWhisper {
             startWhisperWarmup()
         } else if engine == .localParakeet {
@@ -1156,6 +1162,32 @@ final class MeetingController: ObservableObject {
         if dictationEnabled {
             restartDictationService()
         }
+    }
+
+    func setLanguageAssistanceMode(_ mode: LanguageAssistanceMode) {
+        guard !isListening, !syntheticInterviewState.isActive else { return }
+        languageAssistanceMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "PUnderclass.LanguageAssistanceMode")
+        if resolvedCaptureEngine == .localWhisper {
+            startWhisperWarmup()
+        }
+    }
+
+    func setTranscriptionLanguages(_ text: String) {
+        guard !isListening, !isDictationBusy else { return }
+        languagesText = text
+        UserDefaults.standard.set(text, forKey: "PUnderclass.TranscriptionLanguages")
+        dictationOverlay.update(engine: resolvedDictationEngine)
+        if dictationEnabled {
+            restartDictationService()
+        }
+    }
+
+    var resolvedCaptureEngine: TranscriptRefinementEngine {
+        TranscriptionLanguagePolicy.resolvedEngine(
+            preferring: capability.resolvedEngine(preferring: refinementEngine),
+            languages: languageAssistanceMode.transcriptionLanguages(from: dictationLanguages())
+        )
     }
 
     func setDictationEnabled(_ enabled: Bool) {
@@ -1289,6 +1321,7 @@ final class MeetingController: ObservableObject {
     func clearTranscript(for purpose: CapturePurpose) {
         transcript.removeAll { $0.purpose == purpose }
         if capturePurpose == purpose {
+            if languageAssistanceMode.isEnabled { cancelAssistantGenerations() }
             localTrack.partialTranscript = ""
             remoteTrack.partialTranscript = ""
             enqueueCompanionUpdate { hub in
@@ -2594,6 +2627,12 @@ final class MeetingController: ObservableObject {
             remoteTrack.partialTranscript = text
         }
         publishCompanionPartial(id: id, speaker: speaker, text: text)
+        if languageAssistanceMode.isEnabled {
+            scheduleLiveAssistant(
+                trigger: .partialTranscript, turnID: id, sourceText: text,
+                speaker: speaker, purpose: syntheticInterviewState.purpose
+            )
+        }
         scheduleEarlyInterviewBridge(
             turnID: id,
             sourceText: text,
@@ -2804,6 +2843,13 @@ final class MeetingController: ObservableObject {
                     speaker: speaker,
                     text: text
                 )
+                if self.languageAssistanceMode.isEnabled {
+                    self.scheduleLiveAssistant(
+                        trigger: .partialTranscript,
+                        turnID: "\(speaker.rawValue)-\(itemID)",
+                        sourceText: text, speaker: speaker, purpose: purpose
+                    )
+                }
                 self.scheduleEarlyInterviewBridge(
                     turnID: "\(speaker.rawValue)-\(itemID)",
                     sourceText: text,
@@ -3057,6 +3103,7 @@ final class MeetingController: ObservableObject {
             return
         }
         let hadLiveText = !transcript[index].liveText.isEmpty
+        let previousText = transcript[index].text
         transcript[index].text = text
         transcript[index].refinement = .refined
         if hadLiveText {
@@ -3064,22 +3111,28 @@ final class MeetingController: ObservableObject {
         } else {
             let completedTurn = transcript[index]
             publishCompanionFinal(completedTurn)
-            if
-                isLiveAssistantAvailable,
-                AssistantEvaluationPolicy.shouldEvaluate(
-                    speaker: completedTurn.speaker,
-                    purpose: purpose
-                )
-            {
-                scheduleLiveAssistant(
-                    trigger: .finalizedTurn,
-                    turnID: transcriptID,
-                    sourceText: text,
-                    speaker: completedTurn.speaker,
-                    purpose: purpose,
-                    observedAt: Date()
-                )
-            }
+        }
+        // Correct the matching history entry even after a newer turn begins.
+        let revisesCurrentTranslation = languageAssistanceMode.isEnabled
+            && previousText != text
+            && isListening
+        let completedTurn = transcript[index]
+        if
+            !hadLiveText || revisesCurrentTranslation,
+            isLiveAssistantAvailable,
+            AssistantEvaluationPolicy.shouldEvaluate(
+                speaker: completedTurn.speaker,
+                purpose: purpose
+            )
+        {
+            scheduleLiveAssistant(
+                trigger: .finalizedTurn,
+                turnID: transcriptID,
+                sourceText: text,
+                speaker: completedTurn.speaker,
+                purpose: purpose,
+                observedAt: Date()
+            )
         }
     }
 
@@ -3112,7 +3165,8 @@ final class MeetingController: ObservableObject {
     }
 
     private func transcriptionContext(
-        for purpose: CapturePurpose
+        for purpose: CapturePurpose,
+        includeLanguageAssistance: Bool = true
     ) throws -> TranscriptionContext {
         let keywords = keywordsText
             .components(separatedBy: .newlines)
@@ -3136,9 +3190,13 @@ final class MeetingController: ObservableObject {
         return TranscriptionContext(
             prompt: contextPrompt(for: purpose).trimmingCharacters(
                 in: .whitespacesAndNewlines
-            ),
+            ) + (includeLanguageAssistance && languageAssistanceMode.isEnabled
+                ? "\nSpeech may be Japanese, English, or mixed on either audio track. Transcribe verbatim in the language spoken; do not translate."
+                : ""),
             keywords: keywords,
-            languages: languages,
+            languages: includeLanguageAssistance
+                ? languageAssistanceMode.transcriptionLanguages(from: languages)
+                : languages,
             delay: delay
         )
     }
@@ -3162,9 +3220,9 @@ final class MeetingController: ObservableObject {
     }
 
     private func startDictationService(requestAccess: Bool) {
-        if refinementEngine == .localWhisper || refinementEngine == .openAITranscribe {
+        if resolvedDictationEngine == .localWhisper || resolvedDictationEngine == .openAITranscribe {
             startWhisperWarmup()
-        } else if refinementEngine == .localParakeet {
+        } else if resolvedDictationEngine == .localParakeet {
             startParakeetWarmup()
         }
         let service: HoldToDictateService
@@ -3268,7 +3326,10 @@ final class MeetingController: ObservableObject {
 
     /// The engine dictation will actually use once availability is applied.
     var resolvedDictationEngine: TranscriptRefinementEngine {
-        capability.resolvedEngine(preferring: refinementEngine)
+        TranscriptionLanguagePolicy.resolvedEngine(
+            preferring: capability.resolvedEngine(preferring: refinementEngine),
+            languages: dictationLanguages()
+        )
     }
 
     private func restartDictationService() {
@@ -3397,13 +3458,15 @@ final class MeetingController: ObservableObject {
     }
 
     private func activateAssistantAnswerMode(for purpose: CapturePurpose) {
-        activeAssistantAnswerMode = purpose == .interview
+        activeAssistantAnswerMode = purpose == .interview && !languageAssistanceMode.isEnabled
             ? assistantAnswerMode
             : .grounded
         activeAssistantEarlyBridgeEnabled = purpose == .interview
+            && !languageAssistanceMode.isEnabled
             && assistantAnswerMode == .plausibleRehearsal
             && assistantEarlyBridgeEnabled
         activeAssistantDeliveryMode = purpose == .interview
+            && !languageAssistanceMode.isEnabled
             && assistantAnswerMode == .grounded
             && liveAssistantProvider == .openAI
             ? assistantDeliveryMode
@@ -3438,6 +3501,8 @@ final class MeetingController: ObservableObject {
             : .verified
         let assistantAvailable = isSyntheticSession
             || isLiveAssistantAvailable
+        let languageMode = languageAssistanceMode
+        let liveTranscriptionAvailable = isSyntheticSession || activeCaptureUsesHostedTranscription
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
                 isListening: listening,
@@ -3449,7 +3514,9 @@ final class MeetingController: ObservableObject {
                 answerMode: answerMode,
                 earlyBridgeEnabled: earlyBridgeEnabled,
                 deliveryMode: deliveryMode,
-                assistantAvailable: assistantAvailable
+                assistantAvailable: assistantAvailable,
+                languageAssistanceMode: languageMode,
+                liveTranscriptionAvailable: liveTranscriptionAvailable
             )
         }
     }
@@ -3860,7 +3927,8 @@ final class MeetingController: ObservableObject {
         speaker: SpeakerTag,
         purpose: CapturePurpose,
         observedAt: Date = Date(),
-        webSearchMode: LiveAssistantWebSearchMode? = nil
+        webSearchMode: LiveAssistantWebSearchMode? = nil,
+        fromLanguageQueue: Bool = false
     ) {
         guard AssistantEvaluationPolicy.shouldEvaluate(
             speaker: speaker,
@@ -3873,10 +3941,21 @@ final class MeetingController: ObservableObject {
         )
         guard !normalizedText.isEmpty else { return }
 
+        if languageAssistanceMode.isEnabled && !fromLanguageQueue {
+            enqueueLanguageTranslation(LiveLanguageTranslationRequest(
+                turnID: turnID, text: normalizedText, trigger: trigger,
+                speaker: speaker, purpose: purpose, observedAt: observedAt
+            ))
+            return
+        }
+
         let identity = AssistantEvaluationIdentity(
             turnID: turnID,
             text: normalizedText
         )
+        // Translate promptly during speech; generate replies on completed turns.
+        let languageAssistance: LanguageAssistanceMode = languageAssistanceMode.isEnabled
+            && trigger == .partialTranscript ? .translation : languageAssistanceMode
         let answerMode = purpose == .interview
             ? activeAssistantAnswerMode
             : .grounded
@@ -3897,6 +3976,7 @@ final class MeetingController: ObservableObject {
         let isSameTurn = assistantGenerationTurnID == turnID
         if
             trigger == .finalizedTurn,
+            !languageAssistance.isEnabled,
             isSameTurn,
             assistantGenerationArbitration.hasPublishedSuggestion
         {
@@ -3921,6 +4001,11 @@ final class MeetingController: ObservableObject {
         if
             !startsFinalizedTurnHedge,
             assistantGenerationIdentity == identity,
+            !AssistantEvaluationPolicy.shouldReevaluateFinalizedLanguageTurn(
+                mode: languageAssistance,
+                trigger: trigger,
+                previousTrigger: assistantGenerationPrimaryTrigger
+            ),
             !repeatsFinalAfterNoCue
         {
             Self.liveAssistantLogger.debug(
@@ -4053,7 +4138,7 @@ final class MeetingController: ObservableObject {
                 evaluationSequence = basedOnSequence
                 let evaluationStartedAt = Date()
                 let usefulnessDeadline: ContinuousClock.Instant?
-                if purpose == .interview {
+                if purpose == .interview && !languageAssistance.isEnabled {
                     let remainingMilliseconds =
                         LiveAssistantUsefulnessPolicy
                             .remainingInterviewLatencyMilliseconds(
@@ -4100,12 +4185,18 @@ final class MeetingController: ObservableObject {
                     startedAt: evaluationStartedAt
                 )
 
+                let previousTranslation = languageAssistance.isEnabled
+                    ? await hub.snapshot().assistant.translationHistory?.last(where: { $0.topicID == turnID })?.languageAssistance
+                    : nil
+                let translationProgress = languageAssistance.isEnabled
+                    ? LiveLanguageTranslationProgress(source: normalizedText, previous: previousTranslation)
+                    : nil
                 let generation = try await client.generate(
                     apiKey: apiKey,
                     references: references,
                     recentTranscript: recentTranscript,
                     currentPartial: partialTranscript,
-                    otherSpeakerText: normalizedText,
+                    otherSpeakerText: translationProgress?.target ?? normalizedText,
                     sessionContext: sessionContext,
                     purpose: purpose,
                     basedOnSequence: basedOnSequence,
@@ -4115,6 +4206,8 @@ final class MeetingController: ObservableObject {
                     previousRehearsalStory: previousRehearsalStory,
                     usefulnessDeadline: usefulnessDeadline,
                     deliveryMode: deliveryMode,
+                    languageAssistance: languageAssistance,
+                    translatedSpeechContext: translationProgress?.context ?? "",
                     onInstantText: { update in
                         guard !Task.isCancelled else { return }
                         let isActiveRequest = await MainActor.run {
@@ -4148,6 +4241,7 @@ final class MeetingController: ObservableObject {
                 let completedAt = Date()
                 if
                     purpose == .interview,
+                    !languageAssistance.isEnabled,
                     !LiveAssistantUsefulnessPolicy.isInterviewCueUseful(
                         observedAt: observedAt,
                         completedAt: completedAt
@@ -4224,6 +4318,11 @@ final class MeetingController: ObservableObject {
                     return
                 }
                 if var suggestion = generation.suggestion {
+                    if let translationProgress, let language = suggestion.languageAssistance {
+                        suggestion.languageAssistance = translationProgress.merging(
+                            language, finalized: trigger == .finalizedTurn)
+                        suggestion.question = normalizedText
+                    }
                     suggestion.trigger = trigger
                     suggestion.triggeredAt = observedAt
                     suggestion.totalLatencyMilliseconds =
@@ -4478,7 +4577,45 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    private func enqueueLanguageTranslation(_ request: LiveLanguageTranslationRequest) {
+        guard isLiveAssistantAvailable else { return }
+        languageTranslationQueue.enqueue(request)
+        guard languageTranslationPump == nil else { return }
+        let pumpID = UUID()
+        languageTranslationPumpID = pumpID
+        languageTranslationPump = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.languageTranslationPumpID == pumpID {
+                    self.languageTranslationPump = nil
+                    self.languageTranslationPumpID = nil
+                }
+            }
+            // Fixed cadence: new words never reset the timer or cancel a request.
+            var nextStart = ContinuousClock.now + .milliseconds(600)
+            while !Task.isCancelled {
+                do { try await Task.sleep(until: nextStart, clock: .continuous) }
+                catch { return }
+                guard let next = self.languageTranslationQueue.takeNext() else { return }
+                guard self.isLiveAssistantAvailable else { return }
+                nextStart = .now + .seconds(1)
+                self.scheduleLiveAssistant(
+                    trigger: next.trigger, turnID: next.turnID,
+                    sourceText: next.text, speaker: next.speaker,
+                    purpose: next.purpose, observedAt: next.observedAt,
+                    fromLanguageQueue: true
+                )
+                let running = Array(self.assistantGenerationTasks.values)
+                for task in running { await task.value }
+            }
+        }
+    }
+
     private func cancelAssistantGenerations() {
+        languageTranslationPump?.cancel()
+        languageTranslationPump = nil
+        languageTranslationPumpID = nil
+        languageTranslationQueue.reset()
         _ = assistantGenerationArbitration.reset()
         let tasks = assistantGenerationTasks.values
         assistantGenerationTasks.removeAll()
@@ -4716,11 +4853,11 @@ final class MeetingController: ObservableObject {
             .components(separatedBy: separators)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        return languages.isEmpty ? ["en"] : languages
+        return languages
     }
 
     private func quickDictationContext() throws -> TranscriptionContext {
-        let sharedContext = try transcriptionContext(for: .meeting)
+        let sharedContext = try transcriptionContext(for: .meeting, includeLanguageAssistance: false)
         return TranscriptionContext(
             prompt: "",
             keywords: sharedContext.keywords,
@@ -5046,9 +5183,7 @@ final class MeetingController: ObservableObject {
         if activeCaptureUsesHostedTranscription {
             return "Listening on \(microphoneName) — headphones required"
         }
-        let model = capability.resolvedEngine(
-            preferring: refinementEngine
-        ).shortLabel
+        let model = resolvedCaptureEngine.shortLabel
         return "Listening locally with \(model) — headphones required"
     }
 

@@ -13,13 +13,15 @@ enum GeminiLiveAssistantAPI {
         purpose: CapturePurpose,
         webSearchMode: LiveAssistantWebSearchMode? = nil,
         answerMode: AssistantAnswerMode = .grounded,
-        configuration: LiveAssistantConfiguration = .gemini37Flash
+        configuration: LiveAssistantConfiguration = .gemini37Flash,
+        languageAssistance: LanguageAssistanceMode = .off
     ) throws -> Data {
         let resolvedWebSearchMode = webSearchMode
             ?? LiveAssistantWebSearchMode.defaultMode(for: purpose)
         let defaultMaximumOutputTokens: Int
         if resolvedWebSearchMode == .required
             || answerMode == .plausibleRehearsal
+            || languageAssistance.isEnabled
         {
             defaultMaximumOutputTokens = 4_096
         } else {
@@ -43,7 +45,8 @@ enum GeminiLiveAssistantAPI {
                 "mime_type": "application/json",
                 "schema": LiveAssistantClient.outputSchema(
                     for: purpose,
-                    answerMode: answerMode
+                    answerMode: answerMode,
+                    languageAssistance: languageAssistance
                 )
             ]
         ]

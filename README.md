@@ -45,6 +45,59 @@ contains `PermanentUnderclass-macOS-arm64.zip`. Expand it, move
 is Developer ID signed, notarized, stapled, and accompanied by a SHA-256
 checksum. Intel Macs and non-macOS systems are not supported.
 
+## Japanese language assistance
+
+In **Settings → General → Japanese language assistance**, choose translation
+only or translation with suggested replies before starting a Meeting or
+Interview. Open the live assistant display to see the other speaker's English
+translation and, when useful, a polite Japanese reply with kanji + furigana,
+kana, romaji, and English meaning. Original transcripts stay in the language
+spoken. Both microphone and system audio accept Japanese and English.
+
+Translation uses the selected OpenAI or Gemini suggestion provider and its API
+key. With an OpenAI transcription key, original speech appears word by word
+and translations update while the other speaker talks. Requests sample the
+latest text about once a second when the previous request has finished;
+translation still has model/network latency. Without live transcription,
+text and translation follow completed locally transcribed turns. Japanese mode uses
+Whisper automatically if the selected Fast/Parakeet engine cannot handle it,
+and uses grounded replies even in an interview configured for rehearsal.
+Privacy Lock disables translation and replies along with other cloud features.
+
+Meeting and Interview use the same live language view. It shows both speakers'
+original words, English translations paired with short Japanese passages, and
+Japanese replies after completed turns. Completed passages keep their English
+wording; only the last unfinished draft updates. If transcription corrects an
+earlier passage, its replacement is marked **Transcript corrected**. English
+appears first, with its source beside it (underneath on narrow screens).
+Conversation history stays scrollable
+throughout the session and survives browser reconnects. New updates do not
+pull you away from older passages; **Pause scrolling** holds your reading
+position, and **Follow live** returns to the latest speech.
+History resets when starting or clearing a session; interview archives remain
+available separately.
+
+For Japanese Quick Dictation, include `ja` in **Languages you speak** (for
+example `en, ja`); its engine also falls back to Whisper when needed. Language
+assistance does not synthesize or play spoken replies.
+
+The slash command palette also provides these shortcuts:
+
+| Command | Action |
+| --- | --- |
+| `/assistant.language.translate` | Translate Japanese into English |
+| `/assistant.language.replies` | Translate and suggest Japanese replies with pronunciation |
+| `/assistant.language.off` | Turn language assistance off |
+| `/transcription.languages.japanese` | Set speech hints to Japanese |
+| `/transcription.languages.english-japanese` | Set speech hints to English and Japanese |
+| `/transcription.languages.english` | Set speech hints to English |
+| `/transcription.languages.auto` | Clear speech hints for automatic language detection |
+| `/settings.languages` | Open language settings, including custom language codes |
+
+Change assistance before starting capture or a replay. Speech-language presets
+are unavailable during capture or Quick Dictation. Japanese assistance adds
+English and Japanese call hints independently of the dictation preset.
+
 ## More screenshots
 
 | Meeting | Interview |
@@ -96,6 +149,7 @@ newer. Clone the repository, then run:
 
 ```sh
 swift test
+node --test Tests/LiveAssistantTests/language-passages.test.cjs
 ./scripts/run-app.sh
 ```
 

@@ -103,10 +103,41 @@ private struct GeneralSettings: View {
 
             SettingsGroup(
                 "Languages you speak",
-                detail: "List more than one and the model detects which you are using."
+                detail: "Language codes for dictation and both sides of a call. List more than one for multilingual speech, or leave blank for automatic detection. Japanese uses Whisper when Fast is selected."
             ) {
-                TextField("en, ja", text: $controller.languagesText)
+                TextField("en, ja", text: Binding(
+                    get: { controller.languagesText },
+                    set: controller.setTranscriptionLanguages
+                ))
                     .textFieldStyle(.roundedBorder)
+                    .disabled(controller.isListening || controller.isDictationBusy)
+            }
+
+            SettingsGroup(
+                "Japanese language assistance",
+                detail: "Translate the other speaker into English during meetings and interviews. Optional replies include kanji with furigana, kana, romaji, and English meaning."
+            ) {
+                Picker("Assistance", selection: Binding(
+                    get: { controller.languageAssistanceMode },
+                    set: controller.setLanguageAssistanceMode
+                )) {
+                    ForEach(LanguageAssistanceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .disabled(controller.isListening || controller.syntheticInterviewState.isActive)
+                if controller.languageAssistanceMode.isEnabled {
+                    Text("Both audio tracks accept Japanese and English. Final transcription: \(controller.resolvedCaptureEngine.title).")
+                        .font(.caption)
+                    Text("Uses your selected suggestion provider. With an OpenAI key, speech appears live and translations update while the speaker talks; otherwise text and translation follow locally transcribed turns. Open the assistant display for conversation history and replies.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !controller.isLiveAssistantAvailable {
+                        Text("Translation needs the selected suggestion provider’s API key and cloud access enabled.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
         }
     }

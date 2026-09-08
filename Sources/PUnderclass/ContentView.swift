@@ -225,7 +225,7 @@ struct ContentView: View {
         let privacyLocked = access == .blockedByPrivacyLock
         let assistantAvailable = controller.isLiveAssistantAvailable
         let openAIKeyBecameAvailable = access == .available
-        let model = controller.resolvedDictationEngine.shortLabel
+        let model = controller.resolvedCaptureEngine.shortLabel
 
         return HStack(alignment: .top, spacing: 14) {
             Image(systemName: privacyLocked
