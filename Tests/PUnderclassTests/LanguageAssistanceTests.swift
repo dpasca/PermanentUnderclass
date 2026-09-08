@@ -3,6 +3,54 @@ import XCTest
 @testable import PUnderclass
 
 final class LanguageAssistanceTests: XCTestCase {
+    func testLateTranslationsCanFinishTheTailButCannotRewriteCompletedPassages() {
+        let completed = Passage(source: "はい。", translation: "Yes.", isComplete: true)
+        let previous = language([completed, .init(source: "次に", translation: "Next…", isComplete: false)])
+        let finished = language([completed, .init(source: "次に確認します。", translation: "Next, I'll check.", isComplete: true)])
+        XCTAssertTrue(finished.preservesCompletedPassages(of: previous))
+        XCTAssertFalse(language([.init(source: "はい。次に確認します。", translation: "Yes. Next, I'll check.", isComplete: true)])
+            .preservesCompletedPassages(of: previous))
+        XCTAssertFalse(language([]).preservesCompletedPassages(of: previous))
+    }
+
+    func testStoppedHistoryRetainsLivePassagesAcrossFinalCorrectionsAndReconnects() async throws {
+        let hub = CompanionEventHub(streamID: "stopped-language")
+        await hub.updateSession(isListening: true, status: "Listening", languageAssistanceMode: .translation)
+        var live = try XCTUnwrap(parse(Self.response(reply: nil), mode: .translation).suggestion)
+        live.topicID = "turn"
+        await hub.assistantSuggested(live)
+        await hub.updateSession(isListening: false, status: "Stopped", languageAssistanceMode: .translation)
+        var final = live
+        final.question = "Revised final source"
+        final.languageAssistance = CompanionLanguageAssistance(sourceLanguage: "ja", translation: "Revised translation", reply: nil)
+        await hub.assistantSuggested(final)
+        let snapshot = await hub.snapshot()
+        XCTAssertEqual(snapshot.assistant.translationHistory?.first?.question, final.question)
+        XCTAssertEqual(snapshot.assistant.stoppedTranslationHistory?.first?.languageAssistance, live.languageAssistance)
+        let reconnected = try JSONDecoder().decode(CompanionSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertEqual(reconnected.assistant.stoppedTranslationHistory, snapshot.assistant.stoppedTranslationHistory)
+        var late = final
+        late.topicID = "late-turn"
+        await hub.assistantSuggested(late)
+        let withLateTurn = await hub.snapshot()
+        XCTAssertEqual(withLateTurn.assistant.stoppedTranslationHistory?.count, 2)
+        await hub.clearTranscript()
+        let cleared = await hub.snapshot()
+        XCTAssertNil(cleared.assistant.stoppedTranslationHistory)
+    }
+
+    func testTranscriptExportKeepsPairedPassagesAndDoesNotDropFinalCorrections() {
+        let original = language([
+            .init(source: "はい。", translation: "Yes.", isComplete: true),
+            .init(source: "次に", translation: "Next…", isComplete: false)
+        ])
+        let text = LanguageTranscriptPresentation.text(source: "はい。次に領収書です。", language: original)
+        XCTAssertTrue(text.contains("Passage 1\nはい。\nYes."))
+        XCTAssertTrue(text.contains("Passage 2 (live draft)\n次に\nNext…"))
+        XCTAssertTrue(text.hasSuffix("はい。次に領収書です。"))
+        XCTAssertEqual(LanguageTranscriptPresentation.text(source: "Ordinary meeting", language: nil), "Ordinary meeting")
+    }
+
     private typealias Passage = CompanionLanguageAssistance.Passage
 
     private func language(_ passages: [Passage]) -> CompanionLanguageAssistance {

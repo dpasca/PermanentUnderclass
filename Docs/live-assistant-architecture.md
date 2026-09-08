@@ -124,6 +124,17 @@ live draft. New updates preserve a visible passage's scroll offset while reading
 history; Pause scrolling also holds the position at the live edge. Follow live
 explicitly returns to the latest speech. Snapshots retain passage boundaries and
 wording; legacy payloads without passages still render as a single paired turn.
+Live drafts use a fixed-height area outside the completed reading scroller.
+Rows retain their first-observed order across finalization, and follow mode
+advances only when a passage enters history. Draft/complete styles reserve the
+same horizontal space; mobile replies also reserve a stable height.
+`stoppedTranslationHistory` retains the live breakdown in snapshots and is
+mirrored by session/suggestion events. A late translation may finish the tail
+only if it preserves all completed source/English pairs. Conflicting final
+source text remains in a disclosure rather than a giant new history row.
+The native transcript retains these pairs too, and Copy/Export includes them
+alongside any differing final transcript. The two-track speaker labels do not
+claim participant-level diarization.
 
 Adding another pair should extend explicit configuration and transcription
 capability routing while reusing this payload, provider transport, and display.

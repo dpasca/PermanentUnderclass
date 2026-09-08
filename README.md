@@ -73,7 +73,14 @@ appears first, with its source beside it (underneath on narrow screens).
 Conversation history stays scrollable
 throughout the session and survives browser reconnects. New updates do not
 pull you away from older passages; **Pause scrolling** holds your reading
-position, and **Follow live** returns to the latest speech.
+position, and **Follow live** returns to the latest speech. Live drafts occupy a
+fixed-size area below the completed reading history; following advances when
+passages complete, not with every incoming word. The Mac transcript and its
+Copy/Export actions retain paired passages too. Stopping preserves the completed
+live breakdown; late translations may finish its tail, while conflicting final
+transcript corrections remain separately available under a disclosure (or at
+the end of the exported turn). "Other" is the shared remote-audio track, not
+identification of individual participants.
 History resets when starting or clearing a session; interview archives remain
 available separately.
 

@@ -7,15 +7,23 @@ const { test } = require("node:test");
 // Exercise the production, DOM-independent projection without launching an
 // extra browser or evaluating the companion's network/bootstrap code.
 const app = readFileSync(resolve(__dirname, "../../Prototypes/LiveAssistant/app.js"), "utf8");
-const start = app.indexOf("function languagePassagesForTurn(");
+const start = app.indexOf("function preservesCompletedLanguagePassages(");
 const end = app.indexOf("function renderLanguageConversation(", start);
 assert.ok(start >= 0 && end > start);
 const project = runInNewContext(`${app.slice(start, end)}; languagePassagesForTurn`);
+const preserves = runInNewContext(`${app.slice(start, end)}; preservesCompletedLanguagePassages`);
 const completed = { source: "今日は税金の話です。", translation: "Today we're discussing taxes.", isComplete: true };
 const draft = { source: "次に", translation: "Next…", isComplete: false };
 const result = (passages) => ({ question: passages.map(p => p.source).join(""),
   languageAssistance: { passages, translation: passages.map(p => p.translation).join("\n") } });
 const turn = (text) => ({ text, partial: true, speaker: "other" });
+
+test("late translations finish the draft without rewriting completed history", () => {
+  const before = {passages: [completed, draft]};
+  assert.equal(preserves(before, {passages: [completed, {...draft, source:'次に確認します。',isComplete:true}]}), true);
+  assert.equal(preserves(before, {passages: [{...completed,translation:'Rewritten'}]}), false);
+  assert.equal(preserves(before, {passages: []}), false);
+});
 
 test("appended words change only the live draft and never mutate the snapshot", () => {
   const input = result([completed, draft]);
@@ -47,11 +55,18 @@ test("new speech after a completed passage creates one separate pending row", ()
 test("corrections keep the old source/translation pair until its replacement arrives", () => {
   const wrong = {source: "五万円です。", translation: "It's 50,000 yen.", isComplete: true};
   const output = project(turn(completed.source + "十五万円です。"), result([completed, wrong]));
-  assert.equal(output.length, 3);
+  assert.equal(output.length, 2);
   assert.equal(output[1].source, wrong.source);
   assert.equal(output[1].translation, wrong.translation);
-  assert.equal(output[2].source, "十五万円です。");
-  assert.equal(output[2].wasRevised, true);
+  assert.equal(output[0].correctedSource, completed.source + "十五万円です。");
+});
+
+test("stopping preserves the live breakdown even when the final source is wholly revised", () => {
+  const input = result([completed, draft]);
+  const output = project({text: "A completely revised final transcript", partial: false}, input, true);
+  assert.equal(output.length, 2);
+  assert.equal(output[0].source, completed.source);
+  assert.equal(output[1].translation, draft.translation);
 });
 
 test("legacy snapshots, untranslated speech and both speakers remain readable", () => {

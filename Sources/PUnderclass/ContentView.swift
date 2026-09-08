@@ -1375,7 +1375,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, minHeight: 150)
                         } else {
                             ForEach(turns.reversed()) { turn in
-                                TranscriptRow(turn: turn)
+                                TranscriptRow(turn: turn, language: controller.languageTranscript(for: turn))
                                     .id(turn.id)
                             }
                         }
@@ -1888,6 +1888,7 @@ private struct SocketBadge: View {
 
 private struct TranscriptRow: View {
     let turn: TranscriptTurn
+    var language: CompanionLanguageAssistance? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1903,19 +1904,37 @@ private struct TranscriptRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 72, alignment: .leading)
             VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(displayText)
-                        .foregroundStyle(turn.text.isEmpty ? .secondary : .primary)
-                        .italic(turn.text.isEmpty)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    TranscriptRefinementBadge(state: turn.refinement)
-                }
-                if case .refined = turn.refinement, turn.liveText != turn.text {
-                    Text("Live: \(turn.liveText)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                if let passages = language?.passages, !passages.isEmpty {
+                    ForEach(Array(passages.enumerated()), id: \.offset) { index, passage in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Passage \(index + 1)\(passage.isComplete ? "" : " · live draft")")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(passage.translation).textSelection(.enabled)
+                            Text(passage.source).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        .padding(.vertical, 8)
+                        if index < passages.count - 1 { Divider() }
+                    }
+                    if passages.map(\.source).joined() != turn.text {
+                        DisclosureGroup("Final transcript · may contain corrections") {
+                            Text(displayText).textSelection(.enabled)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(displayText)
+                            .foregroundStyle(turn.text.isEmpty ? .secondary : .primary)
+                            .italic(turn.text.isEmpty)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        TranscriptRefinementBadge(state: turn.refinement)
+                    }
+                    if case .refined = turn.refinement, turn.liveText != turn.text {
+                        Text("Live: \(turn.liveText)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

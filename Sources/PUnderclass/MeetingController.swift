@@ -18,6 +18,7 @@ final class MeetingController: ObservableObject {
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published private(set) var languageAssistanceMode: LanguageAssistanceMode = .off
+    @Published private var languageTranscripts: [String: CompanionLanguageAssistance] = [:]
     @Published var delay: TranscriptionDelay = .medium
     @Published var preparationPurpose: CapturePurpose = .meeting
     @Published var assistantAnswerMode: AssistantAnswerMode = .grounded
@@ -1318,7 +1319,14 @@ final class MeetingController: ObservableObject {
         transcript.filter { $0.purpose == purpose }
     }
 
+    func languageTranscript(for turn: TranscriptTurn) -> CompanionLanguageAssistance? {
+        languageTranscripts[turn.id]
+    }
+
     func clearTranscript(for purpose: CapturePurpose) {
+        for turn in transcript where turn.purpose == purpose {
+            languageTranscripts.removeValue(forKey: turn.id)
+        }
         transcript.removeAll { $0.purpose == purpose }
         if capturePurpose == purpose {
             if languageAssistanceMode.isEnabled { cancelAssistantGenerations() }
@@ -3214,7 +3222,8 @@ final class MeetingController: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return transcript(for: purpose).map {
-            "[\(formatter.string(from: $0.startedAt))] \($0.speaker.displayName(for: purpose)): \($0.text)"
+            "[\(formatter.string(from: $0.startedAt))] \($0.speaker.displayName(for: purpose)):\n"
+                + LanguageTranscriptPresentation.text(source: $0.text, language: languageTranscripts[$0.id])
         }
         .joined(separator: "\n\n")
     }
@@ -4500,6 +4509,11 @@ final class MeetingController: ObservableObject {
     private func recordAssistantSuggestion(
         _ suggestion: CompanionAssistantSuggestion
     ) {
+        if let id = suggestion.topicID, let language = suggestion.languageAssistance,
+           isListening || languageTranscripts[id] == nil
+                || languageTranscripts[id].map({ language.preservesCompletedPassages(of: $0) }) == true {
+            languageTranscripts[id] = language
+        }
         recordInterviewSuggestion(suggestion)
         if let story = AssistantRehearsalStoryContext(suggestion: suggestion) {
             latestRehearsalStory = story

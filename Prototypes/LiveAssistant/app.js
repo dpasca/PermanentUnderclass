@@ -669,6 +669,8 @@ function renderTranscriptInto(container, transcript) {
 }
 
 function renderTranscript(transcript) {
+  const languageMode = state.snapshot?.session?.languageAssistanceMode;
+  if (languageMode && languageMode !== "off") return;
   renderTranscriptInto($("#transcriptScroll"), transcript);
   renderTranscriptInto($("#localTranscriptList"), transcript);
 }
@@ -1211,12 +1213,23 @@ function renderSuggestionStack(assistant) {
 
 // Completed model-aligned passages are stable. Only the draft at the end
 // receives newer transcript text while its next translation is in flight.
-function languagePassagesForTurn(turn, result) {
+function preservesCompletedLanguagePassages(previous, next) {
+  if (!previous?.passages || !next?.passages) return false;
+  for (const [index, passage] of previous.passages.entries()) {
+    if (!passage.isComplete) break;
+    const updated = next.passages[index];
+    if (!updated?.isComplete || updated.source !== passage.source || updated.translation !== passage.translation) return false;
+  }
+  return true;
+}
+
+function languagePassagesForTurn(turn, result, stopped = false) {
   const language = result?.languageAssistance;
   const passages = (language?.passages || []).map((passage) => ({...passage}));
   if (!passages.length && language?.translation) {
     passages.push({source: result.question, translation: language.translation, isComplete: !turn.partial});
   }
+  if (stopped && passages.length) return passages;
   let offset = 0;
   for (const passage of passages) {
     if (turn.text.startsWith(passage.source, offset)) {
@@ -1231,7 +1244,7 @@ function languagePassagesForTurn(turn, result) {
     } else {
       // A completed translation still belongs to its original source until
       // the corrected translation arrives. Make the changed tail explicit.
-      passages.push({source: turn.text.slice(offset), translation: "", isComplete: false, pending: true, wasRevised: true});
+      passages[0].correctedSource = turn.text;
     }
     return passages;
   }
@@ -1270,7 +1283,8 @@ function renderLanguageConversation() {
     status.textContent = "Reconnecting to the Mac · showing the last received conversation";
   }
 
-  const history = assistant?.translationHistory
+  const history = (!session.isListening && assistant?.stoppedTranslationHistory)
+    || assistant?.translationHistory
     || (assistant?.suggestionHistory || []).filter((item) => item.languageAssistance).slice().reverse();
   const translated = new Map(history.map((item) => [item.topicID || item.id, item]));
   const transcript = state.snapshot?.transcript;
@@ -1286,16 +1300,23 @@ function renderLanguageConversation() {
   });
 
   const log = $("#languageConversationLog");
+  const draftLog = $("#languageLiveDraft");
+  draftLog.hidden = !session.isListening;
+  for (const container of [log, draftLog]) {
+    [...container.children].filter((row) => !row.dataset.passageId).forEach((row) => row.remove());
+  }
   const follow = log.dataset.follow !== "false";
   const scrollTop = log.scrollTop;
   const logTop = log.getBoundingClientRect().top;
   const anchor = [...log.children].find((row) => row.getBoundingClientRect().bottom > logTop);
   const anchorOffset = anchor ? anchor.getBoundingClientRect().top - logTop : 0;
-  const oldRows = new Map([...log.children].map((row) => [row.dataset.passageId, row]));
+  const oldRows = new Map([...log.children, ...draftLog.children].map((row) => [row.dataset.passageId, row]));
   const retained = new Set();
-  let rowIndex = 0;
+  const historyRows = [], draftRows = [];
+  let addedHistory = false;
   for (const turn of turns.values()) {
-    const passages = languagePassagesForTurn(turn, translated.get(turn.id));
+    const result = translated.get(turn.id);
+    const passages = languagePassagesForTurn(turn, result, !session.isListening);
     for (const [index, passage] of passages.entries()) {
       const id = `${turn.id}:${index}`;
       let row = oldRows.get(id);
@@ -1303,6 +1324,8 @@ function renderLanguageConversation() {
         row = document.createElement("article");
         row.dataset.turnId = turn.id;
         row.dataset.passageId = id;
+        row.dataset.order = log.dataset.nextOrder || "0";
+        log.dataset.nextOrder = String(Number(row.dataset.order) + 1);
         const label = document.createElement("small");
         const pair = document.createElement("div"); pair.className = "language-passage-pair";
         const translation = document.createElement("p"); translation.className = "language-translated"; translation.lang = "en";
@@ -1317,22 +1340,47 @@ function renderLanguageConversation() {
       row.classList.toggle("is-own-speech", ownSpeech);
       const phase = passage.wasRevised ? "TRANSCRIPT CORRECTED"
         : passage.isComplete ? "ENGLISH" : passage.pending ? "LIVE · translating" : "LIVE DRAFT · may change";
-      label.textContent = `${ownSpeech ? "You" : `Other speaker · ${phase}`} · ${formatTime(turn.startedAt)} · ${index + 1}`;
+      const labelText = `${ownSpeech ? "You" : `Other speaker · ${phase}`} · ${index + 1}`;
+      if (label.textContent !== labelText) label.textContent = labelText;
       if (source.textContent !== passage.source) source.textContent = passage.source;
       const meaning = passage.translation || (ownSpeech ? "" : "Translating…");
       if (translation.textContent !== meaning) translation.textContent = meaning;
-      if (log.children[rowIndex] !== row) log.insertBefore(row, log.children[rowIndex] || null);
-      ++rowIndex;
+      const isLiveDraft = session.isListening && (ownSpeech ? turn.partial : !passage.isComplete);
+      if (!isLiveDraft && row.parentElement !== log) addedHistory = true;
+      (isLiveDraft ? draftRows : historyRows).push(row);
+      // Final refinements never become a giant replacement conversation row.
+      const correction = index === 0 && result && result.question !== turn.text
+        && (!session.isListening || passage.correctedSource) ? turn.text : "";
+      let details = row.querySelector("details");
+      if (correction) {
+        if (!details) {
+          details = document.createElement("details"); details.className = "language-source-correction";
+          const summary = document.createElement("summary"); summary.textContent = "Final transcript · may contain corrections to the live passages";
+          details.append(summary, document.createElement("p")); row.append(details);
+        }
+        if (details.lastElementChild.textContent !== correction) details.lastElementChild.textContent = correction;
+      } else if (details) details.remove();
       retained.add(id);
     }
   }
   oldRows.forEach((row, id) => { if (!retained.has(id)) row.remove(); });
+  for (const [container, rows] of [[log, historyRows], [draftLog, draftRows]]) {
+    rows.sort((a, b) => Number(a.dataset.order) - Number(b.dataset.order));
+    rows.forEach((row, index) => {
+      if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
+    });
+  }
+  if (!draftRows.length && session.isListening) {
+    const hint = document.createElement("p");
+    hint.textContent = "Live speech appears here. Completed passages stay in the reading history above.";
+    draftLog.replaceChildren(hint);
+  }
   if (!turns.size) {
     const empty = document.createElement("p");
     empty.textContent = "Both sides of the conversation will appear here as speech is transcribed.";
     log.replaceChildren(empty);
   }
-  if (follow) log.scrollTop = log.scrollHeight;
+  if (follow && addedHistory) log.scrollTop = log.scrollHeight;
   else if (anchor?.isConnected) log.scrollTop += anchor.getBoundingClientRect().top - logTop - anchorOffset;
   else log.scrollTop = scrollTop;
   const followButton = $("#languageFollowLive");
@@ -1589,6 +1637,11 @@ function applyEnvelope(envelope) {
   const payload = envelope.payload;
   switch (envelope.name) {
     case "session.status":
+      if (state.snapshot.session?.isListening && !payload.isListening) {
+        state.snapshot.assistant.stoppedTranslationHistory = [...(state.snapshot.assistant.translationHistory || [])];
+      } else if (payload.isListening && !state.snapshot.session?.isListening) {
+        state.snapshot.assistant.stoppedTranslationHistory = null;
+      }
       state.snapshot.session = payload;
       renderSession(payload);
       break;
@@ -1609,6 +1662,8 @@ function applyEnvelope(envelope) {
     case "transcript.cleared":
       state.snapshot.transcript = payload;
       state.snapshot.assistant.translationHistory = [];
+      state.snapshot.assistant.stoppedTranslationHistory = null;
+      $("#languageConversationLog").dataset.nextOrder = "0";
       renderTranscript(payload);
       renderAssistant(state.snapshot.assistant);
       break;
@@ -1651,6 +1706,12 @@ function applyEnvelope(envelope) {
         const index = history.findIndex((item) => (item.topicID || item.id) === topicID);
         if (index < 0) history.push(payload);
         else history[index] = payload;
+        if (!state.snapshot.session.isListening) {
+          const stopped = state.snapshot.assistant.stoppedTranslationHistory ||= [];
+          const stoppedIndex = stopped.findIndex((item) => (item.topicID || item.id) === topicID);
+          if (stoppedIndex < 0) stopped.push(payload);
+          else if (preservesCompletedLanguagePassages(stopped[stoppedIndex].languageAssistance, payload.languageAssistance)) stopped[stoppedIndex] = payload;
+        }
       }
       state.snapshot.assistant.suggestionHistory = [
         payload,

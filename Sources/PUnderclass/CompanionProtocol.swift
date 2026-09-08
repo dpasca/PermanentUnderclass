@@ -309,6 +309,9 @@ struct CompanionAssistantState: Codable, Equatable, Sendable {
     var suggestionHistory: [CompanionAssistantSuggestion] = []
     /// One latest translation per turn, retained for this session and reconnects.
     var translationHistory: [CompanionAssistantSuggestion]? = nil
+    /// Preserve the reading breakdown at stop; final audio corrections stay in
+    /// the transcript without silently replacing the live reading history.
+    var stoppedTranslationHistory: [CompanionAssistantSuggestion]? = nil
     var lastError: String?
     var pinnedSuggestionID: String?
     var evaluatingSequence: Int?
@@ -461,9 +464,11 @@ actor CompanionEventHub {
         liveTranscriptionAvailable: Bool = false
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
+            state.assistant.stoppedTranslationHistory = nil
             state.session.startedAt = Date()
             state.session.endedAt = nil
         } else if !isListening, state.session.isListening {
+            state.assistant.stoppedTranslationHistory = state.assistant.translationHistory
             state.session.endedAt = Date()
         }
         state.session.isListening = isListening
@@ -669,6 +674,18 @@ actor CompanionEventHub {
                 history.append(numberedSuggestion)
             }
             state.assistant.translationHistory = history
+            if !state.session.isListening {
+                var stopped = state.assistant.stoppedTranslationHistory ?? []
+                if let index = stopped.firstIndex(where: { ($0.topicID ?? $0.id) == topicID }) {
+                    if let previous = stopped[index].languageAssistance,
+                       numberedSuggestion.languageAssistance?.preservesCompletedPassages(of: previous) == true {
+                        stopped[index] = numberedSuggestion
+                    }
+                } else {
+                    stopped.append(numberedSuggestion)
+                }
+                state.assistant.stoppedTranslationHistory = stopped
+            }
         }
         state.assistant.suggestionHistory.removeAll {
             $0.id == numberedSuggestion.id

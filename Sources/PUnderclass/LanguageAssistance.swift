@@ -89,6 +89,15 @@ struct CompanionLanguageAssistance: Codable, Equatable, Sendable {
     let reply: Reply?
     var passages: [Passage]? = nil
 
+    func preservesCompletedPassages(of previous: CompanionLanguageAssistance) -> Bool {
+        guard let old = previous.passages, let new = passages else { return false }
+        let completed = Array(old.prefix(while: \.isComplete))
+        guard new.count >= completed.count else { return false }
+        return zip(completed, new).allSatisfy {
+            $0.source == $1.source && $0.translation == $1.translation && $1.isComplete
+        }
+    }
+
     func isValid(for mode: LanguageAssistanceMode) -> Bool {
         guard !sourceLanguage.trimmed.isEmpty, !translation.trimmed.isEmpty else { return false }
         guard let reply else { return true }
@@ -159,6 +168,17 @@ enum TranscriptionLanguagePolicy {
             $0.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).first == "ja"
         }
         return engine == .localParakeet && needsJapanese ? .localWhisper : engine
+    }
+}
+
+enum LanguageTranscriptPresentation {
+    static func text(source: String, language: CompanionLanguageAssistance?) -> String {
+        guard let passages = language?.passages, !passages.isEmpty else { return source }
+        let reading = passages.enumerated().map { index, passage in
+            "Passage \(index + 1)\(passage.isComplete ? "" : " (live draft)")\n\(passage.source)\n\(passage.translation)"
+        }.joined(separator: "\n\n")
+        guard passages.map(\.source).joined() != source else { return reading }
+        return reading + "\n\nFinal transcript (may contain corrections to the live passages):\n" + source
     }
 }
 

@@ -198,6 +198,13 @@ button:focus-visible {
 }
 
 .language-conversation-columns.translation-only { grid-template-columns: minmax(0, 1fr); }
+.language-conversation-reader { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.language-conversation-log { flex: 1; overflow-anchor: none; scrollbar-gutter: stable; }
+.language-live-draft { flex: 0 0 164px; overflow-y: auto; overflow-wrap: anywhere; border-top: 1px solid #355b43; padding: 12px; scrollbar-gutter: stable; }
+.language-live-draft small { color: var(--muted); font-size: 12px; }
+.language-live-draft article + article { margin-top: 12px; }
+.language-source-correction { margin-top: 12px; color: var(--muted); font-size: 14px; }
+.language-source-correction p { white-space: pre-wrap; }
 .language-conversation-log, .language-conversation-reply {
   overflow-y: auto;
   overflow-wrap: anywhere;
@@ -215,13 +222,14 @@ button:focus-visible {
 .language-passage-pair { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; }
 .language-source { color: var(--muted); font-size: 18px; line-height: 1.65; margin: 8px 0 0; white-space: pre-wrap; }
 .language-translated { color: var(--green); font-size: 23px; line-height: 1.5; margin: 6px 0 0; white-space: pre-wrap; }
-.language-conversation-log .is-draft { border-left: 3px solid #698b75; padding-left: 12px; background: rgba(105, 139, 117, .06); }
+.language-conversation-log article, .language-live-draft article { border-left: 3px solid transparent; padding-left: 12px; }
+.language-live-draft .is-draft { border-left-color: #698b75; }
 .language-conversation-log .is-draft .language-translated { color: var(--muted); }
 .language-conversation-log .is-draft .language-source::after { content: " ▍"; color: var(--green); }
 .language-conversation-log .is-own-speech .language-passage-pair { display: block; }
 .language-conversation-log .is-own-speech .language-translated { display: none; }
 .language-conversation-reply { border-left: 1px solid #253329; padding-left: 24px; }
-.language-conversation-reply > p { color: var(--muted); line-height: 1.5; }
+.language-conversation-reply > p { color: var(--muted); line-height: 1.5; max-height: 4.5em; overflow-y: auto; }
 
 @media (max-width: 760px) {
   .teleprompter.is-language-mode { padding: 16px; }
@@ -229,8 +237,9 @@ button:focus-visible {
   .language-conversation-header h1 { font-size: 20px; }
   .language-conversation-header p { font-size: 13px; }
   .language-conversation-columns { display: flex; flex-direction: column; gap: 12px; }
-  .language-conversation-log { flex: 1; }
-  .language-conversation-reply { max-height: 32%; border-left: 0; border-top: 1px solid #253329; padding: 12px 0; }
+  .language-conversation-reader { flex: 1; }
+  .language-live-draft { flex-basis: 136px; }
+  .language-conversation-reply { flex: 0 0 24%; min-height: 0; border-left: 0; border-top: 1px solid #253329; padding: 12px 0; }
   .language-passage-pair { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .language-source { font-size: 15px; }
   .language-translated { font-size: 19px; }
