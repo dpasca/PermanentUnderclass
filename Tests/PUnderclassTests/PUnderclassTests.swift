@@ -1007,6 +1007,43 @@ final class PUnderclassTests: XCTestCase {
         XCTAssertFalse(state.isHeld)
     }
 
+    func testMissedModifierReleaseFinishesRecordingExactlyOnce() {
+        var state = ModifierHoldState()
+        var coalescer = ModifierHoldSignalCoalescer()
+        XCTAssertEqual(state.update(flags: [.maskCommand, .maskAlternate]), .pressed)
+        XCTAssertEqual(coalescer.receive(.pressed), .emit(.pressed))
+
+        // The release event was lost while the event tap was disabled.
+        let recovered = state.reconcile(flags: [])
+        XCTAssertEqual(recovered, .released)
+        if let recovered {
+            XCTAssertEqual(coalescer.receive(recovered), .deferRelease)
+        }
+        XCTAssertNil(state.reconcile(flags: []))
+        XCTAssertNil(state.update(flags: []))
+        XCTAssertEqual(coalescer.releaseDelayElapsed(), .released)
+        XCTAssertNil(coalescer.releaseDelayElapsed())
+        XCTAssertEqual(state.update(flags: [.maskCommand, .maskAlternate]), .pressed)
+    }
+
+    func testModifierRecoveryPreservesHoldWithAdditionalModifiers() {
+        var state = ModifierHoldState()
+        XCTAssertEqual(state.update(flags: [.maskCommand, .maskAlternate]), .pressed)
+        XCTAssertNil(state.reconcile(flags: [.maskCommand, .maskAlternate, .maskShift]))
+        XCTAssertTrue(state.isHeld)
+        XCTAssertEqual(state.reconcile(flags: .maskAlternate), .released)
+    }
+
+    func testModifierRecoveryNeverStartsOrRestartsRecording() {
+        var state = ModifierHoldState()
+        XCTAssertNil(state.reconcile(flags: [.maskCommand, .maskAlternate]))
+        XCTAssertFalse(state.isHeld)
+        XCTAssertEqual(state.update(flags: [.maskCommand, .maskAlternate]), .pressed)
+        XCTAssertEqual(state.interruptForEscape(), .interrupted)
+        XCTAssertNil(state.reconcile(flags: [.maskCommand, .maskAlternate]))
+        XCTAssertFalse(state.isHeld)
+    }
+
     func testBriefModifierReleaseAndRepressStaysOneDictation() {
         var coalescer = ModifierHoldSignalCoalescer()
 

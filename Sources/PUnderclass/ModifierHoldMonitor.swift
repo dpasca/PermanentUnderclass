@@ -81,6 +81,12 @@ struct ModifierHoldState {
         isHeld = Self.isExactChord(flags)
     }
 
+    /// Recover a missed release without starting a hold from a state snapshot.
+    mutating func reconcile(flags: CGEventFlags) -> ModifierHoldSignal? {
+        guard isHeld else { return nil }
+        return update(flags: flags)
+    }
+
     mutating func interruptForEscape() -> ModifierHoldSignal? {
         guard isHeld else { return nil }
         isHeld = false
@@ -127,6 +133,7 @@ final class ModifierHoldMonitor {
     private var state = ModifierHoldState()
     private var signalCoalescer = ModifierHoldSignalCoalescer()
     private var deferredReleaseWorkItem: DispatchWorkItem?
+    private var releaseWatchdog: Timer?
     private var isDiagnosticHold = false
     private var isConsumingEscapeUntilChordRelease = false
 
@@ -186,10 +193,17 @@ final class ModifierHoldMonitor {
         CFRunLoopAddSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         state.synchronize(flags: CGEventSource.flagsState(.combinedSessionState))
+        let watchdog = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.recoverMissedRelease()
+        }
+        releaseWatchdog = watchdog
+        RunLoop.current.add(watchdog, forMode: .common)
         Self.logger.notice("event_tap_installed")
     }
 
     func stop() {
+        releaseWatchdog?.invalidate()
+        releaseWatchdog = nil
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
         }
@@ -218,7 +232,7 @@ final class ModifierHoldMonitor {
             if let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
-            state.synchronize(flags: CGEventSource.flagsState(.combinedSessionState))
+            recoverMissedRelease()
             return Unmanaged.passUnretained(event)
         }
 
@@ -268,6 +282,19 @@ final class ModifierHoldMonitor {
             )
         }
         return shouldConsumeEvent ? nil : Unmanaged.passUnretained(event)
+    }
+
+    private func recoverMissedRelease() {
+        // Diagnostic holds are synthetic. Read physical device state for real
+        // holds so our own Command-V events cannot look like a key release.
+        guard !isDiagnosticHold else { return }
+        let flags = CGEventSource.flagsState(.hidSystemState)
+        if !ModifierHoldState.hasRequiredModifiers(flags) {
+            isConsumingEscapeUntilChordRelease = false
+        }
+        guard let signal = state.reconcile(flags: flags) else { return }
+        Self.logger.notice("shortcut_missed_release_recovered")
+        route(signal, flags: flags, focusedApplication: nil)
     }
 
     private func route(
