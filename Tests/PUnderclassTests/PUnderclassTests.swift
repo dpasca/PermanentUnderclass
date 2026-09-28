@@ -1338,15 +1338,13 @@ final class PUnderclassTests: XCTestCase {
     }
 
     func testQuickDictationTrimsOuterSilenceAndIgnoresReleaseClick() throws {
-        let audio = pcm16Audio(
-            frameAmplitudes:
-                Array(repeating: 40, count: 10)
-                + Array(repeating: 1_500, count: 10)
-                + Array(repeating: 40, count: 30)
-                + Array(repeating: 1_500, count: 10)
-                + Array(repeating: 40, count: 49)
-                + [10_000]
-        )
+        var frameAmplitudes = [Int16](repeating: 40, count: 10)
+        frameAmplitudes.append(contentsOf: repeatElement(1_500, count: 10))
+        frameAmplitudes.append(contentsOf: repeatElement(40, count: 30))
+        frameAmplitudes.append(contentsOf: repeatElement(1_500, count: 10))
+        frameAmplitudes.append(contentsOf: repeatElement(40, count: 49))
+        frameAmplitudes.append(10_000)
+        let audio = pcm16Audio(frameAmplitudes: frameAmplitudes)
 
         let prepared = try XCTUnwrap(
             QuickDictationAudioPolicy.prepare(audio)
