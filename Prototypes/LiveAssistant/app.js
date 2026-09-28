@@ -1261,6 +1261,25 @@ function languagePassagesForTurn(turn, result, stopped = false) {
   return passages;
 }
 
+// Track scroll direction, not distance from the bottom: growing content and
+// layout changes can increase that distance without the reader scrolling back.
+function trackLanguageScroll(element, onScrollBack) {
+  let previousTop = element.scrollTop;
+  element.onscroll = () => {
+    if (element.scrollTop < previousTop - 1) onScrollBack();
+    previousTop = element.scrollTop;
+  };
+}
+
+function followLanguageDraft(draftLog) {
+  // Scroll each language independently. On narrow screens Japanese sits below
+  // English; scrolling only the outer panel would hide the English subtitles.
+  draftLog.querySelectorAll(".language-passage-pair > p").forEach((text) => {
+    text.scrollTop = text.scrollHeight;
+  });
+  draftLog.scrollTop = draftLog.scrollHeight;
+}
+
 function renderLanguageConversation() {
   const session = state.snapshot?.session;
   const assistant = state.snapshot?.assistant;
@@ -1268,6 +1287,11 @@ function renderLanguageConversation() {
   $("#languageConversation").hidden = !enabled;
   $(".teleprompter").classList.toggle("is-language-mode", enabled);
   if (!enabled) return false;
+
+  const replyPanel = $("#languageConversationReply");
+  const showReplies = session.languageAssistanceMode === "translationAndReplies";
+  replyPanel.hidden = !showReplies;
+  $(".language-conversation-columns").classList.toggle("translation-only", !showReplies);
 
   const status = $("#languageConversationStatus");
   status.textContent = !session.assistantAvailable
@@ -1278,7 +1302,7 @@ function renderLanguageConversation() {
       : !session.isListening ? "Capture stopped · conversation history retained"
       : session.liveTranscriptionAvailable === false
         ? "Text and translations follow completed turns. Add an OpenAI key and restart capture for live words."
-        : "Completed passages stay fixed · only the live draft updates";
+        : "Live subtitles follow the latest words · scroll back or pause to read earlier text";
   if (state.mode === "live" && state.connectionKind !== "connected") {
     status.textContent = "Reconnecting to the Mac · showing the last received conversation";
   }
@@ -1301,6 +1325,16 @@ function renderLanguageConversation() {
 
   const log = $("#languageConversationLog");
   const draftLog = $("#languageLiveDraft");
+  const followButton = $("#languageFollowLive");
+  const updateFollowButton = () => {
+    const following = log.dataset.follow !== "false";
+    followButton.textContent = following ? "Pause scrolling" : "Follow live";
+    followButton.setAttribute("aria-pressed", String(following));
+    followButton.title = following ? "Keep your reading position while new passages arrive" : "Jump to the latest passage and follow new speech";
+  };
+  // The button label can reflow the header on narrow windows. Set it before
+  // measuring or scrolling the reading area below it.
+  updateFollowButton();
   draftLog.hidden = !session.isListening;
   for (const container of [log, draftLog]) {
     [...container.children].filter((row) => !row.dataset.passageId).forEach((row) => row.remove());
@@ -1346,6 +1380,13 @@ function renderLanguageConversation() {
       const meaning = passage.translation || (ownSpeech ? "" : "Translating…");
       if (translation.textContent !== meaning) translation.textContent = meaning;
       const isLiveDraft = session.isListening && (ownSpeech ? turn.partial : !passage.isComplete);
+      for (const text of [translation, source]) {
+        if (isLiveDraft) text.tabIndex = 0;
+        else {
+          text.removeAttribute("tabindex");
+          text.onscroll = null;
+        }
+      }
       if (!isLiveDraft && row.parentElement !== log) addedHistory = true;
       (isLiveDraft ? draftRows : historyRows).push(row);
       // Final refinements never become a giant replacement conversation row.
@@ -1370,6 +1411,7 @@ function renderLanguageConversation() {
       if (container.children[index] !== row) container.insertBefore(row, container.children[index] || null);
     });
   }
+  draftLog.classList.toggle("is-empty", !draftRows.length);
   if (!draftRows.length && session.isListening) {
     const hint = document.createElement("p");
     hint.textContent = "Live speech appears here. Completed passages stay in the reading history above.";
@@ -1383,28 +1425,21 @@ function renderLanguageConversation() {
   if (follow && addedHistory) log.scrollTop = log.scrollHeight;
   else if (anchor?.isConnected) log.scrollTop += anchor.getBoundingClientRect().top - logTop - anchorOffset;
   else log.scrollTop = scrollTop;
-  const followButton = $("#languageFollowLive");
-  const updateFollowButton = () => {
-    const following = log.dataset.follow !== "false";
-    followButton.textContent = following ? "Pause scrolling" : "Follow live";
-    followButton.setAttribute("aria-pressed", String(following));
-    followButton.title = following ? "Keep your reading position while new passages arrive" : "Jump to the latest passage and follow new speech";
-  };
-  log.onscroll = () => {
-    if (log.scrollHeight - log.scrollTop - log.clientHeight > 64) log.dataset.follow = "false";
+  if (follow) followLanguageDraft(draftLog);
+  const pauseFollowing = () => {
+    log.dataset.follow = "false";
     updateFollowButton();
   };
+  for (const scroller of [log, draftLog, ...draftLog.querySelectorAll(".language-passage-pair > p")]) {
+    trackLanguageScroll(scroller, pauseFollowing);
+  }
   followButton.onclick = () => {
     log.dataset.follow = String(log.dataset.follow === "false");
-    if (log.dataset.follow === "true") log.scrollTop = log.scrollHeight;
     updateFollowButton();
+    if (log.dataset.follow === "true") log.scrollTop = log.scrollHeight;
+    renderLanguageConversation();
   };
-  updateFollowButton();
 
-  const replyPanel = $("#languageConversationReply");
-  const showReplies = session.languageAssistanceMode === "translationAndReplies";
-  replyPanel.hidden = !showReplies;
-  $(".language-conversation-columns").classList.toggle("translation-only", !showReplies);
   const reply = [...history].reverse().find((item) => item.languageAssistance?.reply);
   const replyID = reply?.id || "none";
   if (replyPanel.dataset.suggestionId !== replyID) {
@@ -2099,6 +2134,7 @@ function updateElapsedTime() {
 async function initialize() {
   bindControls();
   window.addEventListener("resize", scheduleCurrentStageFit);
+  window.addEventListener("resize", renderLanguageConversation);
   setConnectionStatus("reconnecting", "Finding PermanentUnderclass on this Mac", "CONNECTING");
   try {
     await enterLiveMode();
