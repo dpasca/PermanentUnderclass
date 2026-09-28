@@ -62,6 +62,13 @@ struct LiveLanguageTranslationProgress {
                 source: remainder, translation: result.translation, isComplete: false)]
             if finalized && aligned {
                 additions = additions.map { .init(source: $0.source, translation: $0.translation, isComplete: true) }
+            } else if let last = additions.last, last.isComplete {
+                // ASR can append punctuation after a complete thought. Keep the
+                // live edge editable until the model identifies a passage after
+                // it, so that punctuation is not stranded in the next target.
+                additions[additions.count - 1] = .init(
+                    source: last.source, translation: last.translation,
+                    isComplete: false, wasRevised: last.wasRevised)
             }
             if revisesCompletedPassage { additions[0].wasRevised = true }
             passages += additions

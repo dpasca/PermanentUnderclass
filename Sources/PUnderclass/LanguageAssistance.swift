@@ -31,6 +31,10 @@ enum LanguageAssistanceMode: String, Codable, CaseIterable, Identifiable, Sendab
         earlier context in these passages. Mark self-contained thoughts isComplete true even while
         the speaker continues talking; only the final unfinished thought may be false. Do not wait
         for a speaker pause to finish a passage. Do not split by arbitrary character counts.
+        Keep sentence-ending punctuation and closing quotation marks with the passage they finish,
+        in both source and English. Never start the next passage with the preceding passage's full
+        stop or create a separate punctuation-only passage. The latest live passage may be sent
+        again with late-arriving punctuation; include it before choosing the next passage boundary.
         Earlier completed passages are already displayed and must not be retranslated. The target
         may be only the untranslated remainder of a longer turn; use context to resolve references.
         Keep translation as the joined English translations of these passages.

@@ -52,6 +52,32 @@ test("new speech after a completed passage creates one separate pending row", ()
   assert.equal(output[1].source, "そして");
 });
 
+test("late punctuation stays on the live phrase until the next model-selected passage", () => {
+  for (const [source, ending, translation] of [
+    ["今日は晴れです", "。", "It's sunny today."],
+    ["It is sunny today", ".", "It is sunny today."],
+    ["「今日は晴れです", "。」", "“It's sunny today.”"]
+  ]) {
+    const live = {source, translation, isComplete: false};
+    const input = result([completed, live]);
+    const before = JSON.stringify(input);
+    const punctuated = project(turn(completed.source + source + ending), input);
+    assert.equal(punctuated.length, 2);
+    assert.equal(punctuated[0].source, completed.source);
+    assert.equal(punctuated[1].source, source + ending);
+    assert.equal(punctuated[1].translation, translation);
+    assert.equal(JSON.stringify(input), before);
+
+    const finished = {...live, source: source + ending, isComplete: true};
+    const next = " 次の話題は";
+    const continued = project(turn(completed.source + source + ending + next), result([completed, finished]));
+    assert.equal(continued.length, 3);
+    assert.equal(continued[1].source, source + ending);
+    assert.equal(continued[2].source, next);
+    assert.equal(continued.map(p => p.source).join(""), completed.source + source + ending + next);
+  }
+});
+
 test("corrections keep the old source/translation pair until its replacement arrives", () => {
   const wrong = {source: "五万円です。", translation: "It's 50,000 yen.", isComplete: true};
   const output = project(turn(completed.source + "十五万円です。"), result([completed, wrong]));

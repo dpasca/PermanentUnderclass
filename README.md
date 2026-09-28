@@ -77,7 +77,9 @@ position, and **Follow live** returns to the latest speech. Live drafts occupy a
 bounded area below the completed reading history, sized for the window. English
 and Japanese each follow their latest words, so long monologues remain readable
 before passages complete. Scroll back in either language to pause following;
-all earlier draft text remains available. Completed history advances only when
+all earlier draft text remains available. The newest phrase stays provisional
+until the next phrase or the end of the turn, so late punctuation stays with it.
+Completed history advances only when
 passages complete, not with every incoming word. The Mac transcript and its
 Copy/Export actions retain paired passages too. Stopping preserves the completed
 live breakdown; late translations may finish its tail, while conflicting final

@@ -82,13 +82,61 @@ final class LanguageAssistanceTests: XCTestCase {
             let next = Passage(source: "項目\(index)です。", translation: "This is item \(index).", isComplete: true)
             source += next.source
             let progress = LiveLanguageTranslationProgress(source: source, previous: previous)
-            XCTAssertEqual(progress.target, next.source)
-            let update = progress.merging(language([next]), finalized: false)
-            XCTAssertEqual(Array(update.passages!.dropLast()), previous?.passages ?? [])
+            var proposed: [Passage] = []
+            if let liveTail = previous?.passages?.last {
+                proposed.append(.init(source: liveTail.source, translation: liveTail.translation, isComplete: true))
+            }
+            proposed.append(next)
+            XCTAssertEqual(progress.target, proposed.map(\.source).joined())
+            let update = progress.merging(language(proposed), finalized: false)
+            let completed = previous?.passages?.filter(\.isComplete) ?? []
+            XCTAssertEqual(Array(update.passages!.prefix(completed.count)), completed)
+            XCTAssertEqual(update.passages?.filter(\.isComplete).count, index)
+            XCTAssertEqual(update.passages?.last?.isComplete, false)
             previous = update
         }
         XCTAssertEqual(previous?.passages?.count, 100)
         XCTAssertEqual(previous?.passages?.map(\.source).joined(), source)
+    }
+
+    func testLateFullStopStaysWithThePrecedingLivePhrase() throws {
+        let first = Passage(source: "前の話題です。", translation: "The earlier topic.", isComplete: true)
+        for (spoken, ending, translation) in [
+            ("今日は晴れです", "。", "It's sunny today."),
+            ("It is sunny today", ".", "It is sunny today."),
+            ("「今日は晴れです", "。」", "“It's sunny today.”")
+        ] {
+            let phrase = Passage(source: spoken, translation: translation, isComplete: true)
+            let initial = LiveLanguageTranslationProgress(source: first.source + spoken, previous: nil)
+                .merging(language([first, phrase]), finalized: false)
+            XCTAssertEqual(initial.passages?.first, first)
+            XCTAssertEqual(initial.passages?.last?.isComplete, false)
+
+            let punctuated = Passage(source: spoken + ending, translation: translation, isComplete: true)
+            let progress = LiveLanguageTranslationProgress(
+                source: first.source + punctuated.source, previous: initial)
+            XCTAssertEqual(progress.completed, [first])
+            XCTAssertEqual(progress.target, punctuated.source)
+            let withPunctuation = progress.merging(language([punctuated]), finalized: false)
+            XCTAssertEqual(withPunctuation.passages?.count, 2)
+            XCTAssertEqual(withPunctuation.passages?.last?.source, punctuated.source)
+            XCTAssertEqual(withPunctuation.passages?.last?.isComplete, false)
+
+            let next = Passage(source: " 次の話題は", translation: "The next topic is…", isComplete: false)
+            let source = first.source + punctuated.source + next.source
+            let continued = LiveLanguageTranslationProgress(source: source, previous: withPunctuation)
+                .merging(language([punctuated, next]), finalized: false)
+            XCTAssertEqual(continued.passages, [first, punctuated, next])
+            XCTAssertEqual(continued.passages?.map(\.source).joined(), source)
+            XCTAssertTrue(continued.preservesCompletedPassages(of: initial))
+
+            let finalized = LiveLanguageTranslationProgress(
+                source: first.source + punctuated.source, previous: withPunctuation)
+                .merging(language([punctuated]), finalized: true)
+            XCTAssertEqual(finalized.passages, [first, punctuated])
+            XCTAssertEqual(try JSONDecoder().decode(CompanionLanguageAssistance.self,
+                from: JSONEncoder().encode(finalized)), finalized)
+        }
     }
 
     func testASRCorrectionsInvalidateOnlyTheAffectedPassageAndLaterText() {
@@ -144,7 +192,7 @@ final class LanguageAssistanceTests: XCTestCase {
         ]
         let source = passages.map(\.source).joined()
         let merged = LiveLanguageTranslationProgress(source: source, previous: nil)
-            .merging(language(passages), finalized: false)
+            .merging(language(passages), finalized: true)
         XCTAssertEqual(merged.passages, passages)
         XCTAssertEqual(LiveLanguageTranslationProgress(source: source + " 次は", previous: merged).target, " 次は")
     }
