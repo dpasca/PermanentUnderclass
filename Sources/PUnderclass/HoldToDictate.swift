@@ -633,6 +633,10 @@ final class HoldToDictateService {
             finishRecording()
         case .interrupted:
             finishRecording(wasInterrupted: true)
+        case .cancelled:
+            // A modifier-assisted mouse selection belongs to the focused app.
+            // Discard this accidental capture without transcribing or pasting.
+            cancelRecording()
         }
     }
 

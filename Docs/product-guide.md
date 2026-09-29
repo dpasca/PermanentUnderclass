@@ -315,9 +315,13 @@ focused application, window, and control when recording begins, then returns
 to that original target before pasting—even if another process takes focus
 while recording or transcribing. Local Whisper and Local Parakeet keep
 dictation audio on this Mac; GPT-Transcribe sends the captured dictation audio
-to OpenAI. Pressing
-another keyboard key while the chord is down cancels the recording, so normal
-Command-Option shortcuts do not become dictations.
+to OpenAI. A left-click or drag cancels the current recording without
+transcribing or pasting, so modifier-assisted selections (such as rectangular
+selection in iTerm2) stay with the focused app. Holding the mouse button also
+prevents a new dictation from starting. Press Escape to end dictation without
+automatically pasting; other keyboard keys leave an active dictation running.
+After a cancellation, release Command or Option before starting another hold.
+Option-Control alone does not activate dictation.
 
 By default, Quick Dictation shows a small, non-activating preview near the
 bottom of the current screen, displaying the live microphone waveform while
