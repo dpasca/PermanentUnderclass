@@ -6,6 +6,51 @@ import XCTest
 @testable import PUnderclass
 
 final class CompanionTests: XCTestCase {
+    func testLiveAssistanceCommandSurvivesConcurrentRetryAndKeepsSpeech() async throws {
+        let hub = CompanionEventHub(streamID: "controls")
+        await hub.updateSession(isListening: true, status: "Listening", purpose: .meeting)
+        await hub.updatePartial(.init(id: "speaking", speaker: "other", text: "まだ話しています"))
+        let recorder = AssistanceCommandRecorder()
+        await hub.setAssistanceHandler { mode, replies in
+            await recorder.record()
+            await Task.yield()
+            await hub.updateSession(isListening: true, status: "Listening", purpose: .meeting,
+                languageAssistanceMode: mode ?? .off, liveTranscriptionAvailable: true,
+                replySuggestionsEnabled: replies ?? true)
+            return true
+        }
+        let command = CompanionCommandRequest(type: .setAssistance, suggestionID: nil,
+            languageAssistanceMode: .translation, replySuggestionsEnabled: false)
+        let encoded = try CompanionJSON.encoder().encode(command)
+        XCTAssertEqual(try CompanionJSON.decoder().decode(CompanionCommandRequest.self, from: encoded), command)
+        async let first = hub.apply(command: command, idempotencyKey: "retry")
+        async let retry = hub.apply(command: command, idempotencyKey: "retry")
+        let responses = await [first, retry]
+        XCTAssertEqual(responses[0], responses[1])
+        XCTAssertTrue(responses[0].applied)
+        let calls = await recorder.count
+        XCTAssertEqual(calls, 1)
+        let snapshot = await hub.snapshot()
+        XCTAssertTrue(snapshot.session.isListening)
+        XCTAssertEqual(snapshot.session.languageAssistanceMode, .translation)
+        XCTAssertEqual(snapshot.session.replySuggestionsEnabled, false)
+        XCTAssertEqual(snapshot.transcript.partials.first?.text, "まだ話しています")
+        let reconnected = try CompanionJSON.decoder().decode(CompanionSnapshot.self,
+            from: CompanionJSON.encoder().encode(snapshot))
+        XCTAssertEqual(reconnected.session.languageAssistanceMode, .translation)
+        XCTAssertEqual(reconnected.session.replySuggestionsEnabled, false)
+        XCTAssertEqual(reconnected.transcript.partials, snapshot.transcript.partials)
+    }
+
+    func testAssistanceCommandReportsMissingHostHandler() async {
+        let hub = CompanionEventHub()
+        let result = await hub.apply(command: .init(type: .setAssistance, suggestionID: nil,
+            languageAssistanceMode: .translation), idempotencyKey: "no-host")
+        XCTAssertFalse(result.applied)
+        let snapshot = await hub.snapshot()
+        XCTAssertNil(snapshot.session.languageAssistanceMode)
+    }
+
     func testCompositeCursorRoundTrips() throws {
         let cursor = CompanionCursor(streamID: "stream-a", sequence: 42)
         XCTAssertEqual(cursor.description, "stream-a:42")
@@ -2151,4 +2196,9 @@ final class CompanionTests: XCTestCase {
             )
         }
     }
+}
+
+private actor AssistanceCommandRecorder {
+    private(set) var count = 0
+    func record() { count += 1 }
 }

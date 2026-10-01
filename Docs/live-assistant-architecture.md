@@ -124,7 +124,22 @@ live draft. New updates preserve a visible passage's scroll offset while reading
 history; Pause scrolling also holds the position at the live edge. Follow live
 explicitly returns to the latest speech. Snapshots retain passage boundaries and
 wording; legacy payloads without passages still render as a single paired turn.
-Live drafts use a fixed-height area outside the completed reading scroller.
+The conversation reader is available independently of language assistance or
+assistant-provider availability. Original ASR partials render immediately above
+completed history, with no assistant request needed. Reply cues occupy an
+optional side panel; reply focus retains the existing teleprompter.
+
+`setAssistance` commands carry optional `languageAssistanceMode` and
+`replySuggestionsEnabled` fields. The hub serializes concurrent retries under
+the same idempotency key and forwards changes to the Mac controller. Session
+snapshots and `session.status` carry both settings. Changing assistance cancels
+old inference, preserves transcript and translation history, updates active
+speech hints, and publishes the new state. Japanese enablement moves future
+Parakeet turns to Whisper while retaining the old client until its pending
+turns finish. Reply disablement suppresses ordinary cue and early-bridge
+requests while allowing translation-only requests.
+
+Live drafts use a bounded area above the completed reading scroller.
 Rows retain their first-observed order across finalization, and follow mode
 advances only when a passage enters history. Draft/complete styles reserve the
 same horizontal space; mobile replies also reserve a stable height.

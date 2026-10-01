@@ -162,8 +162,18 @@ button:focus-visible {
   overflow: hidden;
 }
 
+.teleprompter.is-language-mode { display: flex; flex-direction: column; gap: 18px; }
+.meeting-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-right: 38px; margin-bottom: 16px; }
+.meeting-controls label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.meeting-controls input { width: 18px; height: 18px; accent-color: var(--green); }
+.meeting-controls button { background: #17251d; border: 1px solid #355b43; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.meeting-controls span { font-size: 14px; color: var(--muted); }
+.is-language-mode .meeting-controls { margin-bottom: 0; }
+
 .language-conversation {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   max-width: 1600px;
@@ -201,18 +211,25 @@ button:focus-visible {
 .language-conversation-reader { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .language-conversation-log { flex: 1; overflow-anchor: none; scrollbar-gutter: stable; }
 .language-live-draft {
-  flex: 0 0 clamp(180px, 34dvh, 300px);
-  max-height: 50%;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 12px;
+  flex: 0 0 46%;
   min-height: 0;
   overflow-y: auto;
   overflow-anchor: none;
   overflow-wrap: anywhere;
-  border-top: 1px solid #355b43;
-  padding: 12px;
+  border: 1px solid #355b43;
+  border-radius: 12px;
+  background: #102018;
+  padding: 16px;
+  margin-bottom: 18px;
   scrollbar-gutter: stable;
 }
 .language-live-draft.is-empty { flex-basis: 72px; }
-.language-live-draft article { height: 100%; display: flex; flex-direction: column; }
+.has-no-history .language-live-draft:not(.is-empty) { flex: 1; }
+.has-no-history .language-conversation-log { flex: 0 0 auto; }
+.language-live-draft article { min-height: 0; display: flex; flex-direction: column; }
 .language-live-draft .language-passage-pair { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
 .language-live-draft .language-passage-pair > p {
   min-height: 0;
@@ -224,7 +241,7 @@ button:focus-visible {
 }
 .language-live-draft .language-passage-pair > p:focus-visible { outline: 1px solid var(--green); outline-offset: 2px; }
 .language-live-draft small { color: var(--muted); font-size: 12px; }
-.language-live-draft article + article { margin-top: 12px; }
+.language-live-draft.has-multiple-speakers { flex-basis: 60%; }
 .language-source-correction { margin-top: 12px; color: var(--muted); font-size: 14px; }
 .language-source-correction p { white-space: pre-wrap; }
 .language-conversation-log, .language-conversation-reply {
@@ -242,8 +259,17 @@ button:focus-visible {
 .language-conversation-log article:first-child { padding-top: 0; }
 .language-conversation-log small { color: var(--muted); font-size: 12px; }
 .language-passage-pair { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; }
-.language-source { color: var(--muted); font-size: 18px; line-height: 1.65; margin: 8px 0 0; white-space: pre-wrap; }
-.language-translated { color: var(--green); font-size: 23px; line-height: 1.5; margin: 6px 0 0; white-space: pre-wrap; }
+.language-source { color: var(--muted); font-size: 22px; line-height: 1.65; margin: 8px 0 0; white-space: pre-wrap; }
+.language-translated { color: var(--green); font-size: 26px; line-height: 1.5; margin: 6px 0 0; white-space: pre-wrap; }
+.original-only .language-passage-pair { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.original-only .language-translated { display: none; }
+.original-only .language-source, .is-own-speech .language-source { color: var(--ink); font-size: 26px; max-width: 72ch; }
+.large-reading .language-source, .large-reading .language-translated { font-size: 32px; }
+.language-conversation-reply .history-round { padding: 16px 0; }
+.language-conversation-reply .history-round:first-of-type { opacity: 1; }
+.language-conversation-reply .history-round:first-of-type .history-preamble,
+.language-conversation-reply .history-round:first-of-type .history-cues span { color: var(--ink); font-size: 24px; }
+.reply-grounding { font-size: 12px; color: var(--muted); }
 .language-conversation-log article, .language-live-draft article { border-left: 3px solid transparent; padding-left: 12px; }
 .language-live-draft .is-draft { border-left-color: #698b75; }
 .language-conversation-log .is-draft .language-translated { color: var(--muted); }
@@ -264,8 +290,13 @@ button:focus-visible {
   .language-live-draft .language-passage-pair { grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr); }
   .language-conversation-reply { flex: 0 0 24%; min-height: 0; border-left: 0; border-top: 1px solid #253329; padding: 12px 0; }
   .language-passage-pair { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-  .language-source { font-size: 15px; }
-  .language-translated { font-size: 19px; }
+  .language-source { font-size: 18px; }
+  .language-translated { font-size: 22px; }
+  .original-only .language-source, .is-own-speech .language-source { font-size: 22px; }
+  .original-only .language-live-draft .language-passage-pair { grid-template-rows: minmax(0, 1fr); }
+  .meeting-controls { font-size: 14px; gap: 10px; }
+  .meeting-controls strong { width: 100%; }
+  .large-reading .language-source, .large-reading .language-translated { font-size: 28px; }
 }
 
 .local-transcript-view {

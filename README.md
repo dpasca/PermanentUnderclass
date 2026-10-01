@@ -47,12 +47,14 @@ checksum. Intel Macs and non-macOS systems are not supported.
 
 ## Japanese language assistance
 
-In **Settings → General → Japanese language assistance**, choose translation
-only or translation with suggested replies before starting a Meeting or
-Interview. Open the live assistant display to see the other speaker's English
-translation and, when useful, a polite Japanese reply with kanji + furigana,
-kana, romaji, and English meaning. Original transcripts stay in the language
-spoken. Both microphone and system audio accept Japanese and English.
+Meeting and Interview keep original live speech visible whether assistance is
+on or off. Use **Japanese → English** and **Reply support** above the Mac transcript
+or in the **Live Display** to change assistance during capture or a replay.
+The switches are independent: both off gives a transcript-only view; translation
+alone adds English; reply support adds ordinary response cues or, with Japanese
+translation enabled, a polite Japanese reply with kanji + furigana, kana,
+romaji, and English meaning. Settings → General offers the same Japanese modes.
+Original transcripts stay in the language spoken.
 
 Translation uses the selected OpenAI or Gemini suggestion provider and its API
 key. With an OpenAI transcription key, original speech appears word by word
@@ -64,7 +66,7 @@ Whisper automatically if the selected Fast/Parakeet engine cannot handle it,
 and uses grounded replies even in an interview configured for rehearsal.
 Privacy Lock disables translation and replies along with other cloud features.
 
-Meeting and Interview use the same live language view. It shows both speakers'
+Meeting and Interview use the same live conversation view. With translation enabled, it shows both speakers'
 original words, English translations paired with short Japanese passages, and
 Japanese replies after completed turns. Completed passages keep their English
 wording; only the last unfinished draft updates. If transcription corrects an
@@ -74,7 +76,10 @@ Conversation history stays scrollable
 throughout the session and survives browser reconnects. New updates do not
 pull you away from older passages; **Pause scrolling** holds your reading
 position, and **Follow live** returns to the latest speech. Live drafts occupy a
-bounded area below the completed reading history, sized for the window. English
+larger area above the completed reading history, sized for the window. **Larger
+text** increases reading size, and **Focus on replies** opens the existing reply
+teleprompter when translation is off. The Mac transcript also shows live speech
+above completed turns, with larger type and an explicit **Pause following** control. English
 and Japanese each follow their latest words, so long monologues remain readable
 before passages complete. Scroll back in either language to pause following;
 all earlier draft text remains available. The newest phrase stays provisional
@@ -106,9 +111,12 @@ The slash command palette also provides these shortcuts:
 | `/transcription.languages.auto` | Clear speech hints for automatic language detection |
 | `/settings.languages` | Open language settings, including custom language codes |
 
-Change assistance before starting capture or a replay. Speech-language presets
-are unavailable during capture or Quick Dictation. Japanese assistance adds
-English and Japanese call hints independently of the dictation preset.
+Assistance commands also work during capture and generated replays. Enabling
+Japanese assistance updates speech hints without restarting capture and moves
+future local turns from Parakeet to Whisper when needed. Turning translation
+off retains those speech hints for the rest of the capture, so Japanese speech
+continues to be transcribed. Speech-language presets remain unavailable during
+capture or Quick Dictation.
 
 ## More screenshots
 

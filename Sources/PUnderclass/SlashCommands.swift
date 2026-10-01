@@ -1463,11 +1463,6 @@ final class SlashCommandRegistry {
     }
 
     private func addLanguageCommands(using add: AddCommand) {
-        let assistanceReason = controller.isListening
-            ? "Stop live capture before changing language assistance."
-            : controller.syntheticInterviewState.isActive
-                ? "Stop the generated replay before changing language assistance."
-                : nil
         let modes: [(String, LanguageAssistanceMode, String)] = [
             ("off", .off, "Turn off translations and Japanese reply suggestions."),
             ("translate", .translation,
@@ -1481,7 +1476,7 @@ final class SlashCommandRegistry {
                 mode == .off ? "Turn Off Japanese Assistance" : mode.title,
                 description, .preparation, "character.bubble",
                 ["Japanese", "translation", "furigana", "kana", "romaji", "language"],
-                assistanceReason ?? (controller.languageAssistanceMode == mode
+                (controller.languageAssistanceMode == mode
                     ? "This language assistance mode is already selected." : nil),
                 nil, .action
             ) { [controller] in

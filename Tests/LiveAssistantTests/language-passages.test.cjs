@@ -120,3 +120,17 @@ test("a long podcast keeps all completed pairs when the current phrase is revise
     assert.equal(output[99].translation, passages[99].translation);
   }
 });
+
+const original = runInNewContext(`${app.slice(start, end)}; originalPassagesForTurn`);
+test("original speech streams and completes independently of translation or replies", () => {
+  const longSpeech = "日本語と English are both preserved. ".repeat(300);
+  for (const speaker of ["you", "other"]) {
+    const live = original({speaker, text: longSpeech, partial: true});
+    assert.equal(live[0].source, longSpeech);
+    assert.equal(live[0].isComplete, false);
+    const final = original({speaker, text: longSpeech + "Finished.", partial: false});
+    assert.equal(final[0].source, longSpeech + "Finished.");
+    assert.equal(final[0].isComplete, true);
+  }
+  assert.equal(original({text: "", partial: true}).length, 0);
+});

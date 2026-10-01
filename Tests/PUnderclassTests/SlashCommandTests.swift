@@ -353,7 +353,7 @@ final class SlashCommandTests: XCTestCase {
             query: "/assistant.language.translate").first?.name, "assistant.language.translate")
 
         controller.isListening = true
-        XCTAssertFalse(try command("assistant.language.replies").availability.isAvailable)
+        XCTAssertTrue(try command("assistant.language.replies").availability.isAvailable)
         XCTAssertFalse(try command("transcription.languages.japanese").availability.isAvailable)
         XCTAssertTrue(try command("settings.languages").availability.isAvailable)
 

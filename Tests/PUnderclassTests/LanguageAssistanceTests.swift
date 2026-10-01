@@ -3,6 +3,26 @@ import XCTest
 @testable import PUnderclass
 
 final class LanguageAssistanceTests: XCTestCase {
+    @MainActor
+    func testAssistanceSwitchesDuringCaptureWithoutClearingTranscript() {
+        let controller = MeetingController.documentationDemo(.meeting)
+        controller.isListening = true
+        let originalIDs = controller.transcript.map(\.id)
+        controller.setLanguageAssistanceMode(.translationAndReplies)
+        XCTAssertEqual(controller.languageAssistanceMode, .translationAndReplies)
+        XCTAssertTrue(controller.replySuggestionsEnabled)
+        controller.setReplySuggestionsEnabled(false)
+        XCTAssertEqual(controller.languageAssistanceMode, .translation)
+        controller.setLanguageAssistanceMode(.off)
+        XCTAssertFalse(controller.replySuggestionsEnabled)
+        controller.setReplySuggestionsEnabled(true)
+        XCTAssertEqual(controller.languageAssistanceMode, .off)
+        controller.setLanguageAssistanceMode(.translation)
+        XCTAssertFalse(controller.replySuggestionsEnabled)
+        XCTAssertTrue(controller.isListening)
+        XCTAssertEqual(controller.transcript.map(\.id), originalIDs)
+    }
+
     func testLateTranslationsCanFinishTheTailButCannotRewriteCompletedPassages() {
         let completed = Passage(source: "はい。", translation: "Yes.", isComplete: true)
         let previous = language([completed, .init(source: "次に", translation: "Next…", isComplete: false)])

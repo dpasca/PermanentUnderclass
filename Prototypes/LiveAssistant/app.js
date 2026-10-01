@@ -126,6 +126,8 @@ const state = {
   fallbackTopicNumbers: new Map(),
   nextFallbackTopicNumber: 0,
   topicStartedAtByTopicID: new Map(),
+  replyFocus: false,
+  assistanceCommandPending: false,
   mockElapsedSeconds: 24 * 60 + 18
 };
 
@@ -201,7 +203,10 @@ function setConnectionStatus(kind, label, eyebrow = null) {
   const popover = $("#connectionPopover");
   popover.classList.toggle("is-connected", kind === "connected");
   $("#popoverConnectionLabel").textContent = label;
+  $("#conversationConnection").textContent = state.mode === "mock" ? "Synthetic preview"
+    : kind === "connected" ? "Connected to Mac" : kind === "reconnecting" ? "Reconnecting…" : "Disconnected";
   renderInferenceStatus();
+  if (state.snapshot) renderLanguageConversation();
 }
 
 function setInferenceStatus(kind, eyebrow, title, detail, checkCount = null) {
@@ -669,8 +674,7 @@ function renderTranscriptInto(container, transcript) {
 }
 
 function renderTranscript(transcript) {
-  const languageMode = state.snapshot?.session?.languageAssistanceMode;
-  if (languageMode && languageMode !== "off") return;
+  if (state.snapshot) return;
   renderTranscriptInto($("#transcriptScroll"), transcript);
   renderTranscriptInto($("#localTranscriptList"), transcript);
 }
@@ -1261,12 +1265,24 @@ function languagePassagesForTurn(turn, result, stopped = false) {
   return passages;
 }
 
-// Track scroll direction, not distance from the bottom: growing content and
-// layout changes can increase that distance without the reader scrolling back.
+// Only reader input pauses following. Layout changes, mode switches, and ASR
+// corrections can move scrollTop upward without a person scrolling back.
 function trackLanguageScroll(element, onScrollBack) {
   let previousTop = element.scrollTop;
+  let touchY = 0;
+  element.onwheel = (event) => { if (event.deltaY < 0) onScrollBack(); };
+  element.onkeydown = (event) => {
+    if (["ArrowUp", "PageUp", "Home"].includes(event.key)) onScrollBack();
+  };
+  element.ontouchstart = (event) => { touchY = event.touches[0].clientY; };
+  element.ontouchmove = (event) => {
+    const nextY = event.touches[0].clientY;
+    if (nextY > touchY) onScrollBack();
+    touchY = nextY;
+  };
+  element.onpointerdown = () => { element.dataset.pointerActive = "true"; };
   element.onscroll = () => {
-    if (element.scrollTop < previousTop - 1) onScrollBack();
+    if (element.dataset.pointerActive === "true" && element.scrollTop < previousTop - 1) onScrollBack();
     previousTop = element.scrollTop;
   };
 }
@@ -1280,36 +1296,83 @@ function followLanguageDraft(draftLog) {
   draftLog.scrollTop = draftLog.scrollHeight;
 }
 
+// Original speech is a projection of ASR state, independent of assistant output.
+function originalPassagesForTurn(turn) {
+  return turn.text ? [{source: turn.text, translation: "", isComplete: !turn.partial}] : [];
+}
+
+function renderConversationReplies(panel, assistant, session) {
+  const suggestions = answerHistoryFor(assistant).filter((item) => !item.languageAssistance);
+  const key = JSON.stringify([suggestions, assistant?.bridge, assistant?.draft, assistant?.phase,
+    assistant?.lastError, session.suggestionsPaused, session.assistantAvailable]);
+  if (panel.dataset.suggestionId === key) return;
+  panel.dataset.suggestionId = key;
+  const heading = document.createElement("h2"); heading.textContent = "Reply support";
+  const status = document.createElement("p");
+  status.textContent = !session.assistantAvailable ? "Add your selected assistant provider’s key in the Mac app to enable replies."
+    : session.suggestionsPaused ? "Reply support paused"
+    : assistant?.lastError || (assistant?.phase === "working" ? "Preparing a reply…" : "Suggestions appear when a reply is useful.");
+  panel.replaceChildren(heading, status);
+  if (assistant?.bridge) {
+    const bridge = document.createElement("p");
+    bridge.textContent = `EARLY BRIDGE · VERIFY · ${assistant.bridge.text}`;
+    panel.append(bridge);
+  }
+  suggestions.forEach((suggestion, index) => {
+    const round = createHistoryRound(suggestion, index);
+    round.querySelector("small").textContent = index === 0 ? "CURRENT REPLY" : "EARLIER REPLY";
+    const notice = document.createElement("p");
+    notice.className = "reply-grounding";
+    notice.textContent = suggestion.answerMode === "plausibleRehearsal"
+      ? "PLAUSIBLE REHEARSAL · VERIFY" : suggestion.deliveryMode === "instantText"
+        ? "LIVE TEXT DRAFT · VERIFY" : suggestion.grounding === "localReferences"
+          ? "Grounded in your references" : "AI suggestion · check important details";
+    round.prepend(notice);
+    panel.append(round);
+  });
+}
+
 function renderLanguageConversation() {
   const session = state.snapshot?.session;
   const assistant = state.snapshot?.assistant;
   const enabled = Boolean(session?.languageAssistanceMode && session.languageAssistanceMode !== "off");
-  $("#languageConversation").hidden = !enabled;
-  $(".teleprompter").classList.toggle("is-language-mode", enabled);
-  if (!enabled) return false;
+  const visible = Boolean(session) && !(state.replyFocus && !enabled && session.replySuggestionsEnabled !== false);
+  $("#meetingControls").hidden = !session;
+  $("#languageConversation").hidden = !visible;
+  $(".teleprompter").classList.toggle("is-language-mode", visible);
+  if (!session) return false;
+  $("#translationControl").checked = enabled;
+  $("#repliesControl").checked = session.replySuggestionsEnabled ?? session.languageAssistanceMode !== "translation";
+  $("#replyFocusControl").hidden = enabled || !$("#repliesControl").checked;
+  $("#replyFocusControl").textContent = state.replyFocus ? "Show conversation" : "Focus on replies";
+  $("#replyFocusControl").setAttribute("aria-pressed", String(state.replyFocus));
+  $("#languageConversation").classList.toggle("original-only", !enabled);
+  $("#conversationConnection").textContent = state.mode === "mock" ? "Synthetic preview"
+    : state.connectionKind === "connected" ? "Connected to Mac" : "Reconnecting…";
+  if (!visible) return false;
 
   const replyPanel = $("#languageConversationReply");
-  const showReplies = session.languageAssistanceMode === "translationAndReplies";
+  const showReplies = $("#repliesControl").checked;
   replyPanel.hidden = !showReplies;
   $(".language-conversation-columns").classList.toggle("translation-only", !showReplies);
 
   const status = $("#languageConversationStatus");
-  status.textContent = !session.assistantAvailable
+  status.textContent = enabled && !session.assistantAvailable
     ? "Speech is still captured. Translation needs your selected assistant provider’s key and cloud access."
-    : assistant?.lastError
+    : enabled && assistant?.lastError
       ? `Translation needs attention: ${assistant.lastError}`
-      : session.suggestionsPaused ? "Translations paused · speech and history remain visible"
+      : session.suggestionsPaused ? "Assistance paused · speech and history remain visible"
       : !session.isListening ? "Capture stopped · conversation history retained"
       : session.liveTranscriptionAvailable === false
-        ? "Text and translations follow completed turns. Add an OpenAI key and restart capture for live words."
+        ? "Text follows completed turns · live words need an OpenAI key when capture starts."
         : "Live subtitles follow the latest words · scroll back or pause to read earlier text";
   if (state.mode === "live" && state.connectionKind !== "connected") {
     status.textContent = "Reconnecting to the Mac · showing the last received conversation";
   }
 
-  const history = (!session.isListening && assistant?.stoppedTranslationHistory)
+  const history = enabled ? ((!session.isListening && assistant?.stoppedTranslationHistory)
     || assistant?.translationHistory
-    || (assistant?.suggestionHistory || []).filter((item) => item.languageAssistance).slice().reverse();
+    || (assistant?.suggestionHistory || []).filter((item) => item.languageAssistance).slice().reverse()) : [];
   const translated = new Map(history.map((item) => [item.topicID || item.id, item]));
   const transcript = state.snapshot?.transcript;
   const turns = new Map((transcript?.turns || []).map((turn) => [turn.id, {...turn, partial: false}]));
@@ -1325,6 +1388,7 @@ function renderLanguageConversation() {
 
   const log = $("#languageConversationLog");
   const draftLog = $("#languageLiveDraft");
+  draftLog.setAttribute("aria-label", enabled ? "Live speech and provisional translation" : "Live speech");
   const followButton = $("#languageFollowLive");
   const updateFollowButton = () => {
     const following = log.dataset.follow !== "false";
@@ -1350,7 +1414,9 @@ function renderLanguageConversation() {
   let addedHistory = false;
   for (const turn of turns.values()) {
     const result = translated.get(turn.id);
-    const passages = languagePassagesForTurn(turn, result, !session.isListening);
+    const passages = enabled && turn.speaker !== "you"
+      ? languagePassagesForTurn(turn, result, !session.isListening)
+      : originalPassagesForTurn(turn);
     for (const [index, passage] of passages.entries()) {
       const id = `${turn.id}:${index}`;
       let row = oldRows.get(id);
@@ -1370,16 +1436,16 @@ function renderLanguageConversation() {
       const [label, pair] = row.children;
       const [translation, source] = pair.children;
       const ownSpeech = turn.speaker === "you";
-      row.classList.toggle("is-draft", !passage.isComplete && !ownSpeech);
+      row.classList.toggle("is-draft", !passage.isComplete);
       row.classList.toggle("is-own-speech", ownSpeech);
-      const phase = passage.wasRevised ? "TRANSCRIPT CORRECTED"
+      const phase = !enabled || ownSpeech ? (turn.partial ? "LIVE · may change" : "TRANSCRIPT") : passage.wasRevised ? "TRANSCRIPT CORRECTED"
         : passage.isComplete ? "ENGLISH" : passage.pending ? "LIVE · translating" : "LIVE DRAFT · may change";
-      const labelText = `${ownSpeech ? "You" : `Other speaker · ${phase}`} · ${index + 1}`;
+      const labelText = `${ownSpeech ? "You" : "Other speaker"} · ${phase}`;
       if (label.textContent !== labelText) label.textContent = labelText;
       if (source.textContent !== passage.source) source.textContent = passage.source;
-      const meaning = passage.translation || (ownSpeech ? "" : "Translating…");
+      const meaning = passage.translation || (ownSpeech || !enabled ? "" : "Translating…");
       if (translation.textContent !== meaning) translation.textContent = meaning;
-      const isLiveDraft = session.isListening && (ownSpeech ? turn.partial : !passage.isComplete);
+      const isLiveDraft = session.isListening && (ownSpeech || !enabled ? turn.partial : !passage.isComplete && (turn.partial || Boolean(result)));
       for (const text of [translation, source]) {
         if (isLiveDraft) text.tabIndex = 0;
         else {
@@ -1412,9 +1478,11 @@ function renderLanguageConversation() {
     });
   }
   draftLog.classList.toggle("is-empty", !draftRows.length);
+  draftLog.classList.toggle("has-multiple-speakers", draftRows.length > 1);
+  $(".language-conversation-reader").classList.toggle("has-no-history", !historyRows.length);
   if (!draftRows.length && session.isListening) {
     const hint = document.createElement("p");
-    hint.textContent = "Live speech appears here. Completed passages stay in the reading history above.";
+    hint.textContent = "Listening for speech… Completed speech stays in the history below.";
     draftLog.replaceChildren(hint);
   }
   if (!turns.size) {
@@ -1440,8 +1508,12 @@ function renderLanguageConversation() {
     renderLanguageConversation();
   };
 
+  if (!enabled) {
+    renderConversationReplies(replyPanel, assistant, session);
+    return true;
+  }
   const reply = [...history].reverse().find((item) => item.languageAssistance?.reply);
-  const replyID = reply?.id || "none";
+  const replyID = `japanese:${reply?.id || "none"}`;
   if (replyPanel.dataset.suggestionId !== replyID) {
     replyPanel.dataset.suggestionId = replyID;
     const heading = document.createElement("h2"); heading.textContent = "Suggested reply";
@@ -1954,10 +2026,10 @@ function testReconnect() {
   setTimeout(openEventStream, 1600);
 }
 
-async function sendCommand(type, suggestionID = null) {
+async function sendCommand(type, suggestionID = null, settings = {}) {
   if (state.mode !== "live") return { applied: true, message: "Preview action applied" };
   const key = globalThis.crypto?.randomUUID?.() || `cmd-${Date.now()}-${Math.random()}`;
-  const body = JSON.stringify({ type, suggestionID });
+  const body = JSON.stringify({ type, suggestionID, ...settings });
   let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -1977,6 +2049,47 @@ async function sendCommand(type, suggestionID = null) {
 }
 
 function bindControls() {
+  const endScrollDrag = () => {
+    document.querySelectorAll('[data-pointer-active="true"]').forEach((element) => {
+      element.dataset.pointerActive = "false";
+    });
+  };
+  document.addEventListener("pointerup", endScrollDrag);
+  document.addEventListener("pointercancel", endScrollDrag);
+  const updateAssistance = async (event) => {
+    if (state.assistanceCommandPending) return;
+    const translation = $("#translationControl");
+    const replies = $("#repliesControl");
+    const settings = event.target === translation
+      ? {languageAssistanceMode: translation.checked ? (replies.checked ? "translationAndReplies" : "translation") : "off"}
+      : {replySuggestionsEnabled: replies.checked};
+    state.assistanceCommandPending = true;
+    translation.disabled = replies.disabled = true;
+    $("#assistanceControlStatus").textContent = "Updating…";
+    try {
+      const result = await sendCommand("setAssistance", null, settings);
+      if (!result.applied) throw new Error(result.message);
+      $("#assistanceControlStatus").textContent = "";
+    } catch (error) {
+      $("#assistanceControlStatus").textContent = error.message;
+    } finally {
+      state.assistanceCommandPending = false;
+      translation.disabled = replies.disabled = false;
+      renderAssistant(state.snapshot?.assistant);
+    }
+  };
+  $("#translationControl").addEventListener("change", updateAssistance);
+  $("#repliesControl").addEventListener("change", updateAssistance);
+  $("#readingSizeControl").addEventListener("click", (event) => {
+    const large = $(".teleprompter").classList.toggle("large-reading");
+    event.target.setAttribute("aria-pressed", String(large));
+    event.target.textContent = large ? "Standard text" : "Larger text";
+    renderLanguageConversation();
+  });
+  $("#replyFocusControl").addEventListener("click", () => {
+    state.replyFocus = !state.replyFocus;
+    renderAssistant(state.snapshot?.assistant);
+  });
   function openCitation(path) {
     if (!path) {
       showToast("Citation metadata unavailable");

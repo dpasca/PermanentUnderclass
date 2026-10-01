@@ -96,6 +96,7 @@ struct CompanionCursor: Codable, Equatable, Sendable, CustomStringConvertible {
 }
 
 struct CompanionSessionState: Codable, Equatable, Sendable {
+    var replySuggestionsEnabled: Bool? = nil
     var liveTranscriptionAvailable: Bool? = nil
     var languageAssistanceMode: LanguageAssistanceMode? = nil
     var isListening = false
@@ -384,6 +385,7 @@ enum CompanionStreamItem: Equatable, Sendable {
 }
 
 enum CompanionCommandType: String, Codable, Equatable, Sendable {
+    case setAssistance
     case pauseSuggestions
     case resumeSuggestions
     case pinSuggestion
@@ -394,6 +396,8 @@ enum CompanionCommandType: String, Codable, Equatable, Sendable {
 struct CompanionCommandRequest: Codable, Equatable, Sendable {
     let type: CompanionCommandType
     let suggestionID: String?
+    var languageAssistanceMode: LanguageAssistanceMode? = nil
+    var replySuggestionsEnabled: Bool? = nil
 }
 
 struct CompanionCommandResponse: Codable, Equatable, Sendable {
@@ -416,6 +420,14 @@ actor CompanionEventHub {
     private var topicCount = 0
     private var topicNumbersByID: [String: Int] = [:]
     private var state: CompanionSnapshot
+    private var assistanceHandler: (@Sendable (LanguageAssistanceMode?, Bool?) async -> Bool)?
+    private var pendingCommands: [String: Task<Bool, Never>] = [:]
+
+    func setAssistanceHandler(
+        _ handler: @escaping @Sendable (LanguageAssistanceMode?, Bool?) async -> Bool
+    ) {
+        assistanceHandler = handler
+    }
 
     init(
         streamID: String = UUID().uuidString.lowercased(),
@@ -448,6 +460,20 @@ actor CompanionEventHub {
         state.session.suggestionsPaused
     }
 
+    func clearAssistantPresentation() {
+        state.assistant.draft = nil
+        state.assistant.evaluatingSequence = nil
+        state.assistant.suggestion = nil
+        state.assistant.suggestionHistory = []
+        state.assistant.bridge = nil
+        state.assistant.phase = .idle
+        state.assistant.lastError = nil
+        state.assistant.pinnedSuggestionID = nil
+        state.session.suggestionsPaused = false
+        _ = publish(name: "session.status", payload: state.session)
+        _ = publish(name: "assistant.state", payload: state.assistant)
+    }
+
     @discardableResult
     func updateSession(
         isListening: Bool,
@@ -461,7 +487,8 @@ actor CompanionEventHub {
         deliveryMode: LiveAssistantDeliveryMode = .verified,
         assistantAvailable: Bool = true,
         languageAssistanceMode: LanguageAssistanceMode = .off,
-        liveTranscriptionAvailable: Bool = false
+        liveTranscriptionAvailable: Bool = false,
+        replySuggestionsEnabled: Bool = true
     ) -> CompanionEvent {
         if isListening, !state.session.isListening {
             state.assistant.stoppedTranslationHistory = nil
@@ -480,6 +507,7 @@ actor CompanionEventHub {
             isPreparingSyntheticInterview
         state.session.assistantAvailable = assistantAvailable
         state.session.languageAssistanceMode = languageAssistanceMode
+        state.session.replySuggestionsEnabled = replySuggestionsEnabled
         state.session.liveTranscriptionAvailable = liveTranscriptionAvailable
         state.session.answerMode = purpose == .interview
             ? answerMode
@@ -851,13 +879,32 @@ actor CompanionEventHub {
     func apply(
         command: CompanionCommandRequest,
         idempotencyKey: String
-    ) -> CompanionCommandResponse {
+    ) async -> CompanionCommandResponse {
         if let previous = commandResults[idempotencyKey] {
             return previous
         }
 
         let result: (Bool, String)
         switch command.type {
+        case .setAssistance:
+            guard command.languageAssistanceMode != nil || command.replySuggestionsEnabled != nil else {
+                return CompanionCommandResponse(idempotencyKey: idempotencyKey,
+                    applied: false, message: "Choose an assistance setting.", watermark: sequence)
+            }
+            let task: Task<Bool, Never>
+            if let pending = pendingCommands[idempotencyKey] {
+                task = pending
+            } else {
+                let handler = assistanceHandler
+                task = Task {
+                    await handler?(command.languageAssistanceMode, command.replySuggestionsEnabled) ?? false
+                }
+                pendingCommands[idempotencyKey] = task
+            }
+            let applied = await task.value
+            pendingCommands.removeValue(forKey: idempotencyKey)
+            if let previous = commandResults[idempotencyKey] { return previous }
+            result = (applied, applied ? "Assistance updated · transcript continues" : "The Mac could not change assistance.")
         case .pauseSuggestions:
             state.session.suggestionsPaused = true
             _ = publish(name: "session.status", payload: state.session)

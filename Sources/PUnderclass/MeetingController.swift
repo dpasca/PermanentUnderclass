@@ -18,6 +18,7 @@ final class MeetingController: ObservableObject {
     @Published var keywordsText = ""
     @Published var languagesText = "en"
     @Published private(set) var languageAssistanceMode: LanguageAssistanceMode = .off
+    @Published private(set) var replySuggestionsEnabled = true
     @Published private var languageTranscripts: [String: CompanionLanguageAssistance] = [:]
     @Published var delay: TranscriptionDelay = .medium
     @Published var preparationPurpose: CapturePurpose = .meeting
@@ -94,6 +95,7 @@ final class MeetingController: ObservableObject {
     private var refinementClients: [SpeakerTag: TranscriptRefining] = [:]
     private var refinementStates: [SpeakerTag: SocketState] = [:]
     private var activeContext: TranscriptionContext?
+    private var retiredRefinementClients: [TranscriptRefining] = []
     private var activeSessionID: UUID?
     private var inputDeviceMonitor: DefaultInputDeviceMonitor?
     private var outputDeviceMonitor: DefaultOutputDeviceMonitor?
@@ -264,6 +266,8 @@ final class MeetingController: ObservableObject {
         languageAssistanceMode = LanguageAssistanceMode(rawValue:
             UserDefaults.standard.string(forKey: "PUnderclass.LanguageAssistanceMode") ?? ""
         ) ?? .off
+        replySuggestionsEnabled = languageAssistanceMode == .translation ? false
+            : UserDefaults.standard.object(forKey: "PUnderclass.ReplySuggestionsEnabled") as? Bool ?? true
         languagesText = UserDefaults.standard.string(forKey: "PUnderclass.TranscriptionLanguages") ?? "en"
         assistantAnswerMode = Self.storedAssistantAnswerMode()
         assistantEarlyBridgeEnabled = assistantAnswerMode == .plausibleRehearsal
@@ -630,6 +634,7 @@ final class MeetingController: ObservableObject {
             prepareCompanionForNewSession()
             let context = try transcriptionContext(for: purpose)
             uniqueRefinementClients().forEach { $0.disconnect() }
+            retiredRefinementClients.removeAll()
             refinementClients.removeAll()
             refinementStates.removeAll()
             markRefiningTurnsLiveOnly(
@@ -725,6 +730,7 @@ final class MeetingController: ObservableObject {
             case .localParakeet:
                 let client = ParakeetRefinementClient(
                     onState: { [weak self] state in
+                        guard self?.refinementClients[.you] is ParakeetRefinementClient else { return }
                         self?.handleRefinementState(
                             state,
                             speaker: nil,
@@ -1166,12 +1172,81 @@ final class MeetingController: ObservableObject {
     }
 
     func setLanguageAssistanceMode(_ mode: LanguageAssistanceMode) {
-        guard !isListening, !syntheticInterviewState.isActive else { return }
+        setAssistance(mode: mode, replies: mode == .off ? replySuggestionsEnabled : mode == .translationAndReplies)
+    }
+
+    func setReplySuggestionsEnabled(_ enabled: Bool) {
+        setAssistance(mode: languageAssistanceMode, replies: enabled)
+    }
+
+    private func setAssistance(mode requestedMode: LanguageAssistanceMode, replies: Bool) {
+        let mode: LanguageAssistanceMode = requestedMode.isEnabled
+            ? (replies ? .translationAndReplies : .translation) : .off
+        guard mode != languageAssistanceMode || replies != replySuggestionsEnabled else { return }
+        cancelAssistantGenerations()
+        assistantBridgeTask?.cancel()
+        assistantBridgeTask = nil
+        assistantBridgeRequestID = nil
+        activeAssistantBridge = nil
         languageAssistanceMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: "PUnderclass.LanguageAssistanceMode")
-        if resolvedCaptureEngine == .localWhisper {
+        replySuggestionsEnabled = replies
+        if documentationDemoMode == nil {
+            UserDefaults.standard.set(mode.rawValue, forKey: "PUnderclass.LanguageAssistanceMode")
+            UserDefaults.standard.set(replies, forKey: "PUnderclass.ReplySuggestionsEnabled")
+        }
+        let purpose = syntheticInterviewState.isActive ? syntheticInterviewState.purpose : capturePurpose
+        if let purpose { activateAssistantAnswerMode(for: purpose) }
+        if isListening, let purpose, var context = try? transcriptionContext(for: purpose) {
+            // Disabling the translation overlay must not stop Japanese recognition.
+            if let previous = activeContext {
+                context.languages = Array(Set(previous.languages + context.languages)).sorted()
+            }
+            if context != activeContext {
+                activeContext = context
+                localClient?.updateContext(context)
+                remoteClient?.updateContext(context)
+            }
+            enableJapaneseRefinementIfNeeded()
+        }
+        if documentationDemoMode == nil, resolvedCaptureEngine == .localWhisper {
             startWhisperWarmup()
         }
+        publishCompanionSession()
+        enqueueCompanionUpdate { hub in
+            await hub.clearAssistantPresentation()
+        }
+        if (isListening || syntheticInterviewState.isRunning), let purpose,
+           !remoteTrack.partialTranscript.isEmpty {
+            let id = syntheticInterviewState.isRunning ? remoteTrack.lastItemID
+                : "\(SpeakerTag.other.rawValue)-\(remoteTrack.lastItemID)"
+            if !remoteTrack.lastItemID.isEmpty {
+                scheduleLiveAssistant(trigger: .partialTranscript, turnID: id,
+                    sourceText: remoteTrack.partialTranscript, speaker: .other, purpose: purpose)
+            }
+        }
+    }
+
+    private func enableJapaneseRefinementIfNeeded() {
+        guard languageAssistanceMode.isEnabled, let sessionID = activeSessionID,
+              let purpose = capturePurpose,
+              refinementClients.values.contains(where: { $0 is ParakeetRefinementClient }) else { return }
+        // Keep in-flight turns alive; only future turns move to the Japanese-capable engine.
+        retiredRefinementClients.append(contentsOf: uniqueRefinementClients())
+        let client = WhisperRefinementClient(
+            onState: { [weak self] state in
+                self?.handleRefinementState(state, speaker: nil, sessionID: sessionID)
+            },
+            onRefined: { [weak self] id, text in
+                guard self?.activeSessionID == sessionID else { return }
+                self?.applyRefinement(transcriptID: id, purpose: purpose, text: text)
+            },
+            onFailure: { [weak self] id, message in
+                guard self?.activeSessionID == sessionID else { return }
+                self?.markTurnLiveOnly(transcriptID: id, purpose: purpose, message: message)
+            }
+        )
+        refinementClients = [.you: client, .other: client]
+        client.connect()
     }
 
     func setTranscriptionLanguages(_ text: String) {
@@ -1187,7 +1262,9 @@ final class MeetingController: ObservableObject {
     var resolvedCaptureEngine: TranscriptRefinementEngine {
         TranscriptionLanguagePolicy.resolvedEngine(
             preferring: capability.resolvedEngine(preferring: refinementEngine),
-            languages: languageAssistanceMode.transcriptionLanguages(from: dictationLanguages())
+            languages: isListening ? activeContext?.languages
+                ?? languageAssistanceMode.transcriptionLanguages(from: dictationLanguages())
+                : languageAssistanceMode.transcriptionLanguages(from: dictationLanguages())
         )
     }
 
@@ -2630,8 +2707,10 @@ final class MeetingController: ObservableObject {
     ) {
         guard syntheticInterviewState.isRunning else { return }
         if speaker == .you {
+            localTrack.lastItemID = id
             localTrack.partialTranscript = text
         } else {
+            remoteTrack.lastItemID = id
             remoteTrack.partialTranscript = text
         }
         publishCompanionPartial(id: id, speaker: speaker, text: text)
@@ -3037,11 +3116,9 @@ final class MeetingController: ObservableObject {
 
     private func uniqueRefinementClients() -> [TranscriptRefining] {
         var seen: Set<ObjectIdentifier> = []
-        return [SpeakerTag.you, .other].compactMap { speaker in
-            guard let client = refinementClients[speaker] else { return nil }
+        return (Array(refinementClients.values) + retiredRefinementClients).filter { client in
             let identifier = ObjectIdentifier(client)
-            guard seen.insert(identifier).inserted else { return nil }
-            return client
+            return seen.insert(identifier).inserted
         }
     }
 
@@ -3404,6 +3481,14 @@ final class MeetingController: ObservableObject {
     }
 
     private func startCompanionGateway() {
+        let hub = companionGateway.hub
+        Task { [weak self] in
+            await hub.setAssistanceHandler { [weak self] mode, replies in
+                guard let self else { return false }
+                await self.applyCompanionAssistance(mode: mode, replies: replies)
+                return true
+            }
+        }
         let attemptID = UUID()
         companionGatewayAttemptID = attemptID
         companionGatewayEndpoint = nil
@@ -3445,6 +3530,13 @@ final class MeetingController: ObservableObject {
             guard !Task.isCancelled else { return }
             await operation(hub)
         }
+    }
+
+    private func applyCompanionAssistance(mode: LanguageAssistanceMode?, replies: Bool?) async {
+        setAssistance(mode: mode ?? languageAssistanceMode,
+            replies: replies ?? mode.map { $0 == .off ? replySuggestionsEnabled : $0 == .translationAndReplies }
+                ?? replySuggestionsEnabled)
+        await companionUpdateTail?.value
     }
 
     private func prepareCompanionForNewSession() {
@@ -3511,6 +3603,7 @@ final class MeetingController: ObservableObject {
         let assistantAvailable = isSyntheticSession
             || isLiveAssistantAvailable
         let languageMode = languageAssistanceMode
+        let replies = replySuggestionsEnabled
         let liveTranscriptionAvailable = isSyntheticSession || activeCaptureUsesHostedTranscription
         enqueueCompanionUpdate { hub in
             await hub.updateSession(
@@ -3525,7 +3618,8 @@ final class MeetingController: ObservableObject {
                 deliveryMode: deliveryMode,
                 assistantAvailable: assistantAvailable,
                 languageAssistanceMode: languageMode,
-                liveTranscriptionAvailable: liveTranscriptionAvailable
+                liveTranscriptionAvailable: liveTranscriptionAvailable,
+                replySuggestionsEnabled: replies
             )
         }
     }
@@ -3640,7 +3734,7 @@ final class MeetingController: ObservableObject {
         opportunity: EarlyInterviewBridgeEvaluationPolicy.Opportunity =
             .formingTranscript
     ) {
-        guard EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
+        guard replySuggestionsEnabled, EarlyInterviewBridgeEvaluationPolicy.shouldEvaluate(
             speaker: speaker,
             purpose: purpose,
             answerMode: activeAssistantAnswerMode,
@@ -3939,6 +4033,7 @@ final class MeetingController: ObservableObject {
         webSearchMode: LiveAssistantWebSearchMode? = nil,
         fromLanguageQueue: Bool = false
     ) {
+        guard languageAssistanceMode.isEnabled || replySuggestionsEnabled else { return }
         guard AssistantEvaluationPolicy.shouldEvaluate(
             speaker: speaker,
             purpose: purpose
@@ -5226,6 +5321,7 @@ final class MeetingController: ObservableObject {
         localClient?.disconnect()
         remoteClient?.disconnect()
         uniqueRefinementClients().forEach { $0.disconnect() }
+        retiredRefinementClients.removeAll()
         microphoneCapture = nil
         processCapture = nil
         localPipeline = nil

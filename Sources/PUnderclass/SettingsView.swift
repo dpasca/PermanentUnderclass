@@ -125,7 +125,6 @@ private struct GeneralSettings: View {
                         Text(mode.title).tag(mode)
                     }
                 }
-                .disabled(controller.isListening || controller.syntheticInterviewState.isActive)
                 if controller.languageAssistanceMode.isEnabled {
                     Text("Both audio tracks accept Japanese and English. Final transcription: \(controller.resolvedCaptureEngine.title).")
                         .font(.caption)

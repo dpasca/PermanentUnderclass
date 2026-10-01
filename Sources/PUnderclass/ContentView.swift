@@ -7,6 +7,8 @@ struct ContentView: View {
     @ObservedObject var navigation: ApplicationNavigation
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
+    @State private var followsTranscript = true
+    @State private var largeTranscriptText = false
     private let slashCommandCenter: SlashCommandCenter
     private let documentationDemoMode: DocumentationDemoMode?
 
@@ -134,8 +136,8 @@ struct ContentView: View {
         availableHeight: CGFloat,
         isLiveCaptureActive: Bool
     ) -> CGFloat {
-        let minimumHeight: CGFloat = isLiveCaptureActive ? 300 : 310
-        let maximumHeight: CGFloat = isLiveCaptureActive ? 400 : 460
+        let minimumHeight: CGFloat = isLiveCaptureActive ? 260 : 310
+        let maximumHeight: CGFloat = isLiveCaptureActive ? 330 : 460
         let transcriptReserve: CGFloat = isLiveCaptureActive ? 340 : 305
         return min(
             maximumHeight,
@@ -508,11 +510,7 @@ struct ContentView: View {
                     Circle()
                         .fill(companionGatewayColor)
                         .frame(width: 7, height: 7)
-                    Text(
-                        controller.usesHostedLiveTranscription(for: purpose)
-                            ? purpose.assistantTitle
-                            : "Transcript Display"
-                    )
+                    Text("Live Display")
                 }
             }
             .disabled(controller.companionGatewayEndpoint == nil)
@@ -1361,21 +1359,62 @@ struct ContentView: View {
                     .disabled(turns.isEmpty)
             }
 
+            HStack(spacing: 16) {
+                Toggle("Japanese → English", isOn: Binding(
+                    get: { controller.languageAssistanceMode.isEnabled },
+                    set: { enabled in
+                        controller.setLanguageAssistanceMode(enabled
+                            ? (controller.replySuggestionsEnabled ? .translationAndReplies : .translation) : .off)
+                    }
+                ))
+                Toggle("Reply support", isOn: Binding(
+                    get: { controller.replySuggestionsEnabled },
+                    set: controller.setReplySuggestionsEnabled
+                ))
+                Spacer()
+                Button(largeTranscriptText ? "Standard text" : "Larger text") {
+                    largeTranscriptText.toggle()
+                }
+                Button(followsTranscript ? "Pause following" : "Follow live") {
+                    followsTranscript.toggle()
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            let local = controller.localTrack(for: purpose).partialTranscript
+            let remote = controller.remoteTrack(for: purpose).partialTranscript
+            if !local.isEmpty || !remote.isEmpty {
+                HStack(alignment: .top, spacing: 12) {
+                    if !remote.isEmpty {
+                        LiveTranscriptPreview(speaker: SpeakerTag.other.displayName(for: purpose),
+                            text: remote, followsText: followsTranscript, largeText: largeTranscriptText)
+                    }
+                    if !local.isEmpty {
+                        LiveTranscriptPreview(speaker: "You", text: local,
+                            followsText: followsTranscript, largeText: largeTranscriptText)
+                    }
+                }
+                .frame(height: largeTranscriptText ? 190 : 156)
+            }
+
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if turns.isEmpty {
+                        if turns.isEmpty && local.isEmpty && remote.isEmpty {
                             ContentUnavailableView(
                                 "No \(purpose.title.lowercased()) transcript yet",
                                 systemImage: "waveform",
                                 description: Text(
-                                    "New \(purpose.title.lowercased()) turns appear at the top."
+                                    "Live speech appears above as words arrive. Completed turns appear here."
                                 )
                             )
                             .frame(maxWidth: .infinity, minHeight: 150)
                         } else {
                             ForEach(turns.reversed()) { turn in
                                 TranscriptRow(turn: turn, language: controller.languageTranscript(for: turn))
+                                    .font(.system(size: largeTranscriptText ? 23 : 18))
+                                    .lineSpacing(5)
                                     .id(turn.id)
                             }
                         }
@@ -1383,8 +1422,11 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                 }
+                .onChange(of: followsTranscript) { _, following in
+                    if following, let newestTurnID { scrollProxy.scrollTo(newestTurnID, anchor: .top) }
+                }
                 .onChange(of: newestTurnID) { _, newID in
-                    guard let newID else { return }
+                    guard followsTranscript, let newID else { return }
                     withAnimation(.easeOut(duration: 0.15)) {
                         scrollProxy.scrollTo(newID, anchor: .top)
                     }
@@ -1689,13 +1731,6 @@ private struct TrackCard<SourceControls: View>: View {
                 LevelBar(label: "PEAK", value: state.telemetry.peak, color: color)
             }
 
-            Text(state.partialTranscript.isEmpty ? "Waiting for speech…" : state.partialTranscript)
-                .font(.callout)
-                .foregroundStyle(state.partialTranscript.isEmpty ? .secondary : .primary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
-                .textSelection(.enabled)
-
             Button {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     showsDiagnostics.toggle()
@@ -1886,6 +1921,47 @@ private struct SocketBadge: View {
     }
 }
 
+private struct LiveTranscriptPreview: View {
+    let speaker: String
+    let text: String
+    let followsText: Bool
+    let largeText: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(speaker) · LIVE · may change", systemImage: "waveform")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(text)
+                            .font(.system(size: largeText ? 26 : 21))
+                            .lineSpacing(5)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("live-tail")
+                    }
+                }
+                .onAppear { if followsText { proxy.scrollTo("live-tail", anchor: .bottom) } }
+                .onChange(of: text) { _, _ in
+                    if followsText { proxy.scrollTo("live-tail", anchor: .bottom) }
+                }
+                .onChange(of: followsText) { _, following in
+                    if following { proxy.scrollTo("live-tail", anchor: .bottom) }
+                }
+                .onChange(of: largeText) { _, _ in
+                    if followsText { proxy.scrollTo("live-tail", anchor: .bottom) }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .overlay { RoundedRectangle(cornerRadius: 10).stroke(.green.opacity(0.3), lineWidth: 1) }
+    }
+}
+
 private struct TranscriptRow: View {
     let turn: TranscriptTurn
     var language: CompanionLanguageAssistance? = nil
@@ -1930,10 +2006,11 @@ private struct TranscriptRow: View {
                         TranscriptRefinementBadge(state: turn.refinement)
                     }
                     if case .refined = turn.refinement, turn.liveText != turn.text {
-                        Text("Live: \(turn.liveText)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        DisclosureGroup("Original live transcript") {
+                            Text(turn.liveText).textSelection(.enabled)
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }

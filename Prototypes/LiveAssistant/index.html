@@ -6,10 +6,19 @@
   <meta name="theme-color" content="#080a09">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23080a09'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%236fe69b'/%3E%3C/svg%3E">
   <title>PermanentUnderclass Teleprompter</title>
-  <link rel="stylesheet" href="styles.css?v=27">
+  <link rel="stylesheet" href="styles.css?v=28">
 </head>
 <body>
   <main class="teleprompter" aria-label="Live response suggestions">
+    <nav class="meeting-controls" id="meetingControls" aria-label="Live meeting controls" hidden>
+      <strong>Live transcript</strong>
+      <span id="conversationConnection" role="status"></span>
+      <label><input id="translationControl" type="checkbox"> Japanese → English</label>
+      <label><input id="repliesControl" type="checkbox"> Reply support</label>
+      <button id="readingSizeControl" type="button" aria-pressed="false">Larger text</button>
+      <button id="replyFocusControl" type="button" aria-pressed="false">Focus on replies</button>
+      <span id="assistanceControlStatus" role="status"></span>
+    </nav>
     <section class="inference-status is-connecting" id="inferenceStatus" role="status" aria-live="polite">
       <span class="inference-lamp" aria-hidden="true"><i></i></span>
       <span class="inference-copy">
@@ -27,10 +36,10 @@
       </header>
       <div class="language-conversation-columns">
         <div class="language-conversation-reader">
-          <section class="language-conversation-log" id="languageConversationLog" aria-label="Conversation history" tabindex="0"></section>
           <section class="language-live-draft" id="languageLiveDraft" aria-label="Live speech · provisional translation" tabindex="0"></section>
+          <section class="language-conversation-log" id="languageConversationLog" aria-label="Conversation history" tabindex="0"></section>
         </div>
-        <aside class="language-conversation-reply" id="languageConversationReply" aria-label="Suggested Japanese reply"></aside>
+        <aside class="language-conversation-reply" id="languageConversationReply" aria-label="Reply support"></aside>
       </div>
     </section>
 
@@ -206,6 +215,6 @@
     </dialog>
   </section>
 
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>
