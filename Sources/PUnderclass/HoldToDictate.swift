@@ -375,7 +375,7 @@ final class HoldToDictateService {
         }
     }
 
-    private static func openMicrophoneSettings() {
+    static func openMicrophoneSettings() {
         let candidates = [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
@@ -662,7 +662,7 @@ final class HoldToDictateService {
         guard canRecord() else {
             phaseHandler(
                 .failed(
-                    "Quick Dictation is unavailable during live capture or a generated replay."
+                    "Quick Dictation is unavailable during live capture, a generated replay, or a microphone test."
                 )
             )
             return
@@ -1777,7 +1777,7 @@ final class HoldToDictateService {
     }
 
     private var noMicrophoneSignalMessage: String {
-        "No microphone signal was detected from \(activeMicrophoneName). Check that it is unmuted and that the input meter moves, then try again."
+        "No microphone signal was detected from \(activeMicrophoneName). Open Test Microphone to check mute, input volume, or choose another microphone. For a Bluetooth headset, try reconnecting it."
     }
 
     /// The selected transcribers consume committed clips, so the overlay

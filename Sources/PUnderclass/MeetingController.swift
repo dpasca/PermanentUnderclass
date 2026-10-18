@@ -60,6 +60,7 @@ final class MeetingController: ObservableObject {
     @Published var dictationPermissions = HoldToDictateService.currentPermissions()
     @Published var isDictating = false
     @Published var dictationTelemetry = TrackTelemetry()
+    @Published private(set) var microphoneTestState = MicrophoneInputTestState()
     @Published var lastDictation = ""
     @Published private(set) var quickDictationHistory: [QuickDictationHistoryEntry] = []
     @Published private(set) var recoverableDictations: [QuickDictationRecoveryEntry] = []
@@ -107,6 +108,7 @@ final class MeetingController: ObservableObject {
     private var microphoneLastSignalAt: Date?
     private var microphoneSignalErrorMessage: String?
     private var dictationService: HoldToDictateService?
+    private var microphoneInputTest: MicrophoneInputTest?
     private var whisperWarmupTask: Task<Void, Never>?
     private var parakeetWarmupTask: Task<Void, Never>?
     private var referenceEmbeddingWarmupTask: Task<Void, Never>?
@@ -587,6 +589,7 @@ final class MeetingController: ObservableObject {
     }
 
     func startCapture(for purpose: CapturePurpose) {
+        stopMicrophoneTest()
         errorMessage = nil
         guard !isListening else {
             let activeTitle = capturePurpose?.title.lowercased() ?? "live"
@@ -1373,7 +1376,7 @@ final class MeetingController: ObservableObject {
     }
 
     var isMicrophoneMonitoring: Bool {
-        isListening || isDictating
+        isListening || isDictating || microphoneTestState.isRunning
     }
 
     var isDictationBusy: Bool {
@@ -1381,7 +1384,33 @@ final class MeetingController: ObservableObject {
     }
 
     var visibleMicrophoneTelemetry: TrackTelemetry {
-        isDictating ? dictationTelemetry : localTrack.telemetry
+        if microphoneTestState.isRunning { return microphoneTestState.telemetry }
+        return isDictating ? dictationTelemetry : localTrack.telemetry
+    }
+
+    func startMicrophoneTest() {
+        guard documentationDemoMode == nil else { return }
+        guard !isListening, !isDictating, !syntheticInterviewState.isActive else {
+            microphoneTestState = MicrophoneInputTestState(
+                microphoneName: microphoneName,
+                errorMessage: "Stop dictation, live capture, or the generated replay before testing the microphone."
+            )
+            return
+        }
+        if microphoneInputTest == nil {
+            microphoneInputTest = MicrophoneInputTest { [weak self] state in
+                guard let self else { return }
+                self.microphoneTestState = state
+                if !self.dictationPermissions.canUseMicrophone {
+                    self.dictationPermissions = HoldToDictateService.currentPermissions()
+                }
+            }
+        }
+        microphoneInputTest?.start(microphoneName: microphoneName)
+    }
+
+    func stopMicrophoneTest() {
+        microphoneInputTest?.stop()
     }
 
     func refreshDictationPermissions() {
@@ -2290,6 +2319,7 @@ final class MeetingController: ObservableObject {
         for purpose: CapturePurpose,
         forceRegeneration: Bool = false
     ) {
+        stopMicrophoneTest()
         guard !syntheticInterviewState.isActive else { return }
         guard !isListening else {
             present(
@@ -2463,6 +2493,7 @@ final class MeetingController: ObservableObject {
 
     @MainActor
     func startWebSearchTest() {
+        stopMicrophoneTest()
         guard !syntheticInterviewState.isActive else { return }
         guard !isListening else {
             present(
@@ -3320,6 +3351,7 @@ final class MeetingController: ObservableObject {
                     guard let self else { return false }
                     return !self.isListening
                         && !self.syntheticInterviewState.isActive
+                        && !self.microphoneTestState.isRunning
                 },
                 expectedLanguages: { [weak self] in
                     self?.dictationLanguages() ?? ["en"]
@@ -5005,6 +5037,9 @@ final class MeetingController: ObservableObject {
         if previousDeviceID != device?.id {
             microphoneRecoveryAttempts = 0
             clearMicrophoneRecoveryError()
+            if microphoneTestState.isRunning {
+                startMicrophoneTest()
+            }
         }
 
         guard previousDeviceID != device?.id, isListening, let sessionID = activeSessionID else {
@@ -5361,6 +5396,7 @@ final class MeetingController: ObservableObject {
         referenceLibraryService?.stop()
         dictationOverlay.setEnabled(false)
         dictationService?.disable()
+        microphoneInputTest?.stop()
         inputDeviceMonitor?.stop()
         outputDeviceMonitor?.stop()
         stopImmediately()

@@ -162,6 +162,7 @@ private final class QuickDictationOverlayModel: ObservableObject {
     @Published var content: QuickDictationPreviewContent = .hidden
     @Published var backgroundContent: QuickDictationBackgroundContent?
     @Published var waveform: [Float] = Array(repeating: 0, count: 180)
+    @Published var microphoneHealth: AudioStreamHealth = .checking
     @Published var partialTranscript = ""
     @Published var microphoneName = "System default microphone"
     @Published var engineName = ""
@@ -384,13 +385,16 @@ private struct QuickDictationOverlayView: View {
         case .listening:
             VStack(alignment: .leading, spacing: 5) {
                 Text(
-                    model.partialTranscript.isEmpty
+                    microphoneWarning ?? (model.partialTranscript.isEmpty
                         ? "Speak to see a live text preview…"
-                        : model.partialTranscript
+                        : model.partialTranscript)
                 )
                 .font(.system(size: 14, weight: model.partialTranscript.isEmpty ? .regular : .medium))
-                .foregroundStyle(model.partialTranscript.isEmpty ? .secondary : .primary)
-                .lineLimit(1)
+                .foregroundStyle(
+                    microphoneWarning != nil ? Color.orange
+                        : model.partialTranscript.isEmpty ? .secondary : .primary
+                )
+                .lineLimit(microphoneWarning == nil ? 1 : 2)
                 .truncationMode(.head)
 
                 WaveformView(
@@ -403,7 +407,8 @@ private struct QuickDictationOverlayView: View {
         case let .listeningWhilePreparing(engine):
             VStack(alignment: .leading, spacing: 5) {
                 Text(
-                    "\(engine.shortLabel) is loading. Keep speaking—your audio is being captured locally."
+                    microphoneWarning
+                        ?? "\(engine.shortLabel) is loading. Keep speaking—your audio is being captured locally."
                 )
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -493,7 +498,10 @@ private struct QuickDictationOverlayView: View {
     }
 
     private var title: String {
-        switch model.content {
+        if model.content.isListening, microphoneWarning != nil {
+            return model.microphoneHealth.label
+        }
+        return switch model.content {
         case .hidden:
             "Quick Dictation"
         case .startingMicrophone:
@@ -537,7 +545,8 @@ private struct QuickDictationOverlayView: View {
     }
 
     private var accentColor: Color {
-        switch model.content {
+        if model.content.isListening, microphoneWarning != nil { return .orange }
+        return switch model.content {
         case .hidden, .listening:
             .red
         case .startingMicrophone, .startingMicrophoneWhilePreparing,
@@ -554,6 +563,12 @@ private struct QuickDictationOverlayView: View {
         case .failure:
             .orange
         }
+    }
+
+    private var microphoneWarning: String? {
+        model.microphoneHealth == .noSignal
+            ? "No microphone signal. Check mute, reconnect your headset, or use Test Microphone."
+            : nil
     }
 
     private var accessibilityValue: String {
@@ -699,6 +714,7 @@ final class QuickDictationOverlayController {
             dismissWorkItem = nil
             setInteractive(false)
             if !previousContent.isStartingMicrophone {
+                model.microphoneHealth = .checking
                 model.waveform = Array(repeating: 0, count: 180)
                 model.partialTranscript = ""
                 model.progress = nil
@@ -743,6 +759,13 @@ final class QuickDictationOverlayController {
             state.content.isListening
         else { return }
         model.waveform = telemetry.waveform
+        model.microphoneHealth = AudioStreamHealth.evaluate(
+            sourceAvailable: true,
+            isMonitoring: true,
+            telemetry: telemetry,
+            detectDigitalSilence: true,
+            signalStaleAfter: 2
+        )
     }
 
     func update(partialTranscript: String) {

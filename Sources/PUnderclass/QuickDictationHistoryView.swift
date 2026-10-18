@@ -22,6 +22,7 @@ struct QuickDictationControlPanel: View {
                 Spacer()
                 Text("Hold ⌘ + ⌥")
                     .font(.callout.monospaced().weight(.semibold))
+                MicrophoneInputTestButton(controller: controller)
                 if controller.dictationPermissions.allGranted {
                     Button(
                         "Check Access",
@@ -57,7 +58,8 @@ struct QuickDictationControlPanel: View {
 
                     WaveformView(
                         samples: controller.dictationTelemetry.waveform,
-                        color: controller.isDictating ? .red : .secondary
+                        color: controller.isDictating ? .red : .secondary,
+                        normalization: .adaptive
                     )
                     .frame(height: 32)
 

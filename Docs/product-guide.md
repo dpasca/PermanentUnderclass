@@ -305,6 +305,16 @@ preparation later sends the configured source text.
 
 ## Quick Dictation
 
+Use **Test Microphone…** in the microphone menu, Quick Dictation, or Settings →
+General to check input without holding the shortcut or loading a speech model.
+The test displays a live waveform and input level, distinguishes missing audio
+from digital silence, and lets you select another input while testing. Only
+microphone permission is needed. Test audio is discarded locally. If a Bluetooth
+headset sends only silence, check its mute switch and input volume, reconnect it,
+or select the built-in microphone. Closing the test stops microphone capture.
+During dictation, the floating preview also warns when the input sends only
+silence for two seconds and returns to normal when a signal arrives.
+
 Enable **Quick Dictation**, then grant Accessibility and Microphone access when
 prompted. Accessibility allows both global shortcut monitoring and automatic
 paste. macOS may require PermanentUnderclass to be quit and reopened after this

@@ -9,6 +9,7 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var followsTranscript = true
     @State private var largeTranscriptText = false
+    @State private var showMicrophoneTest = false
     private let slashCommandCenter: SlashCommandCenter
     private let documentationDemoMode: DocumentationDemoMode?
 
@@ -54,6 +55,9 @@ struct ContentView: View {
             minWidth: 1_000,
             minHeight: documentationDemoMode == .quickDictation ? 520 : 760
         )
+        .sheet(isPresented: $showMicrophoneTest) {
+            MicrophoneInputTestView(controller: controller)
+        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -633,6 +637,14 @@ struct ContentView: View {
 
     private func sharedMicrophoneMenu(health: AudioStreamHealth) -> some View {
         Menu {
+            Button("Test Microphone…", systemImage: "waveform") {
+                showMicrophoneTest = true
+            }
+            .disabled(
+                controller.isListening || controller.isDictating
+                    || controller.syntheticInterviewState.isActive
+            )
+            Divider()
             if controller.inputDevices.isEmpty {
                 Text("No compatible microphones found")
             } else {

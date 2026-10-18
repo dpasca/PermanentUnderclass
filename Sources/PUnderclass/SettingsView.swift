@@ -99,6 +99,7 @@ private struct GeneralSettings: View {
                         onSelect: controller.selectInputDevice
                     )
                 }
+                MicrophoneInputTestButton(controller: controller)
             }
 
             SettingsGroup(
